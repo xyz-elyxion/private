@@ -1,9 +1,12 @@
-# Elyxion runtime image
+# Elyxion runtime + site/registry server image
 # ---------------------------------------------------------------
 # Installs the Elyxion standalone JS runtime using the official
 # one-line installer:
 #
 #   curl -fsSL https://raw.githubusercontent.com/xyz-elyxion/elyxion-cli/main/scripts/install.sh | bash
+#
+# then runs the site + package registry server from this repo
+# (server.js) on the Elyxion runtime — no Node.js involved.
 #
 # Ubuntu 24.04 (glibc 2.39, GCC 13) is required: the Elyxion v1.0.0
 # binary needs GLIBC_2.38 / GLIBCXX_3.4.32, which Debian bookworm
@@ -13,8 +16,8 @@
 #   docker build -t elyxion .
 #
 # Run:
-#   docker run --rm elyxion --version
-#   docker run -it --rm elyxion --repl
+#   docker run -d -p 3000:3000 -v elyxion-data:/app/data elyxion
+#   curl http://localhost:3000/health
 # ---------------------------------------------------------------
 
 FROM ubuntu:24.04
@@ -41,6 +44,22 @@ RUN curl -fsSL https://raw.githubusercontent.com/xyz-elyxion/elyxion-cli/main/sc
 
 ENV ELYXION_HOME=/opt/elyxion
 
-# `docker run --rm elyxion` prints the installed version and exits.
+# ---- Site + registry server ------------------------------------
+WORKDIR /app
+COPY build.js server.js serve.js inline-server.js ./
+COPY public/ public/
+
+# Generate the static site into dist/ at build time (the server also
+# falls back to this if dist/ is missing at startup).
+RUN elyxion /app/build.js
+
+EXPOSE 3000
+
+# Registry data (users, tokens, packages) lives in /app/data — mount a
+# volume here to keep it across container runs.
+VOLUME ["/app/data"]
+
+# `docker run elyxion` starts the site + registry server.
+# Override the args for other uses, e.g. `docker run --rm elyxion --repl`.
 ENTRYPOINT ["elyxion"]
-CMD ["--version"]
+CMD ["/app/server.js"]
