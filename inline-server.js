@@ -2,7 +2,7 @@
 // Uses native TCP module + fs module directly.
 'use strict';
 
-const tcp = require('tcp');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 
@@ -112,7 +112,7 @@ console.log('  ⚡ Elyxion HTTP Server');
 console.log('     http://localhost:' + PORT);
 console.log('');
 
-const server = tcp.createServer((socket) => {
+const server = net.createServer((socket) => {
   let buffer = '';
 
   socket.on('data', (chunk) => {

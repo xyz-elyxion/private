@@ -16,7 +16,7 @@
 //   PUBLIC_URL   Public base URL used in package metadata (default: https://xyz-elyxion.onrender.com)
 'use strict';
 
-const tcp = require('tcp');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -512,7 +512,7 @@ function handleApi(method, pathname, qs, headers, body, socket) {
 }
 
 // ---- Connection handling --------------------------------------
-const server = tcp.createServer((socket) => {
+const server = net.createServer((socket) => {
   let buffer = '';
 
   socket.on('data', (chunk) => {
@@ -588,7 +588,7 @@ console.log('     ' + PUBLIC_URL);
 console.log('     Data: ' + DATA_DIR);
 console.log('');
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, () => {
   console.log('  Listening on port ' + PORT + '. Press Ctrl+C to stop.');
   console.log('');
 });
