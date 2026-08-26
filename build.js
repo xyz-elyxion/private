@@ -88,6 +88,7 @@ function layout(title, body, activePage) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
   <link rel="stylesheet" href="/theme/globals.css">
+  <link rel="stylesheet" href="/theme/site.css">
 </head>
 <body>
   <nav class="nav">
@@ -269,14 +270,27 @@ for (const file of staticAssets) {
   console.log(`  ✓ ${file} (${size} KB)`);
 }
 
-// Copy the framework theme so the linked stylesheet resolves.
+// Copy the framework theme and the site's own page styles so the
+// linked stylesheets resolve.
+fs.mkdirSync(path.join(BUILD, 'theme'), { recursive: true });
+
 const themeCss = frameworkTheme();
 if (themeCss && !themeCss.startsWith('/* elyxion-website theme not found')) {
-  fs.mkdirSync(path.join(BUILD, 'theme'), { recursive: true });
   fs.writeFileSync(path.join(BUILD, 'theme', 'globals.css'), themeCss, 'utf-8');
   console.log(`  ✓ theme/globals.css (${(byteLen(themeCss) / 1024).toFixed(1)} KB)`);
 } else {
   console.log('  ! theme/globals.css not found — pages will be unstyled');
+}
+
+const siteCssPath = path.join(ROOT, 'theme', 'site.css');
+try {
+  const siteCss = fs.readFileSync(siteCssPath, 'utf-8');
+  if (siteCss !== undefined) {
+    fs.writeFileSync(path.join(BUILD, 'theme', 'site.css'), siteCss, 'utf-8');
+    console.log(`  ✓ theme/site.css (${(byteLen(siteCss) / 1024).toFixed(1)} KB)`);
+  }
+} catch (_) {
+  console.log('  ! theme/site.css not found — pages will be unstyled');
 }
 
 // Generate API
