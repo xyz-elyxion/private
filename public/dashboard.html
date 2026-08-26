@@ -4,122 +4,171 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard — Elyxion Registry</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg: rgb(5 5 8);
+      --card: hsl(240 10% 6%);
+      --border: hsl(240 6% 14%);
+      --border-strong: hsl(240 6% 22%);
+      --fg: hsl(0 0% 98%);
+      --muted: hsl(240 5% 65%);
+      --violet: hsl(256 90% 66%);
+      --periwinkle: #9475f0;
+      --cyan: hsl(191 91% 60%);
+      --brand: hsl(354 93% 60%);
+      --success: hsl(142 71% 45%);
+      --danger: hsl(0 84% 60%);
+      --radius: 0.75rem;
+    }
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-      background: #0d1117;
-      color: #c9d1d9;
+      font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--fg);
       line-height: 1.6;
       min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
     }
-    nav {
-      display: flex; justify-content: center; gap: 1.5rem;
-      padding: 1.25rem 2rem; border-bottom: 1px solid #21262d;
-    }
-    nav a { color: #8b949e; text-decoration: none; font-size: 0.9rem; }
-    nav a:hover, nav a.active { color: #a78bfa; }
 
-    .wrap { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
-    header h1 { font-size: 1.75rem; font-weight: 800; color: #e6edf3; }
-    header .sub { color: #8b949e; font-size: 0.9rem; margin-top: 0.25rem; }
+    /* Nav */
+    .nav {
+      position: sticky; top: 0; z-index: 20;
+      border-bottom: 1px solid var(--border);
+      background: rgb(5 5 8 / 0.8);
+      backdrop-filter: blur(12px);
+    }
+    .nav .container { max-width: 1080px; margin: 0 auto; padding: 1rem 1.5rem;
+      display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .logo { font-weight: 800; font-size: 1.15rem; letter-spacing: -0.02em;
+      background: linear-gradient(135deg, hsl(256 90% 66%) 0%, #9475f0 50%, hsl(191 91% 60%) 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .nav-links { display: flex; align-items: center; gap: 1.75rem; }
+    .nav-links a { color: var(--muted); font-size: 0.9rem; transition: color .15s; }
+    .nav-links a:hover { color: var(--fg); }
+    .nav-links a.active { color: var(--fg); }
+    .nav-links a.active::after { content: ''; display: block; height: 2px; border-radius: 2px; margin-top: 2px;
+      background: linear-gradient(90deg, var(--violet), var(--cyan)); }
+
+    .wrap { max-width: 960px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+    header h1 {
+      font-size: 2rem; font-weight: 700; letter-spacing: -0.02em;
+      background: linear-gradient(135deg, hsl(256 90% 66%) 0%, #9475f0 50%, hsl(191 91% 60%) 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    header .sub { color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem; }
 
     /* Auth bar */
     .authbar {
       display: flex; justify-content: space-between; align-items: center; gap: 1rem;
-      margin: 1.5rem 0; padding: 0.9rem 1.2rem;
-      background: #161b22; border: 1px solid #21262d; border-radius: 10px;
+      margin: 1.75rem 0; padding: 0.9rem 1.25rem;
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
       flex-wrap: wrap;
     }
     .authbar .who { font-size: 0.95rem; }
     .authbar .who .tag {
-      display: inline-block; margin-left: 0.5rem; padding: 0.05rem 0.5rem;
-      border-radius: 999px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
-      background: #1f2937; color: #8b949e; border: 1px solid #30363d;
+      display: inline-block; margin-left: 0.5rem; padding: 0.08rem 0.55rem;
+      border-radius: 999px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+      background: hsl(240 5% 12%); color: var(--muted); border: 1px solid var(--border-strong);
     }
-    .authbar .tag.admin { background: #2d1b4e; color: #a78bfa; border-color: #8b5cf6; }
+    .authbar .tag.admin { background: hsl(256 90% 66% / 0.15); color: var(--violet); border-color: hsl(256 90% 66% / 0.5); }
     .authbar .actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 
     /* Forms */
-    .auth-forms { display: flex; gap: 1rem; margin: 1rem 0 2rem; flex-wrap: wrap; }
+    .auth-forms { display: flex; gap: 1rem; margin: 1rem 0 2.25rem; flex-wrap: wrap; }
     .auth-forms form {
-      flex: 1; min-width: 260px; background: #161b22; border: 1px solid #21262d;
-      border-radius: 10px; padding: 1.2rem;
+      flex: 1; min-width: 260px; background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.4rem;
     }
-    .auth-forms h2 { font-size: 1.05rem; margin-bottom: 0.75rem; color: #e6edf3; }
+    .auth-forms h2 { font-size: 1.05rem; margin-bottom: 0.85rem; color: var(--fg); }
 
-    label { display: block; font-size: 0.8rem; color: #8b949e; margin: 0.6rem 0 0.25rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin: 0.65rem 0 0.3rem; }
     input, textarea, select {
-      width: 100%; padding: 0.55rem 0.75rem; margin-bottom: 0.5rem;
-      background: #0d1117; color: #c9d1d9;
-      border: 1px solid #30363d; border-radius: 6px; font-size: 0.9rem; font-family: inherit;
+      width: 100%; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem;
+      background: var(--bg); color: var(--fg);
+      border: 1px solid var(--border-strong); border-radius: 8px; font-size: 0.9rem; font-family: inherit;
     }
-    textarea { font-family: 'Fira Code', Consolas, monospace; font-size: 0.85rem; resize: vertical; min-height: 120px; }
-    input:focus, textarea:focus { outline: none; border-color: #8b5cf6; }
+    textarea { font-family: 'Geist Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 0.85rem; resize: vertical; min-height: 120px; }
+    input:focus, textarea:focus { outline: none; border-color: var(--violet); }
 
     button {
-      padding: 0.5rem 1.1rem; border: 1px solid #30363d; border-radius: 6px;
-      background: #21262d; color: #c9d1d9; font-size: 0.85rem; cursor: pointer;
-      transition: background 0.15s, border-color 0.15s;
+      padding: 0.55rem 1.15rem; border: 1px solid var(--border-strong); border-radius: 8px;
+      background: hsl(240 5% 12%); color: var(--fg); font-size: 0.85rem; font-weight: 500; cursor: pointer;
+      transition: filter .15s, border-color .15s, transform .15s;
     }
-    button:hover { background: #30363d; border-color: #8b5cf6; }
-    button.primary { background: #7c3aed; border-color: #7c3aed; color: #fff; }
-    button.primary:hover { background: #8b5cf6; }
-    button.danger { color: #f87171; }
-    button.danger:hover { background: #3b1d1d; border-color: #f87171; }
+    button:hover { filter: brightness(1.15); border-color: var(--violet); }
+    button.primary {
+      background: linear-gradient(135deg, hsl(354 93% 60%), hsl(354 84% 50%) 60%, hsl(354 86% 40%));
+      border-color: transparent; color: #fff; font-weight: 600;
+    }
+    button.primary:hover { border-color: transparent; }
+    button.danger { color: var(--danger); }
+    button.danger:hover { border-color: var(--danger); background: hsl(0 84% 60% / 0.12); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* Stats */
     .stats {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 1rem; margin: 1.5rem 0 2rem;
+      gap: 1rem; margin: 1.5rem 0 2.25rem;
     }
-    .stat { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 1rem; text-align: center; }
-    .stat .number { font-size: 1.75rem; font-weight: 700; color: #a78bfa; }
-    .stat .label { font-size: 0.8rem; color: #8b949e; margin-top: 0.25rem; }
+    .stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem; text-align: center; }
+    .stat .number {
+      font-family: 'Geist Mono', ui-monospace, Menlo, Consolas, monospace;
+      font-size: 1.75rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+      background: linear-gradient(135deg, hsl(256 90% 66%) 0%, #9475f0 50%, hsl(191 91% 60%) 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .stat .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-top: 0.25rem; }
 
     /* Sections */
-    section { margin-bottom: 2.5rem; }
-    section > h2 { font-size: 1.15rem; margin-bottom: 0.75rem; color: #e6edf3;
+    section { margin-bottom: 2.75rem; }
+    section > h2 { font-size: 1.15rem; font-weight: 600; margin-bottom: 0.85rem; color: var(--fg);
       display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
-    .panel { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 1.2rem; }
+    .panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
 
     .toolbar { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center; }
     .toolbar input { margin: 0; flex: 1; min-width: 200px; }
 
     /* Tables / lists */
     table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-    th { text-align: left; color: #8b949e; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.4rem 0.6rem; border-bottom: 1px solid #21262d; }
-    td { padding: 0.55rem 0.6rem; border-bottom: 1px solid #1c2128; vertical-align: top; }
+    th { text-align: left; color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border); }
+    td { padding: 0.6rem 0.7rem; border-bottom: 1px solid var(--border); vertical-align: top; }
     tr.pkg-row { cursor: pointer; }
-    tr.pkg-row:hover { background: #1c2128; }
-    td .name { color: #58a6ff; font-family: 'Fira Code', Consolas, monospace; }
-    td .desc { color: #8b949e; font-size: 0.82rem; }
+    tr.pkg-row:hover { background: hsl(240 10% 4%); }
+    td .name { color: var(--cyan); font-family: 'Geist Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 0.85rem; }
+    td .desc { color: var(--muted); font-size: 0.82rem; }
     .muted { color: #484f58; font-size: 0.8rem; }
-    .badge { display: inline-block; padding: 0.05rem 0.5rem; border-radius: 999px; font-size: 0.72rem; background: #1f2937; border: 1px solid #30363d; color: #c9d1d9; margin-right: 0.3rem; }
-    .badge.latest { background: #132d1f; color: #3fb950; border-color: #238636; }
+    .badge { display: inline-block; padding: 0.06rem 0.5rem; border-radius: 999px; font-size: 0.72rem; background: hsl(240 5% 12%); border: 1px solid var(--border-strong); color: var(--fg); margin-right: 0.3rem; }
+    .badge.latest { background: hsl(142 71% 45% / 0.12); color: var(--success); border-color: hsl(142 71% 45% / 0.4); }
 
     /* Detail row */
-    tr.detail-row td { background: #0d1117; padding: 1rem 0.6rem; }
+    tr.detail-row td { background: var(--bg); padding: 1rem 0.7rem; }
     .detail { display: grid; grid-template-columns: 1fr; gap: 0.4rem; font-size: 0.85rem; }
-    .detail .vrow { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0.6rem; border-bottom: 1px solid #1c2128; align-items: center; flex-wrap: wrap; }
-    .detail .vrow .vname { font-family: 'Fira Code', Consolas, monospace; color: #c9d1d9; }
+    .detail .vrow { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0.7rem; border-bottom: 1px solid var(--border); align-items: center; flex-wrap: wrap; }
+    .detail .vrow .vname { font-family: 'Geist Mono', ui-monospace, Menlo, Consolas, monospace; color: var(--fg); }
 
-    .msg { display: none; padding: 0.6rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
-    .msg.ok { display: block; background: #132d1f; color: #3fb950; border: 1px solid #238636; }
-    .msg.err { display: block; background: #3b1d1d; color: #f87171; border: 1px solid #b91c1c; }
+    .msg { display: none; padding: 0.65rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.25rem; }
+    .msg.ok { display: block; background: hsl(142 71% 45% / 0.12); color: var(--success); border: 1px solid hsl(142 71% 45% / 0.4); }
+    .msg.err { display: block; background: hsl(0 84% 60% / 0.12); color: var(--danger); border: 1px solid hsl(0 84% 60% / 0.4); }
 
     .empty { color: #484f58; text-align: center; padding: 2rem; font-size: 0.9rem; }
-    footer { text-align: center; padding: 2rem; border-top: 1px solid #21262d; color: #484f58; font-size: 0.8rem; }
-    @media (max-width: 600px) { nav { gap: 1rem; } .stats { grid-template-columns: repeat(2, 1fr); } }
+    footer { text-align: center; padding: 2rem; border-top: 1px solid var(--border); color: #484f58; font-size: 0.78rem; }
+    @media (max-width: 600px) { .nav .container { flex-wrap: wrap; justify-content: center; } .nav-links { gap: 1rem; } .stats { grid-template-columns: repeat(2, 1fr); } }
   </style>
 </head>
 <body>
-  <nav>
-    <a href="/">Home</a>
-    <a href="/about">About</a>
-    <a href="/dashboard" class="active">Dashboard</a>
-    <a href="https://github.com/xyz-elyxion/elyxion-cli" target="_blank" rel="noopener">GitHub</a>
+  <nav class="nav">
+    <div class="container">
+      <a href="/" class="logo">Elyxion</a>
+      <div class="nav-links">
+        <a href="/">Home</a>
+        <a href="/about">About</a>
+        <a href="/dashboard" class="active">Dashboard</a>
+        <a href="https://github.com/xyz-elyxion/elyxion-cli" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
   </nav>
 
   <div class="wrap">
@@ -171,7 +220,7 @@
     <section id="publish-section" style="display:none">
       <h2>Publish a package</h2>
       <div class="panel">
-        <p class="muted" style="margin-bottom:0.75rem">Paste a package.json manifest. The registry stores the metadata and makes it installable via <code style="color:#58a6ff">elyx install &lt;name&gt;</code>.</p>
+        <p class="muted" style="margin-bottom:0.75rem">Paste a package.json manifest. The registry stores the metadata and makes it installable via <code style="color:var(--cyan); font-family:'Geist Mono',monospace">elyx install &lt;name&gt;</code>.</p>
         <textarea id="publish-json" placeholder='{\n  "name": "my-package",\n  "version": "1.0.0",\n  "description": "What it does",\n  "main": "index.js"\n}'></textarea>
         <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
           <button class="primary" id="publish-btn">Publish</button>
