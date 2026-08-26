@@ -123,6 +123,29 @@ function authenticate(headers) {
   return { username: entry.username, user, token };
 }
 
+// Admins are users with role 'admin' (the first registered user), plus
+// anyone named in the ADMIN_USERNAME env var (comma-separated).
+function isAdmin(auth) {
+  if (!auth) return false;
+  if (auth.user.role === 'admin') return true;
+  const admins = String(process.env.ADMIN_USERNAME || '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return admins.indexOf(auth.username) !== -1;
+}
+
+// Remove a package name from its owner's package list (keeps /api/auth/me
+// and the dashboard "my packages" view accurate after deletes).
+function removeFromOwnerPackages(owner, name) {
+  const users = load('users', {});
+  const u = users[owner];
+  if (!u || !u.packages) return;
+  const idx = u.packages.indexOf(name);
+  if (idx !== -1) {
+    u.packages.splice(idx, 1);
+    save('users', users);
+  }
+}
+
 function issueToken(username) {
   const tokens = load('tokens', {});
   const token = makeToken();
@@ -398,6 +421,19 @@ function handleApi(method, pathname, qs, headers, body, socket) {
     return sendJSON(socket, 200, { packages: Object.keys(packages).length, users: Object.keys(users).length, versions });
   }
 
+  // GET /api/users  (admin only)
+  if (method === 'GET' && parts.length === 2 && parts[1] === 'users') {
+    if (!auth || !isAdmin(auth)) return sendJSON(socket, 403, { error: 'Admins only' });
+    const users = load('users', {});
+    const list = Object.keys(users).sort().map((u) => ({
+      username: u,
+      role: users[u].role || 'user',
+      createdAt: users[u].createdAt,
+      packages: users[u].packages || [],
+    }));
+    return sendJSON(socket, 200, { users: list, count: list.length });
+  }
+
   // ---- Auth routes --------------------------------------------
   // POST /api/auth/register
   if (method === 'POST' && parts.length === 3 && parts[1] === 'auth' && parts[2] === 'register') {
@@ -420,6 +456,8 @@ function handleApi(method, pathname, qs, headers, body, socket) {
       passwordHash: hashPassword(password, salt),
       createdAt: new Date().toISOString(),
       packages: [],
+      // First registered user becomes the registry admin.
+      role: Object.keys(users).length === 0 ? 'admin' : 'user',
     };
     save('users', users);
     const token = issueToken(username);
@@ -455,9 +493,38 @@ function handleApi(method, pathname, qs, headers, body, socket) {
     if (!auth) return sendJSON(socket, 401, { error: 'Not authenticated' });
     return sendJSON(socket, 200, {
       username: auth.username,
+      role: auth.user.role || 'user',
       packages: auth.user.packages || [],
       createdAt: auth.user.createdAt,
     });
+  }
+
+  // DELETE /api/users/:username  (admin, or the user themselves)
+  if (method === 'DELETE' && parts.length === 3 && parts[1] === 'users') {
+    const target = decodeURIComponent(parts[2]).toLowerCase();
+    if (!auth) return sendJSON(socket, 401, { error: 'Not authenticated' });
+    if (target !== auth.username && !isAdmin(auth)) {
+      return sendJSON(socket, 403, { error: 'Only an admin can remove other users' });
+    }
+    const users = load('users', {});
+    if (!users[target]) return sendJSON(socket, 404, { error: 'User not found' });
+    delete users[target];
+    save('users', users);
+    // Drop their tokens
+    const tokens = load('tokens', {});
+    let tokensChanged = false;
+    for (const [tok, entry] of Object.entries(tokens)) {
+      if (entry.username === target) { delete tokens[tok]; tokensChanged = true; }
+    }
+    if (tokensChanged) save('tokens', tokens);
+    // Remove their packages
+    const packages = load('packages', {});
+    let removed = 0;
+    for (const [name, pkg] of Object.entries(packages)) {
+      if (pkg.owner === target) { delete packages[name]; removed++; }
+    }
+    save('packages', packages);
+    return sendJSON(socket, 200, { ok: true, username: target, removedPackages: removed });
   }
 
   // ---- Package routes -----------------------------------------
@@ -472,6 +539,21 @@ function handleApi(method, pathname, qs, headers, body, socket) {
     const packages = load('packages', {});
     if (!packages[name]) return sendJSON(socket, 404, { error: `Package "${name}" not found` });
     return sendJSON(socket, 200, publicPackage(name, packages[name]));
+  }
+
+  // DELETE /api/packages/:name  (owner or admin)
+  if (method === 'DELETE' && parts.length === 3 && parts[1] === 'packages') {
+    if (!auth) return sendJSON(socket, 401, { error: 'Not authenticated' });
+    const name = decodeURIComponent(parts[2]);
+    const packages = load('packages', {});
+    if (!packages[name]) return sendJSON(socket, 404, { error: `Package "${name}" not found` });
+    if (packages[name].owner !== auth.username && !isAdmin(auth)) {
+      return sendJSON(socket, 403, { error: `Only ${packages[name].owner} or an admin can delete this package` });
+    }
+    removeFromOwnerPackages(packages[name].owner, name);
+    delete packages[name];
+    save('packages', packages);
+    return sendJSON(socket, 200, { ok: true, name, deleted: true });
   }
 
   // GET /api/packages/:name/:version  +  .../metadata
@@ -502,6 +584,7 @@ function handleApi(method, pathname, qs, headers, body, socket) {
     if (!pkg.versions[version]) return sendJSON(socket, 404, { error: `Version ${version} not found` });
     delete pkg.versions[version];
     if (Object.keys(pkg.versions).length === 0) {
+      removeFromOwnerPackages(pkg.owner, name);
       delete packages[name];
     } else {
       const remaining = Object.keys(pkg.versions).sort();

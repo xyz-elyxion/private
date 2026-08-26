@@ -39,6 +39,7 @@ const site = {
 const pages = {
   '/': { file: 'index.html', title: site.title + ' — Standalone JS Runtime' },
   '/about': { file: 'about.html', title: 'About — ' + site.title },
+  '/dashboard': { file: 'dashboard.html', title: 'Dashboard — ' + site.title + ' Registry' },
   '/404': { file: '404.html', title: '404 — ' + site.title },
 };
 
@@ -224,6 +225,18 @@ const pageMap = {
 for (const [file, html] of Object.entries(pageMap)) {
   const out = path.join(BUILD, file);
   fs.writeFileSync(out, html, 'utf-8');
+  const size = (byteLen(html) / 1024).toFixed(1);
+  console.log(`  ✓ ${file} (${size} KB)`);
+}
+
+// Copy static assets from public/ that aren't generated (e.g. the
+// management dashboard — it's a self-contained page served as-is).
+const staticAssets = ['dashboard.html'];
+for (const file of staticAssets) {
+  const src = path.join(PUBLIC, file);
+  if (!fs.existsSync(src)) continue;
+  const html = fs.readFileSync(src);
+  fs.writeFileSync(path.join(BUILD, file), html, 'utf-8');
   const size = (byteLen(html) / 1024).toFixed(1);
   console.log(`  ✓ ${file} (${size} KB)`);
 }
