@@ -26,6 +26,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DIST = path.join(__dirname, 'dist');
 const PUBLIC_URL = process.env.PUBLIC_URL || 'https://xyz-elyxion.onrender.com';
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const START_TIME = Date.now(); // runtime has no process.uptime()
 
 // Build the static site on first run if dist/ is missing
 // (e.g. fresh clone — keeps the deployment self-sufficient)
@@ -330,7 +331,7 @@ function handleRequest(method, url, headers, body, socket) {
 
   // GET /health — check the service is up
   if (method === 'GET' && pathname === '/health') {
-    return sendJSON(socket, 200, { ok: true, service: 'elyxion-registry', uptime: Math.floor(process.uptime()) });
+    return sendJSON(socket, 200, { ok: true, service: 'elyxion-registry', uptime: Math.floor((Date.now() - START_TIME) / 1000) });
   }
 
   // ---- Static site --------------------------------------------
@@ -350,6 +351,9 @@ function handleRequest(method, url, headers, body, socket) {
   } catch (_) {}
 
   if (sendFile(socket, filePath)) return;
+
+  // Extensionless paths fall back to .html (e.g. /about -> about.html)
+  if (!path.extname(pathname) && sendFile(socket, filePath + '.html')) return;
 
   const notFound =
     '<!DOCTYPE html><html><head><title>404</title></head>' +

@@ -8,9 +8,9 @@
 # then runs the site + package registry server from this repo
 # (server.js) on the Elyxion runtime — no Node.js involved.
 #
-# Ubuntu 24.04 (glibc 2.39, GCC 13) is required: the Elyxion v1.0.0
-# binary needs GLIBC_2.38 / GLIBCXX_3.4.32, which Debian bookworm
-# (glibc 2.36) does not provide.
+# Ubuntu 24.04 (glibc 2.39, GCC 13) is required: the Elyxion binary
+# needs GLIBC_2.38 / GLIBCXX_3.4.32, which Debian bookworm (glibc 2.36)
+# does not provide.
 #
 # Build:
 #   docker build -t elyxion .
@@ -28,8 +28,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin a release by passing --build-arg ELYXION_VERSION=v1.0.0
-ARG ELYXION_VERSION=latest
+# Pin a known-good release (the installer defaults to v1.1.0; pass
+# --build-arg ELYXION_VERSION=... to override). Do NOT use "latest" —
+# release assets have shipped stale before.
+ARG ELYXION_VERSION=v1.1.0
 ENV ELYXION_VERSION=${ELYXION_VERSION}
 
 # Install to /opt/elyxion (instead of the default $HOME/.elyxion) so the

@@ -79,6 +79,11 @@ function handleRequest(method, url, socket) {
     }
   } catch (_) {}
 
+  // Extensionless paths fall back to .html (e.g. /about -> about.html)
+  var candidate = filePath;
+  if (!path.extname(pathname)) candidate = filePath + '.html';
+  filePath = candidate;
+
   // Try to serve the file — use stat size for accurate Content-Length
   try {
     var content = fs.readFileSync(filePath);
