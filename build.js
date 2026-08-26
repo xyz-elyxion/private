@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
 const BUILD = path.join(ROOT, 'dist');
+const THEME = path.join(ROOT, 'theme', 'globals.css');
 
 const NOW = new Date().toISOString();
 const BUILD_ID = Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
@@ -49,175 +50,18 @@ const modules = [
   'assert', 'readline', 'dns',
 ];
 
-// ── Design system (doublecounter.gg-inspired) ───────────
-const STYLE = `
-  :root {
-    --bg: rgb(5 5 8);
-    --card: hsl(240 10% 6%);
-    --border: hsl(240 6% 14%);
-    --border-strong: hsl(240 6% 22%);
-    --fg: hsl(0 0% 98%);
-    --muted: hsl(240 5% 65%);
-    --violet: hsl(256 90% 66%);
-    --periwinkle: #9475f0;
-    --cyan: hsl(191 91% 60%);
-    --brand: hsl(354 93% 60%);
-    --success: hsl(142 71% 45%);
-    --radius: 0.75rem;
+// ── Framework theme ────────────────────────────────────
+// The site is styled by the elyxion-website framework's shadcn/ui theme.
+// It lives in theme/globals.css and is copied to dist/theme/globals.css
+// so every page can link to it.
+function frameworkTheme() {
+  try {
+    const css = fs.readFileSync(THEME);
+    return css === undefined ? '' : String(css);
+  } catch (_) {
+    return '/* elyxion-website theme not found — see theme/globals.css */';
   }
-  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
-  html { scroll-behavior:smooth; }
-  body {
-    font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    background: var(--bg);
-    color: var(--fg);
-    line-height: 1.6;
-    min-height: 100vh;
-    -webkit-font-smoothing: antialiased;
-  }
-  .container { max-width:1080px; margin:0 auto; padding:0 1.5rem; }
-  a { color:inherit; text-decoration:none; }
-
-  /* Gradient text */
-  .text-cool {
-    background: linear-gradient(135deg, hsl(256 90% 66%) 0%, #9475f0 50%, hsl(191 91% 60%) 100%);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .text-light {
-    background: linear-gradient(#fff 0%, #999 100%);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-
-  /* Nav */
-  .nav {
-    position: sticky; top:0; z-index:20;
-    border-bottom:1px solid var(--border);
-    background: rgb(5 5 8 / 0.8);
-    backdrop-filter: blur(12px);
-  }
-  .nav .container { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding-top:1rem; padding-bottom:1rem; }
-  .logo { font-weight:800; font-size:1.15rem; letter-spacing:-0.02em; }
-  .nav-links { display:flex; align-items:center; gap:1.75rem; }
-  .nav-links a { color:var(--muted); font-size:0.9rem; transition:color .15s; }
-  .nav-links a:hover { color:var(--fg); }
-  .nav-links a.active { color:var(--fg); }
-  .nav-links a.active::after { content:''; display:block; height:2px; border-radius:2px; margin-top:2px;
-    background: linear-gradient(90deg, var(--violet), var(--cyan)); }
-
-  /* Hero */
-  .hero { position:relative; overflow:hidden; text-align:center; padding:6.5rem 1.5rem 4rem; }
-  .grid-bg {
-    position:absolute; inset:0; pointer-events:none; opacity:.45;
-    background-image:
-      linear-gradient(to right, hsl(240 6% 14% / .3) 1px, transparent 1px),
-      linear-gradient(to bottom, hsl(240 6% 14% / .3) 1px, transparent 1px);
-    background-size:24px 24px;
-    -webkit-mask-image:radial-gradient(#000 10%, transparent 65%);
-    mask-image:radial-gradient(#000 10%, transparent 65%);
-  }
-  .hero .content { position:relative; max-width:820px; margin:0 auto; }
-  .badge {
-    display:inline-flex; align-items:center; gap:0.5rem;
-    border:1px solid hsl(142 71% 45% / .4); background:hsl(142 71% 45% / .12);
-    color:var(--success); border-radius:999px; padding:0.32rem 0.95rem;
-    font-size:0.8rem; font-weight:500;
-  }
-  .badge .dot {
-    width:7px; height:7px; border-radius:50%; background:var(--success);
-    animation:pulse 2s cubic-bezier(.4,0,.6,1) infinite;
-  }
-  @keyframes pulse { 0%,100% {opacity:1} 50% {opacity:.35} }
-  .hero h1 {
-    margin-top:1.6rem; font-size:clamp(2.5rem, 6vw, 4.25rem);
-    font-weight:700; line-height:1.06; letter-spacing:-0.02em;
-    text-wrap:balance;
-  }
-  .hero .tagline { margin:1.4rem auto 0; max-width:640px; font-size:clamp(1.05rem, 2vw, 1.25rem); color:var(--muted); }
-  .cta-row { margin-top:2.4rem; display:flex; gap:0.9rem; justify-content:center; flex-wrap:wrap; }
-  .btn {
-    display:inline-block; padding:0.72rem 1.6rem; border-radius:10px;
-    font-size:0.95rem; font-weight:600; transition:filter .15s, transform .15s, border-color .15s;
-    cursor:pointer; border:1px solid transparent;
-  }
-  .btn:hover { filter:brightness(1.12); transform:translateY(-1px); }
-  .btn-primary {
-    background: linear-gradient(135deg, hsl(354 93% 60%), hsl(354 84% 50%) 60%, hsl(354 86% 40%));
-    color:#fff;
-  }
-  .btn-ghost { background:transparent; border-color:var(--border-strong); color:var(--fg); }
-  .btn-ghost:hover { border-color:var(--violet); }
-
-  /* Live counters */
-  .counters {
-    margin-top:3.75rem; display:flex; justify-content:center; gap:2rem 3.5rem; flex-wrap:wrap;
-  }
-  .counter { text-align:center; }
-  .counter .num {
-    font-family:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size:1.9rem; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-0.02em;
-    background: linear-gradient(135deg, hsl(256 90% 66%) 0%, #9475f0 50%, hsl(191 91% 60%) 100%);
-    -webkit-background-clip:text; background-clip:text; color:transparent;
-  }
-  .counter .lbl { margin-top:0.2rem; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); }
-
-  /* Cards / sections */
-  .features {
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
-    gap:1.25rem; max-width:1080px; margin:4.5rem auto; padding:0 1.5rem;
-  }
-  .card {
-    background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
-    padding:1.6rem; transition:border-color .2s, transform .2s;
-  }
-  .card:hover { border-color:var(--border-strong); transform:translateY(-2px); }
-  .card .icon { font-size:1.5rem; margin-bottom:0.85rem; }
-  .card h3 { font-size:1.08rem; font-weight:600; margin-bottom:0.5rem; }
-  .card p { font-size:0.9rem; color:var(--muted); }
-  .card code, p code {
-    font-family:'Geist Mono', ui-monospace, Menlo, Consolas, monospace;
-    font-size:0.85em; color:var(--cyan);
-  }
-
-  /* Page (about) */
-  .page { max-width:720px; margin:4.5rem auto; padding:0 1.5rem; }
-  .page h1 { font-size:2.6rem; font-weight:700; letter-spacing:-0.02em; margin-bottom:1.5rem; }
-  .page h2 { font-size:1.25rem; font-weight:600; margin:2.75rem 0 0.9rem; }
-  .page p { color:var(--muted); margin-bottom:1rem; }
-  .page strong { color:var(--fg); }
-  .module-grid { display:flex; flex-wrap:wrap; gap:0.5rem; margin:1rem 0; }
-  .module-tag {
-    background:var(--card); border:1px solid var(--border); border-radius:6px;
-    padding:0.35rem 0.8rem; font-family:'Geist Mono', ui-monospace, Menlo, Consolas, monospace;
-    font-size:0.82rem; color:var(--fg);
-  }
-  .codeblock {
-    background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
-    padding:1.1rem 1.3rem; font-family:'Geist Mono', ui-monospace, Menlo, Consolas, monospace;
-    font-size:0.85rem; color:var(--cyan); overflow-x:auto; margin:1.25rem 0;
-  }
-  .codeblock .prompt { color:var(--muted); }
-
-  /* 404 */
-  .nf { text-align:center; padding:8rem 1.5rem; }
-  .nf h1 { font-size:clamp(5rem, 16vw, 8rem); font-weight:800; letter-spacing:-0.03em; line-height:1; }
-  .nf p { color:var(--muted); font-size:1.15rem; margin-top:0.75rem; }
-  .nf a { color:var(--violet); }
-  .nf a:hover { text-decoration:underline; }
-
-  /* Footer */
-  footer { border-top:1px solid var(--border); padding:2rem 1.5rem; text-align:center; }
-  footer .fnav { display:flex; justify-content:center; gap:1.5rem; margin-bottom:1rem; }
-  footer .fnav a { color:var(--muted); font-size:0.85rem; }
-  footer .fnav a:hover { color:var(--fg); }
-  footer p { color:#484f58; font-size:0.78rem; }
-  footer code { font-family:'Geist Mono', ui-monospace, Menlo, Consolas, monospace; }
-
-  @media (max-width:600px) {
-    .nav .container { flex-wrap:wrap; justify-content:center; }
-    .hero { padding-top:4.5rem; }
-    .counters { gap:1.5rem 2.5rem; }
-  }
-`;
+}
 
 // ── Helpers ────────────────────────────────────────────
 
@@ -238,20 +82,17 @@ function layout(title, body, activePage) {
   ).join('\n          ');
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>${STYLE}</style>
+  <link rel="stylesheet" href="/theme/globals.css">
 </head>
 <body>
   <nav class="nav">
     <div class="container">
-      <a href="/" class="logo text-cool">${site.title}</a>
+      <a href="/" class="logo">${site.title}</a>
       <div class="nav-links">
         ${nav}
         <a href="${site.repo}" target="_blank" rel="noopener">GitHub</a>
@@ -422,10 +263,20 @@ const staticAssets = ['dashboard.html'];
 for (const file of staticAssets) {
   const src = path.join(PUBLIC, file);
   if (!fs.existsSync(src)) continue;
-  const html = fs.readFileSync(src);
+  const html = fs.readFileSync(src, 'utf-8');
   fs.writeFileSync(path.join(BUILD, file), html, 'utf-8');
   const size = (byteLen(html) / 1024).toFixed(1);
   console.log(`  ✓ ${file} (${size} KB)`);
+}
+
+// Copy the framework theme so the linked stylesheet resolves.
+const themeCss = frameworkTheme();
+if (themeCss && !themeCss.startsWith('/* elyxion-website theme not found')) {
+  fs.mkdirSync(path.join(BUILD, 'theme'), { recursive: true });
+  fs.writeFileSync(path.join(BUILD, 'theme', 'globals.css'), themeCss, 'utf-8');
+  console.log(`  ✓ theme/globals.css (${(byteLen(themeCss) / 1024).toFixed(1)} KB)`);
+} else {
+  console.log('  ! theme/globals.css not found — pages will be unstyled');
 }
 
 // Generate API

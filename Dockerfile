@@ -50,6 +50,7 @@ ENV ELYXION_HOME=/opt/elyxion
 WORKDIR /app
 COPY build.js server.js serve.js inline-server.js ./
 COPY public/ public/
+COPY theme/ theme/
 
 # Generate the static site into dist/ at build time (the server also
 # falls back to this if dist/ is missing at startup).

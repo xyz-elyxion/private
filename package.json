@@ -1,0 +1,10 @@
+{
+  "name": "private",
+  "version": "0.1.0",
+  "description": "Elyxion registry site, built with the elyxion-website framework.",
+  "main": "app.js",
+  "private": true,
+  "dependencies": {
+    "elyxion-website": "^0.1.0"
+  }
+}
