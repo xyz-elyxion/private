@@ -231,7 +231,7 @@ class Gateway extends EventEmitter {
       this._handshakeKey = key;
       socket.write(
         'GET ' + pathOf(this._effectiveUrl()) + ' HTTP/1.1\r\n' +
-        'Host: ' + hostname + ':' + port + '\r\n' +
+        'Host: ' + hostname + '\r\n' +
         'Upgrade: websocket\r\n' +
         'Connection: Upgrade\r\n' +
         'Sec-WebSocket-Key: ' + key + '\r\n' +
