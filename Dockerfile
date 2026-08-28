@@ -4,10 +4,10 @@
 FROM ubuntu:24.04
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-ARG ELYXION_VERSION=v1.2.2
+ARG ELYXION_VERSION=v1.3.2
 ENV ELYXION_VERSION=${ELYXION_VERSION}
 ENV ELYXION_INSTALL_DIR=/opt/elyxion
 ENV ELYXION_BIN_DIR=/usr/local/bin
