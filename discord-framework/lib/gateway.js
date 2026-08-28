@@ -66,6 +66,27 @@ function randomBytes(n) {
   return b;
 }
 
+// Base64-encode raw bytes. We do this by hand instead of calling
+// Buffer#toString('base64') because Elyxion's Buffer ignores the
+// encoding argument (returning the raw, often non-ASCII bytes), which
+// would produce an invalid Sec-WebSocket-Key that the gateway rejects
+// with a 400 before the handshake can start.
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function toBase64(bytes) {
+  let out = '';
+  const len = bytes ? bytes.length : 0;
+  for (let i = 0; i < len; i += 3) {
+    const a = bytes[i] & 0xff;
+    const b = i + 1 < len ? bytes[i + 1] & 0xff : 0;
+    const c = i + 2 < len ? bytes[i + 2] & 0xff : 0;
+    out += B64_CHARS[a >> 2];
+    out += B64_CHARS[((a & 0x03) << 4) | (b >> 4)];
+    out += i + 1 < len ? B64_CHARS[((b & 0x0f) << 2) | (c >> 6)] : '=';
+    out += i + 2 < len ? B64_CHARS[c & 0x3f] : '=';
+  }
+  return out;
+}
+
 // Big-endian 64-bit helpers (avoid BigInt for runtime compatibility).
 function writeUInt64(buf, value, offset) {
   for (let i = 7; i >= 0; i--) {
@@ -230,7 +251,7 @@ class Gateway extends EventEmitter {
 
     const socket = connectFn({ host: hostname, port: port, servername: hostname }, () => {
       // HTTP/1.1 Upgrade handshake
-      const key = randomBytes(16).toString('base64');
+      const key = toBase64(randomBytes(16));
       this._handshakeKey = key;
       const req = 'GET ' + pathOf(this._effectiveUrl()) + ' HTTP/1.1\r\n' +
         'Host: ' + hostname + '\r\n' +
