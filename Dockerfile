@@ -7,11 +7,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-ARG ELYXION_VERSION=v1.1.0
+ARG ELYXION_VERSION=v1.2.1
 ENV ELYXION_VERSION=${ELYXION_VERSION}
 ENV ELYXION_INSTALL_DIR=/opt/elyxion
 ENV ELYXION_BIN_DIR=/usr/local/bin
-RUN curl -fsSL https://raw.githubusercontent.com/xyz-elyxion/elyxion-cli/main/scripts/install.sh | bash \
+RUN curl -fsSL https://raw.githubusercontent.com/xyz-elyxion/elyxion-cli/main/scripts/install.sh | ELYXION_VERSION=${ELYXION_VERSION} bash \
+    && elyxion --version \
     && rm -f /opt/elyxion/install.log
 
 ENV ELYXION_HOME=/opt/elyxion
