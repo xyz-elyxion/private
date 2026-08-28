@@ -72,8 +72,11 @@ const COMMANDS_DIR = path.join(__dirname, 'commands');
 function normalizeCommand(mod, fallbackName) {
   const value = mod && mod.default ? mod.default : mod;
   const cmd = typeof value === 'function' ? { run: value } : Object.assign({}, value);
+  if (value && typeof value.run === 'function') cmd.run = value.run;
   if (!cmd.name) cmd.name = fallbackName;
   if (!cmd.run && typeof cmd.handler === 'function') cmd.run = cmd.handler;
+  // Some Elyxion builds expose function properties as non-enumerable.
+  if (!cmd.run && value && typeof value.run === 'function') cmd.run = value.run;
   if (!cmd.run) throw new Error('command "' + cmd.name + '" has no run()');
   return cmd;
 }
