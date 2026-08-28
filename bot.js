@@ -86,8 +86,10 @@ for (const file of fs.readdirSync(COMMANDS_DIR).sort()) {
   const base = path.basename(file, '.js');
   const mod = require(path.join(COMMANDS_DIR, file));
   const exported = mod && mod.default ? mod.default : mod;
+  const isCommandObject = exported && typeof exported.run === 'function';
   const list = Array.isArray(exported) ? exported
-    : typeof exported === 'object' && !exported.run && !exported.handler && !exported.options ? Object.values(exported)
+    : isCommandObject ? [exported]
+    : typeof exported === 'object' && !exported.handler && !exported.options ? Object.values(exported)
     : [exported];
   for (const entry of list) {
     const cmd = normalizeCommand(entry, base);
