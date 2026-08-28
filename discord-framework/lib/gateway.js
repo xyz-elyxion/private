@@ -219,25 +219,29 @@ class Gateway extends EventEmitter {
 
     this._closed = false;
     this._intentionalClose = false;
+    this.DEBUG = process.env.GATEWAY_DEBUG === '1';
 
     const { hostname, port, secure } = parseWsUrl(this._effectiveUrl());
     const tls = safeRequire('tls');
     const net = safeRequire('net');
     const connectFn = secure && tls && typeof tls.connect === 'function' ? tls.connect : net.connect;
+    if (this.DEBUG) console.log('[gateway] transport: ' + (connectFn === tls.connect ? 'tls' : 'net') +
+      ' secure=' + secure + ' host=' + hostname + ' port=' + port + ' path=' + pathOf(this._effectiveUrl()));
 
     const socket = connectFn({ host: hostname, port: port, servername: hostname }, () => {
       // HTTP/1.1 Upgrade handshake
       const key = randomBytes(16).toString('base64');
       this._handshakeKey = key;
-      socket.write(
-        'GET ' + pathOf(this._effectiveUrl()) + ' HTTP/1.1\r\n' +
+      const req = 'GET ' + pathOf(this._effectiveUrl()) + ' HTTP/1.1\r\n' +
         'Host: ' + hostname + '\r\n' +
         'Upgrade: websocket\r\n' +
         'Connection: Upgrade\r\n' +
         'Sec-WebSocket-Key: ' + key + '\r\n' +
         'Sec-WebSocket-Version: 13\r\n' +
-        '\r\n'
-      );
+        '\r\n';
+      this._debugRequest = req;
+      if (this.DEBUG) console.log('[gateway] sending await\n' + req);
+      socket.write(req);
     });
 
     socket.on('data', (chunk) => this._onData(chunk));
@@ -267,6 +271,8 @@ class Gateway extends EventEmitter {
       this._httpBuffer = this._httpBuffer.substring(idx + 4);
       this._handshakeDone = true;
       if (!/^HTTP\/1\.1 101/i.test(head)) {
+        console.log('[gateway] OUT request sent:\n' + JSON.stringify(this._debugRequest));
+        console.log('[gateway] IN response head:\n' + head);
         this.emit('error', new Error('Gateway handshake failed: ' + head.split('\r\n')[0]));
         this.close();
         return;
