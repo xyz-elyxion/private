@@ -65,4 +65,4 @@ VOLUME ["/app/data"]
 # `docker run elyxion` starts the site + registry server.
 # Override the args for other uses, e.g. `docker run --rm elyxion --repl`.
 ENTRYPOINT ["elyxion"]
-CMD ["/app/server.js"]
+CMD ["/app/start.js"]

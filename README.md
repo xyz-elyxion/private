@@ -19,8 +19,7 @@ elyx install elyxion-website   # or clone the framework repo next to this projec
 ### Run
 
 ```bash
-elyxion app.js        # the scaffolded framework app
-elyxion server.js     # the existing registry + static site server
+elyxion start.js       # starts the registry server and Discord bot together
 ```
 
 ## Discord bot
@@ -43,9 +42,11 @@ Never commit `.env` — it's git-ignored already.
 
 ### Run
 
+The bot is started by `start.js` together with the registry server. For an
+offline command check or smoke test:
+
 ```bash
-node bot.js --check    # offline self-test: loads framework + commands, no login
-node bot.js            # go live: REST verify, slash-command sync, gateway connect
+node bot.js --check    # loads framework + commands, no login
 npm test               # offline smoke tests of the command pipeline
 ```
 (under the Elyxion runtime the same files run as `elyxion bot.js`)
@@ -74,7 +75,8 @@ and roles only (`defaultAllowedMentions`), and shuts down cleanly on Ctrl+C.
 - `app.js` — website framework entry point
 - `public/` — website static assets (CSS, images, etc.)
 - `theme/` — the website framework's shadcn/ui theme (globals.css)
-- `bot.js` — Discord bot entry point (framework loading, autoloading, lifecycle)
+- `start.js` — combined registry server and Discord bot entry point
+- `bot.js` — Discord bot implementation (framework loading, autoloading, lifecycle)
 - `commands/` — one file per Discord command (autoloaded)
 - `test/smoke.js` — offline smoke tests (no network, no token needed)
 - `server.js` — the existing registry + static site server

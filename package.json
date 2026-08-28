@@ -1,17 +1,15 @@
 {
   "name": "private",
   "version": "0.1.0",
-  "description": "Elyxion registry site (elyxion-website) + Discord bot (elyxion-discord).",
-  "main": "app.js",
+  "description": "Elyxion registry site and Discord bot runtime.",
+  "main": "start.js",
   "private": true,
   "scripts": {
-    "start": "elyxion server.js",
-    "bot": "elyxion bot.js",
+    "start": "elyxion start.js",
     "bot:check": "elyxion bot.js --check",
     "test": "node test/smoke.js"
   },
   "dependencies": {
-    "elyxion-website": "^0.1.0",
-    "elyxion-discord": "^0.3.0"
+    "elyxion-website": "^0.1.0"
   }
 }
