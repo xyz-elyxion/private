@@ -34,7 +34,7 @@ try {
     console.error('[bot] Cannot find the discord-framework.');
     console.error('       Install it:  elyx install elyxion-discord');
     console.error('       The Docker image must include the discord-framework/ directory.');
-    process.exit(1);
+    throw err;
   }
 }
 
