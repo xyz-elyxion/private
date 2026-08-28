@@ -85,16 +85,12 @@ for (const file of fs.readdirSync(COMMANDS_DIR).sort()) {
   if (!file.endsWith('.js')) continue;
   const base = path.basename(file, '.js');
   const mod = require(path.join(COMMANDS_DIR, file));
+  // Each command file is one module. The runtime can expose its object
+  // export without enumerable properties, so do not split it with
+  // Object.values(); normalizeCommand reads run directly.
   const exported = mod && mod.default ? mod.default : mod;
-  const isCommandObject = exported && typeof exported.run === 'function';
-  const list = Array.isArray(exported) ? exported
-    : isCommandObject ? [exported]
-    : typeof exported === 'object' && !exported.handler && !exported.options ? Object.values(exported)
-    : [exported];
-  for (const entry of list) {
-    const cmd = normalizeCommand(entry, base);
-    bot.command(cmd.name, cmd.run, Object.assign({ description: '(no description)' }, cmd.options));
-  }
+  const cmd = normalizeCommand(exported, base);
+  bot.command(cmd.name, cmd.run, Object.assign({ description: '(no description)' }, cmd.options));
 }
 
 // ---- Lifecycle -------------------------------------------------------
