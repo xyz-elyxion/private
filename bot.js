@@ -21,7 +21,7 @@ try {
   FRAMEWORK_PATH = require.resolve('elyxion-discord');
 } catch (_) {
   try {
-    FRAMEWORK_PATH = require.resolve(path.join(__dirname, '..', 'discord-framework', 'index.js'));
+    FRAMEWORK_PATH = require.resolve(path.join(__dirname, 'discord-framework', 'index.js'));
     // Teach every later require('elyxion-discord') — including command
     // files — where the fallback lives.
     const Module = require('module');
@@ -33,7 +33,7 @@ try {
   } catch (err) {
     console.error('[bot] Cannot find the discord-framework.');
     console.error('       Install it:  elyx install elyxion-discord');
-    console.error('       Or keep the discord-framework repo next to this project.');
+    console.error('       The Docker image must include the discord-framework/ directory.');
     process.exit(1);
   }
 }
