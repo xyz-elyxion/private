@@ -35,6 +35,10 @@ COPY discord-framework/ discord-framework/
 
 RUN elyxion /app/build.js
 
+# Fail during the image build with a useful message if the combined entry
+# point or vendored framework was not included in the Render context.
+RUN test -f /app/start.js && test -f /app/discord-framework/index.js && test -d /app/discord-framework/lib
+
 EXPOSE 3000
 VOLUME ["/app/data"]
 
