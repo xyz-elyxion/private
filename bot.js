@@ -71,14 +71,18 @@ const COMMANDS_DIR = path.join(__dirname, 'commands');
 
 function normalizeCommand(mod, fallbackName) {
   const value = mod && mod.default ? mod.default : mod;
-  const cmd = typeof value === 'function' ? { run: value } : Object.assign({}, value);
-  if (value && typeof value.run === 'function') cmd.run = value.run;
-  if (!cmd.name) cmd.name = fallbackName;
-  if (!cmd.run && typeof cmd.handler === 'function') cmd.run = cmd.handler;
-  // Some Elyxion builds expose function properties as non-enumerable.
-  if (!cmd.run && value && typeof value.run === 'function') cmd.run = value.run;
-  if (!cmd.run) throw new Error('command "' + cmd.name + '" has no run()');
-  return cmd;
+  const run = typeof value === 'function'
+    ? value
+    : value && (value.run || value.handler || value.execute);
+  const options = value && value.options ? value.options : {};
+  if (typeof run !== 'function') {
+    throw new Error('command "' + fallbackName + '" has no run()');
+  }
+  return {
+    name: (value && value.name) || fallbackName,
+    run,
+    options
+  };
 }
 
 for (const file of fs.readdirSync(COMMANDS_DIR).sort()) {
