@@ -4,6 +4,8 @@
 // one process instead of being managed as independent applications.
 require('./server');
 
+console.log('[private] startup entry loaded');
+
 let botModule;
 try {
   botModule = require('./bot');

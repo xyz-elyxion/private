@@ -70,8 +70,10 @@ const bot = createBot({
 const COMMANDS_DIR = path.join(__dirname, 'commands');
 
 function normalizeCommand(mod, fallbackName) {
-  const cmd = typeof mod === 'function' ? { run: mod } : Object.assign({}, mod);
+  const value = mod && mod.default ? mod.default : mod;
+  const cmd = typeof value === 'function' ? { run: value } : Object.assign({}, value);
   if (!cmd.name) cmd.name = fallbackName;
+  if (!cmd.run && typeof cmd.handler === 'function') cmd.run = cmd.handler;
   if (!cmd.run) throw new Error('command "' + cmd.name + '" has no run()');
   return cmd;
 }
@@ -80,9 +82,10 @@ for (const file of fs.readdirSync(COMMANDS_DIR).sort()) {
   if (!file.endsWith('.js')) continue;
   const base = path.basename(file, '.js');
   const mod = require(path.join(COMMANDS_DIR, file));
-  const list = Array.isArray(mod) ? mod
-    : typeof mod === 'object' && !mod.run && !mod.options ? Object.values(mod)
-    : [mod];
+  const exported = mod && mod.default ? mod.default : mod;
+  const list = Array.isArray(exported) ? exported
+    : typeof exported === 'object' && !exported.run && !exported.handler && !exported.options ? Object.values(exported)
+    : [exported];
   for (const entry of list) {
     const cmd = normalizeCommand(entry, base);
     bot.command(cmd.name, cmd.run, Object.assign({ description: '(no description)' }, cmd.options));
