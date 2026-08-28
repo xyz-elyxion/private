@@ -9,6 +9,7 @@ elyx_modules/
 
 # Secrets — never commit tokens
 hf-token
+.env
 
 # Logs
 *.log
