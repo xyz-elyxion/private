@@ -225,7 +225,7 @@ class Gateway extends EventEmitter {
     const net = safeRequire('net');
     const connectFn = secure && tls && typeof tls.connect === 'function' ? tls.connect : net.connect;
 
-    const socket = connectFn({ host: hostname, port: port }, () => {
+    const socket = connectFn({ host: hostname, port: port, servername: hostname }, () => {
       // HTTP/1.1 Upgrade handshake
       const key = randomBytes(16).toString('base64');
       this._handshakeKey = key;
@@ -260,7 +260,7 @@ class Gateway extends EventEmitter {
   _onData(chunk) {
     // First, complete the HTTP 101 handshake.
     if (!this._handshakeDone) {
-      this._httpBuffer += chunk;
+      this._httpBuffer += chunk && typeof chunk.toString === 'function' ? chunk.toString('utf8') : String(chunk);
       const idx = this._httpBuffer.indexOf('\r\n\r\n');
       if (idx === -1) return;
       const head = this._httpBuffer.substring(0, idx);
