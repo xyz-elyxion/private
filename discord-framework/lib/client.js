@@ -159,24 +159,29 @@ class Bot extends EventEmitter {
   // ---- Event dispatch -------------------------------------------
 
   _handleGatewayEvent(payload) {
-    if (payload.op !== 0) return;
-    const type = payload.t;
-    const data = payload.d;
+    try {
+      if (payload.op !== 0) return;
+      const type = payload.t;
+      const data = payload.d;
 
-    // Raw dispatch first: MESSAGE_CREATE, GUILD_CREATE, and friends.
-    this.emit(type, data);
+      // Raw dispatch first: MESSAGE_CREATE, GUILD_CREATE, and friends.
+      this.emit(type, data);
 
-    // Voice signaling hooks before the cache runs.
-    if (type === 'VOICE_SERVER_UPDATE') this.voice.handleVoiceServerUpdate(data);
-    if (type === 'VOICE_STATE_UPDATE') this.voice.handleVoiceStateUpdate(data);
+      // Voice signaling hooks before the cache runs.
+      if (type === 'VOICE_SERVER_UPDATE') this.voice.handleVoiceServerUpdate(data);
+      if (type === 'VOICE_STATE_UPDATE') this.voice.handleVoiceStateUpdate(data);
 
-    // Derived events (message, reactionAdd, guildMemberAdd, ...) read
-    // pre-update cache state for old/new pairs, then we feed the cache.
-    try { this.enricher.handle(type, data); } catch (_) {}
-    this.cache.handle(type, data);
+      // Derived events (message, reactionAdd, guildMemberAdd, ...) read
+      // pre-update cache state for old/new pairs, then we feed the cache.
+      try { this.enricher.handle(type, data); } catch (_) {}
+      this.cache.handle(type, data);
 
-    if (type === 'MESSAGE_CREATE') this._handleMessage(data);
-    if (type === 'INTERACTION_CREATE') this.interactions.handle(data, this);
+      if (type === 'MESSAGE_CREATE') this._handleMessage(data);
+      if (type === 'INTERACTION_CREATE') this.interactions.handle(data, this);
+    } catch (err) {
+      console.log('[client] _handleGatewayEvent threw for ' + (payload && payload.t) + ':', err && (err.stack || err.message) || err);
+      throw err;
+    }
   }
 
   // Await an API call and resolve with res.data, throwing a tidy

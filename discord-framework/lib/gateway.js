@@ -265,8 +265,11 @@ class Gateway extends EventEmitter {
       socket.write(req);
     });
 
-    socket.on('data', (chunk) => this._onData(chunk));
-    socket.on('error', (err) => this.emit('error', err));
+    socket.on('data', (chunk) => {
+      try { this._onData(chunk); }
+      catch (e) { console.log('[gateway] _onData threw:', e && (e.stack || e.message) || e); throw e; }
+    });
+    socket.on('error', (err) => { console.log('[gateway] socket error:', err && (err.message || err) || err); this.emit('error', err); });
     socket.on('close', () => this._onSocketClose());
 
     this._socket = socket;
