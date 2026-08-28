@@ -16,29 +16,30 @@ const fs = require('fs');
 // ---- Load the framework -------------------------------------------
 // Prefer the installed elyxion-discord package (elyx_modules / node_modules);
 // fall back to a sibling checkout of discord-framework for monorepo dev.
-let FRAMEWORK_PATH = null;
+let FRAMEWORK_PATH = path.join(__dirname, 'discord-framework', 'index.js');
 try {
-  FRAMEWORK_PATH = require.resolve('elyxion-discord');
+  fs.statSync(FRAMEWORK_PATH);
 } catch (_) {
   try {
-    FRAMEWORK_PATH = require.resolve(path.join(__dirname, 'discord-framework', 'index.js'));
-    // Teach every later require('elyxion-discord') — including command
-    // files — where the fallback lives.
-    const Module = require('module');
-    const originalResolve = Module._resolveFilename;
-    Module._resolveFilename = function (request) {
-      if (request === 'elyxion-discord') return FRAMEWORK_PATH;
-      return originalResolve.apply(this, arguments);
-    };
+    FRAMEWORK_PATH = require('elyxion-discord');
   } catch (err) {
     console.error('[bot] Cannot find the discord-framework.');
-    console.error('       Install it:  elyx install elyxion-discord');
-    console.error('       The Docker image must include the discord-framework/ directory.');
+    console.error('       Expected: ' + path.join(__dirname, 'discord-framework'));
     throw err;
   }
 }
 
 const fw = require(FRAMEWORK_PATH);
+// Command files use require('elyxion-discord'), so map that package name to
+// the vendored framework in runtimes that do not support package resolution.
+try {
+  const Module = require('module');
+  const originalResolve = Module._resolveFilename;
+  Module._resolveFilename = function (request) {
+    if (request === 'elyxion-discord') return FRAMEWORK_PATH;
+    return originalResolve.apply(this, arguments);
+  };
+} catch (_) {}
 const { loadEnv, createBot } = fw;
 loadEnv(path.join(__dirname, '.env'));
 
