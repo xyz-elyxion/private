@@ -48,13 +48,8 @@ const TOKEN = process.env.DISCORD_TOKEN || '';
 const PREFIX = process.env.PREFIX || '!';
 
 if (!TOKEN && !CHECK_ONLY) {
-  console.error('[bot] No Discord token found.');
-  console.error('');
-  console.error('  1. Create an application + bot at https://discord.com/developers/applications');
-  console.error('  2. Copy .env.example to .env');
-  console.error('  3. Put the token in it:  DISCORD_TOKEN=your-token');
-  console.error('');
-  process.exit(1);
+  console.error('[bot] No Discord token found; bot disabled.');
+  console.error('       Set DISCORD_TOKEN in Render environment variables to enable it.');
 }
 if (!CHECK_ONLY) {
   console.log('[bot] framework v' + fw.version + ', prefix "' + PREFIX + '"');
@@ -118,6 +113,8 @@ let started = false;
 async function start() {
   if (started) return;
   started = true;
+
+  if (!TOKEN) return;
 
   await bot.login();          // verifies the token via REST, syncs slash commands
   console.log('  ⚡ Logged in as ' + bot.user.username +
