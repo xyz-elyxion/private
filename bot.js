@@ -85,16 +85,53 @@ function normalizeCommand(mod, fallbackName) {
   };
 }
 
+// The Elyxion runtime's module loader can silently return an empty module
+// when a command file does require('elyxion-discord'), which shows up as
+// "command X has no run()" on Render. Bypass it: evaluate each command file
+// through a small wrapper and hand it a require() that injects the framework
+// directly. Falls back to plain require() where new Function is unavailable.
+const CAN_EVAL = (function () {
+  try { new Function('return 1'); return true; } catch (_) { return false; }
+})();
+
+function scopedRequire(request) {
+  if (request === 'elyxion-discord') return fw;
+  if (request === '.' || request === './' || request.indexOf('./') === 0 || request.indexOf('../') === 0) {
+    return require(path.resolve(COMMANDS_DIR, request));
+  }
+  return require(request);
+}
+
+function requireCommand(file) {
+  const source = fs.readFileSync(file, 'utf8');
+  const module = { exports: {} };
+  const fn = new Function('module', 'exports', 'require', '__filename', '__dirname', source);
+  fn(module, module.exports, scopedRequire, file, COMMANDS_DIR);
+  return module.exports;
+}
+
 for (const file of fs.readdirSync(COMMANDS_DIR).sort()) {
   if (!file.endsWith('.js')) continue;
   const base = path.basename(file, '.js');
-  const mod = require(path.join(COMMANDS_DIR, file));
-  // Each command file is one module. The runtime can expose its object
-  // export without enumerable properties, so do not split it with
-  // Object.values(); normalizeCommand reads run directly.
-  const exported = mod && mod.default ? mod.default : mod;
-  const cmd = normalizeCommand(exported, base);
-  bot.command(cmd.name, cmd.run, Object.assign({ description: '(no description)' }, cmd.options));
+  const full = path.join(COMMANDS_DIR, file);
+
+  let mod;
+  try {
+    mod = CAN_EVAL ? requireCommand(full) : require(full);
+  } catch (err) {
+    console.warn('[bot] command "' + base + '" could not load: ' + err.message);
+    continue;
+  }
+
+  try {
+    const exported = mod && mod.default ? mod.default : mod;
+    const cmd = normalizeCommand(exported, base);
+    bot.command(cmd.name, cmd.run, Object.assign({ description: '(no description)' }, cmd.options));
+    console.log('[bot] loaded command: ' + cmd.name);
+  } catch (err) {
+    // One broken command must never take down the whole bot/service.
+    console.warn('[bot] skipping command "' + base + '": ' + err.message);
+  }
 }
 
 // ---- Lifecycle -------------------------------------------------------
