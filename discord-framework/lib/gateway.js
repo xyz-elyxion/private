@@ -387,13 +387,16 @@ class Gateway extends EventEmitter {
     let payload;
     try {
       payload = JSON.parse(text);
-    } catch (_) {
+    } catch (parseErr) {
       // A dispatch we can't parse usually means the frame stream has
       // desynced (e.g. a truncated frame). Continuing would leave the
       // gateway silently deaf — every later frame would fail the same way.
       // Tear down and reconnect (with resume, which re-requests guilds)
       // so the bot resyncs instead of going quiet.
-      const err = new Error('Gateway sent invalid JSON (resyncing): ' + text.slice(0, 120));
+      console.log('[gw] invalid JSON: ' + (parseErr && parseErr.message) + ' | payloadLen=' + text.length);
+      console.log('[gw] head: ' + text.slice(0, 120));
+      console.log('[gw] tail: ' + text.slice(-120));
+      const err = new Error('Gateway sent invalid JSON (resyncing): ' + (parseErr && parseErr.message));
       this.emit('error', err);
       console.log('[gw] frame stream desynced — reconnecting to resync');
       this._teardown();
