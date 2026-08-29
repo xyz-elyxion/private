@@ -442,16 +442,22 @@ class Gateway extends EventEmitter {
 
   identify() {
     console.log('[gw] sending IDENTIFY');
-    this._send(2, {
+    const identify = {
       token: this.token,
       intents: intentBits(this.intents),
       properties: {
         os: 'elyxion',
         browser: 'elyxion-discord',
         device: 'elyxion-discord'
-      },
-      shard: this.shard
-    });
+      }
+    };
+    // Only include `shard` when it is a real [shard_id, num_shards] pair.
+    // Sending `shard: null` (the default when no sharding is configured)
+    // makes Discord reject the IDENTIFY with close code 4010 (Invalid shard).
+    if (Array.isArray(this.shard) && this.shard.length === 2) {
+      identify.shard = [Number(this.shard[0]), Number(this.shard[1])];
+    }
+    this._send(2, identify);
   }
 
   // Resume an existing session (op 6) after a reconnect.
