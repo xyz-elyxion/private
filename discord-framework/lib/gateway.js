@@ -360,6 +360,19 @@ class Gateway extends EventEmitter {
 
   _onFrame(frame) {
     if (frame.opcode === 0x8) { // close
+      // Discord sends a close frame (with a status code like 4004/4006/4010)
+      // when it is rejecting the connection. Surface the reason instead of
+      // swallowing it so connection failures are visible in logs.
+      let closeInfo = '';
+      try {
+        const p = frame.payload;
+        if (p && p.length >= 2) {
+          const code = (p[0] << 8) | p[1];
+          const reason = p.length > 2 ? p.slice(2).toString('utf8') : '';
+          closeInfo = ' code=' + code + (reason ? ' reason=' + JSON.stringify(reason) : '');
+        }
+      } catch (_) {}
+      console.log('[gw] Discord closed the gateway connection' + closeInfo);
       this.close();
       return;
     }
@@ -524,6 +537,9 @@ class Gateway extends EventEmitter {
     this._resumeRequested = resume;
     if (this._reconnectTimer) return;
     this._reconnectAttempts++;
+    if (this._reconnectAttempts <= 3) {
+      console.log('[gw] reconnecting (attempt ' + this._reconnectAttempts + ', resume=' + !!resume + ')');
+    }
     if (this.maxReconnects > 0 && this._reconnectAttempts > this.maxReconnects) {
       this._closed = true;
       this.emit('close');
@@ -568,6 +584,7 @@ class Gateway extends EventEmitter {
   _onSocketClose() {
     this._socket = null;
     if (this._intentionalClose || this._closed) return;
+    console.log('[gw] TCP socket closed unexpectedly; will reconnect');
     this.emit('close');
     this._emitReconnect(true);
   }
