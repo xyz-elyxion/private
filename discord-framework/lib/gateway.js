@@ -286,13 +286,22 @@ class Gateway extends EventEmitter {
   }
 
   _onData(chunk) {
+    // Keep the HTTP head detection byte-safe. The head is pure ASCII, so
+    // treating the stream as latin1 (byte-preserving) leaves the head
+    // intact while never corrupting any WebSocket frame bytes that trail
+    // the 101 response inside the same TCP segment.
+    const str = chunk && typeof chunk.toString === 'function'
+      ? chunk.toString('latin1')
+      : String(chunk);
+
     // First, complete the HTTP 101 handshake.
     if (!this._handshakeDone) {
-      this._httpBuffer += chunk && typeof chunk.toString === 'function' ? chunk.toString('utf8') : String(chunk);
+      this._httpBuffer += str;
       const idx = this._httpBuffer.indexOf('\r\n\r\n');
       if (idx === -1) return;
       const head = this._httpBuffer.substring(0, idx);
-      this._httpBuffer = this._httpBuffer.substring(idx + 4);
+      const leftover = this._httpBuffer.substring(idx + 4);
+      this._httpBuffer = '';
       this._handshakeDone = true;
       if (!/^HTTP\/1\.1 101/i.test(head)) {
         console.log('[gateway] OUT request sent:\n' + JSON.stringify(this._debugRequest));
@@ -301,10 +310,12 @@ class Gateway extends EventEmitter {
         this.close();
         return;
       }
+      console.log('[gw] connected (101)');
       this._setupInflate();
-      // Any bytes after the handshake are already WebSocket frames.
-      if (this._httpBuffer) this._feedRaw(this._httpBuffer);
-      this._httpBuffer = '';
+      // Any bytes after the handshake are already WebSocket frames. They
+      // must be fed to the frame parser as bytes (a Buffer), never as a
+      // UTF-8-decoded string, or binary frames will stall the parser.
+      if (leftover) this._feedRaw(Buffer.from(leftover, 'latin1'));
       return;
     }
     this._feedRaw(chunk);
@@ -368,6 +379,7 @@ class Gateway extends EventEmitter {
       return;
     }
 
+    console.log('[gw] frame op=' + payload.op + (payload.t ? ' t=' + payload.t : '') + ' raw=' + JSON.stringify(text.slice(0, 60)));
     if (payload.s !== undefined && payload.s !== null) this._sequence = payload.s;
     this.emit('message', payload);
 
@@ -416,6 +428,7 @@ class Gateway extends EventEmitter {
   }
 
   identify() {
+    console.log('[gw] sending IDENTIFY');
     this._send(2, {
       token: this.token,
       intents: intentBits(this.intents),
