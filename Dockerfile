@@ -1,33 +1,38 @@
-# Elyxion runtime + site/registry server image
-# Build context: the private repository root.
+# Elyxion — multi-stage image.
+#
+# Build stage: install everything (incl. dev deps) and produce the client
+# bundle in dist/. Runtime stage: a lean image with only production deps
+# (tsx survives the prune because the server runs `tsx server/index.ts`),
+# the built client, the server, and the THREE-free shared game modules.
 
-FROM ubuntu:24.04
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates libssl3 \
-    && rm -rf /var/lib/apt/lists/*
-
-ARG ELYXION_VERSION=v1.3.3
-ENV ELYXION_VERSION=${ELYXION_VERSION}
-ENV ELYXION_INSTALL_DIR=/opt/elyxion
-ENV ELYXION_BIN_DIR=/usr/local/bin
-RUN curl -fsSL https://raw.githubusercontent.com/xyz-elyxion/elyxion-cli/main/scripts/install.sh | ELYXION_VERSION=${ELYXION_VERSION} bash \
-    && elyxion --version \
-    && rm -f /opt/elyxion/install.log
-
-ENV ELYXION_HOME=/opt/elyxion
+# --- build: compile the client bundle ---------------------------------------
+FROM node:20.19-bookworm-slim AS build
 WORKDIR /app
+# Install deps first so this layer caches across source-only changes.
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-COPY build.js server.js serve.js inline-server.js start.js bot.js ./
-COPY public/ public/
-COPY theme/ theme/
-COPY commands/ commands/
-COPY discord-framework/ discord-framework/
-
-RUN elyxion /app/build.js
-RUN test -f /app/start.js && test -f /app/discord-framework/index.js && test -d /app/discord-framework/lib
-
-EXPOSE 3000
-VOLUME ["/app/data"]
-ENTRYPOINT ["elyxion"]
-CMD ["/app/start.js"]
+# --- runtime: serve dist/ + the game/stats server ---------------------------
+FROM node:20.19-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=8787
+# Production deps only. better-sqlite3 pulls a prebuilt linux/Node 20 binary
+# (prebuild-install), so no C/C++ toolchain is needed here.
+COPY package*.json ./
+RUN npm ci --omit=dev
+# Built client, the server, and the shared game modules the server imports at
+# runtime (src/game/{constants,arena-data,types}.ts). tsconfig* lets tsx resolve
+# the project's module settings.
+COPY --from=build /app/dist ./dist
+COPY server ./server
+COPY src/game ./src/game
+COPY tsconfig*.json ./
+EXPOSE 8787
+# The SQLite stats DB lives at /app/data — mount a persistent volume there so it
+# survives container churn. On Railway, attach a Railway Volume at /app/data
+# (the platform rejects a Dockerfile `VOLUME`); for plain Docker, bind-mount it:
+# `docker run -v "$PWD/data:/app/data" …`.
+CMD ["npm", "start"]

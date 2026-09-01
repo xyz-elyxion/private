@@ -1,15 +1,60 @@
 {
-  "name": "private",
-  "version": "0.1.0",
-  "description": "Elyxion registry site and Discord bot runtime.",
-  "main": "start.js",
+  "name": "elyxion",
+  "version": "1.0.0",
   "private": true,
+  "type": "module",
+  "description": "Elyxion — browser-based, server-authoritative Quake-style instagib FPS. Three.js client + Node WebSocket game server.",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
-    "start": "elyxion start.js",
-    "bot:check": "elyxion bot.js --check",
-    "test": "node test/smoke.js"
+    "predev": "node scripts/ensure-native.mjs",
+    "dev": "concurrently -k -n web,server -c cyan,magenta \"vite\" \"tsx watch server/index.ts\"",
+    "predev:lan": "node scripts/ensure-native.mjs && node scripts/lan-url.mjs",
+    "dev:lan": "concurrently -k -n web,server -c cyan,magenta \"vite --host\" \"tsx watch server/index.ts\"",
+    "predev:server": "node scripts/ensure-native.mjs",
+    "dev:web": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "lan": "node scripts/lan-url.mjs",
+    "netcode:load": "tsx scripts/netcode-load.ts",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "serve": "npm run build && npm run start",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
-    "elyxion-website": "^0.1.0"
+    "better-sqlite3": "12.8.0",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-router-dom": "^7.9.1",
+    "three": "0.184.0",
+    "tsx": "^4.20.5",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@tailwindcss/vite": "4.2.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cookie-parser": "^1.4.8",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.2.10",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "0.184.1",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.17.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-refresh": "^0.4.16",
+    "globals": "^15.14.0",
+    "tailwindcss": "4.2.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.18.1",
+    "vite": "^6.0.7"
   }
 }
