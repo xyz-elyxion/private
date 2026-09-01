@@ -1,7 +1,7 @@
 # Elyxion — Progression System Design
 
 A concrete, implementable design for an account-less progression system that fits
-the existing backend (anonymous `igpid` cookie, single `instagib_stats` SQLite
+the existing backend (anonymous `igpid` cookie, single `elyxion_stats` SQLite
 table, server-clamped match deltas). **Cosmetic-only — never pay/grind-to-win.**
 
 > Status: **shipped.** This began as the design proposal and now describes the
@@ -48,10 +48,10 @@ system** (`server/db.ts:22–39`). SQLite supports `ALTER TABLE ADD COLUMN` but 
 // server/db.ts — run once at startup, after the CREATE TABLE.
 function ensureColumns(db: Database) {
   const cols = new Set(
-    db.prepare(`PRAGMA table_info(instagib_stats)`).all().map((r: any) => r.name),
+    db.prepare(`PRAGMA table_info(elyxion_stats)`).all().map((r: any) => r.name),
   );
   const add = (name: string, ddl: string) => {
-    if (!cols.has(name)) db.exec(`ALTER TABLE instagib_stats ADD COLUMN ${ddl}`);
+    if (!cols.has(name)) db.exec(`ALTER TABLE elyxion_stats ADD COLUMN ${ddl}`);
   };
   add('total_xp',  'total_xp INTEGER NOT NULL DEFAULT 0');
   add('level',     'level INTEGER NOT NULL DEFAULT 1');
@@ -66,7 +66,7 @@ Challenges need their own table (per the "new tables need raw `CREATE TABLE`"
 convention):
 
 ```sql
-CREATE TABLE IF NOT EXISTS instagib_challenges (
+CREATE TABLE IF NOT EXISTS elyxion_challenges (
   player_id  TEXT NOT NULL,
   challenge  TEXT NOT NULL,          -- e.g. 'daily:headshots'
   period     TEXT NOT NULL,          -- 'YYYYMMDD' (daily) or 'YYYY-Wnn' (weekly)
@@ -149,11 +149,11 @@ systems wherever possible:
 | Slot | What it changes | Reuses |
 |------|------------------|--------|
 | `railColor` | rail beam core/helix color | `RAIL_CORE_COLOR` / `RAIL_HELIX_COLOR` (`constants.ts`), `buildRailBeam` (`weapon.ts`) |
-| `crosshair` | crosshair preset/skin | existing crosshair presets + `CrosshairConfig` (`InstagibClient.tsx`) |
+| `crosshair` | crosshair preset/skin | existing crosshair presets + `CrosshairConfig` (`ElyxionClient.tsx`) |
 | `viewmodelSkin` | railgun body tint/material | `buildRailgun` colors (`weapon-model.ts`) |
 | `playerTint` | your soldier's accent color | bot/remote material highlight (`applyHighlight`, `bots.ts`) |
-| `nameColor` | your name in killfeed/scoreboard | killfeed/scoreboard render (`InstagibClient.tsx`) |
-| `killConfirm` | style of the "Gibbed" text / kill flash hue | `KillConfirmOverlay`, `KillFlashLayer` (`InstagibClient.tsx`) |
+| `nameColor` | your name in killfeed/scoreboard | killfeed/scoreboard render (`ElyxionClient.tsx`) |
+| `killConfirm` | style of the "Gibbed" text / kill flash hue | `KillConfirmOverlay`, `KillFlashLayer` (`ElyxionClient.tsx`) |
 | `announcer` | multi-kill voice pack | `MEDAL_VOICE` / audio (`audio.ts`, `medals.ts`) |
 
 Manifest shape (static, in code — e.g. `src/game/cosmetics.ts`, shared with
@@ -174,7 +174,7 @@ export type Cosmetic = {
 Equipping: client sends `POST /api/equip { slot, id }`; server verifies the id is
 in the player's `unlocked` set and writes `equipped`. Other players receive a
 player's equipped cosmetics in the match snapshot so beams/tints render for
-everyone (extend the `state`/`joined` payloads in `server/instagib-game.ts`).
+everyone (extend the `state`/`joined` payloads in `server/elyxion-game.ts`).
 
 ---
 
@@ -215,7 +215,7 @@ Keep all writes rate-limited and idempotent where possible.
 - **End-of-match:** the results screen (already shown post-match) gains an XP bar
   that fills + a "LEVEL UP" / "UNLOCKED: X" flourish using the existing toast/
   banner system (`awardMedal`/`BannerOverlay` patterns in `game.ts` /
-  `InstagibClient.tsx`). Drive it off the new `POST /api/stats` response fields.
+  `ElyxionClient.tsx`). Drive it off the new `POST /api/stats` response fields.
 - **Command deck:** a **Profile** panel (level ring + XP bar + career stats) and a
   **Locker** (equip cosmetics) + **Shop** (spend credits) + **Challenges** tabs.
   These are pure React over the new endpoints — no engine changes.
@@ -254,7 +254,7 @@ Keep all writes rate-limited and idempotent where possible.
 **P2 — Earn loops:**
 6. Credits + Locker/Shop; expand catalog (crosshair, nameColor, killConfirm,
    announcer).
-7. `instagib_challenges` table + daily/weekly + claim flow.
+7. `elyxion_challenges` table + daily/weekly + claim flow.
 8. First-win-of-day bonus.
 
 **P3+:** competitive rank, seasons — see [`ROADMAP.md`](./ROADMAP.md).

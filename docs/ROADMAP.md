@@ -42,7 +42,7 @@ than calendar. Checkboxes track intent, not commitment.
 The spine everything else hangs off. Spec in
 [`docs/progression.md`](./progression.md).
 
-- [x] `instagib_stats` extended with `total_xp`, `level`, `credits`, `unlocked`,
+- [x] `elyxion_stats` extended with `total_xp`, `level`, `credits`, `unlocked`,
       `equipped` via additive `ALTER TABLE` guards (no migration framework).
 - [x] Server-side XP formula from the clamped match delta + XP curve
       (`floor(100·n^1.5)`); `POST /api/stats` returns `xpGained`, `level`,
@@ -70,7 +70,7 @@ The spine everything else hangs off. Spec in
 
 ## Phase 3 — Competitive layer
 
-- [x] **Leaderboard time windows** — All-time / Weekly / Daily (`instagib_period_stats`),
+- [x] **Leaderboard time windows** — All-time / Weekly / Daily (`elyxion_period_stats`),
       sortable by kills / wins / accuracy, with your own rank pinned and an
       accuracy min-games floor.
 - [ ] Hidden MMR per mode (Glicko-2/Elo) updated from match results.

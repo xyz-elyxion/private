@@ -96,7 +96,7 @@ packages/instagib-shared/                   # workspace pkg (new)
     constants.ts                            # tickrate, speeds, etc.
     map.ts                                  # map loading + collision baking
 
-services/instagib-game-server/              # new top-level service
+services/elyxion-game-server/              # new top-level service
   src/
     index.ts                                # orchestrator (spawns children)
     match.ts                                # single-match worker entrypoint
@@ -201,7 +201,7 @@ Each phase ends with something playable, even if ugly.
 - **Goal:** movement feels good in single-player. If it doesn't feel good here, nothing else matters.
 
 ### Phase 2 — Networking spike (1–2 weeks)
-- Stand up `services/instagib-game-server` minimal: one process, fixed port, WS endpoint, no orchestrator yet.
+- Stand up `services/elyxion-game-server` minimal: one process, fixed port, WS endpoint, no orchestrator yet.
 - Two browsers connect to same room, see each other as capsules.
 - No prediction, no lag comp — just naïve "render where the server says they are" to validate the wire format.
 
@@ -247,4 +247,4 @@ Each phase ends with something playable, even if ugly.
 - Workspace tooling: this repo isn't currently a monorepo. Do we add pnpm/turbo, or just symlink a `packages/` directory consumed via tsconfig paths? **Recommendation:** start with tsconfig path aliases to keep tooling change small; promote to a real workspace when a second consumer of `instagib-shared` appears.
 - Authentication for game-server connections: short-lived JWT minted by Next API, validated by orchestrator on connect. Clerk session does not extend to the game-server process directly.
 - Match persistence schema: extend the existing arcade match tables vs. dedicated `instagib_match`? **Recommendation:** dedicated table — frag-by-frag detail won't fit the existing shape, and arcade aggregates can read from it.
-- Naming. Now branded as "Elyxion" (was the working title "Instagib Arena").
+- Naming. Now branded as "Elyxion" (was the working title "Elyxion").

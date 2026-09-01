@@ -1,7 +1,7 @@
 # Deployment
 
 Elyxion ships as **one Node process** that serves the built client, the
-stats API, and the `/ws/instagib` game socket on a single port (default
+stats API, and the `/ws/elyxion` game socket on a single port (default
 `8787`). There's nothing else to run — no separate API tier, no external
 services. Put a TLS terminator / reverse proxy in front and you're live.
 
@@ -18,8 +18,8 @@ only (`tsx` is a runtime dep — the server runs `tsx server/index.ts`) and copi
 in `dist/`, `server/`, and the THREE-free shared modules under `src/game/`.
 
 ```bash
-docker build -t instagib-arena .
-docker run -p 8787:8787 -v "$PWD/data:/app/data" instagib-arena
+docker build -t elyxion .
+docker run -p 8787:8787 -v "$PWD/data:/app/data" elyxion
 ```
 
 The SQLite stats DB lives at `/app/data`, so **mount a persistent volume there**
@@ -31,7 +31,7 @@ To configure, pass env vars with `-e`, e.g.:
 ```bash
 docker run -p 8787:8787 -v "$PWD/data:/app/data" \
   -e APP_BASE_URL=https://arena.example.com \
-  instagib-arena
+  elyxion
 ```
 
 ---
@@ -40,7 +40,7 @@ docker run -p 8787:8787 -v "$PWD/data:/app/data" \
 
 Terminate TLS at a reverse proxy and forward to the container/process on
 `localhost:8787`. The game uses a WebSocket on the **same origin** as the page
-(`/ws/instagib`), so the proxy must let that connection upgrade.
+(`/ws/elyxion`), so the proxy must let that connection upgrade.
 
 ### Caddy (recommended — WS upgrades are automatic)
 
@@ -51,12 +51,12 @@ arena.example.com {
 ```
 
 Caddy provisions TLS automatically and proxies WebSocket upgrades transparently,
-so `/ws/instagib` just works — no extra config.
+so `/ws/elyxion` just works — no extra config.
 
 ### nginx
 
 You must explicitly forward the `Upgrade` / `Connection` headers on the WS path
-(`location /ws/instagib { proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_http_version 1.1; proxy_pass http://localhost:8787; }`),
+(`location /ws/elyxion { proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_http_version 1.1; proxy_pass http://localhost:8787; }`),
 otherwise the game socket fails to connect.
 
 When fronting the app with a real domain, set `APP_BASE_URL` (see below) to that
@@ -98,7 +98,7 @@ health-checks `/api/health`.
 **Notes**
 
 - Railway injects `PORT`; the server already binds to it — no port config needed.
-- WebSockets + TLS are handled at Railway's edge, so `/ws/instagib` works on the
+- WebSockets + TLS are handled at Railway's edge, so `/ws/elyxion` works on the
   generated domain with no extra setup.
 - Use a plan where the service **does not sleep** — a sleeping multiplayer server
   means dead lobbies (idle-sleep is a hobby-tier behavior).
@@ -126,7 +126,7 @@ file.
 | `PORT`          | `8787`                     | Port the Node server listens on (set this to the PaaS-injected port).                            |
 | `HOST`          | `0.0.0.0` (prod)           | Bind address.                                                                                     |
 | `DATA_DIR`      | `./data`                   | Directory for runtime data (the SQLite DB). Point this at your mounted volume if not `/app/data`.|
-| `DATABASE_PATH` | `./data/instagib.sqlite`   | Explicit DB file path (overrides `DATA_DIR`).                                                     |
+| `DATABASE_PATH` | `./data/elyxion.sqlite`   | Explicit DB file path (overrides `DATA_DIR`).                                                     |
 | `APP_BASE_URL`  | _(unset)_                  | Production WebSocket origin allow-list — your public HTTPS origin. Unset = same-origin only.     |
 | `ADMIN_USERNAMES` | _(unset)_                | Comma/space-separated admin usernames (case-insensitive). Promoted on boot + at registration.   |
 

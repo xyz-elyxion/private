@@ -204,9 +204,9 @@ export function isSpawnEffect(id: string): boolean {
 // ── Hat slot ─────────────────────────────────────────────────────────────────
 // A glTF model worn on the player model's head bone (mixamorigHead). `model` is
 // a path under public/; null = bare-headed (the free default). Models are
-// CC-BY 3.0 from Poly Pizza — see public/models/instagib/hats/ATTRIBUTION.md.
+// CC-BY 3.0 from Poly Pizza — see public/models/elyxion/hats/ATTRIBUTION.md.
 export const DEFAULT_HAT = 'hat.none';
-const HAT_DIR = '/models/instagib/hats';
+const HAT_DIR = '/models/elyxion/hats';
 
 export type HatCosmetic = {
   id: string;

@@ -30,7 +30,7 @@ const strArg = (name: string, fallback: string): string => {
 };
 
 const args = {
-  url: strArg('url', 'ws://localhost:8799/ws/instagib'),
+  url: strArg('url', 'ws://localhost:8799/ws/elyxion'),
   rooms: Math.max(1, Math.round(numArg('rooms', 30))),
   perRoom: Math.max(2, Math.round(numArg('per-room', 8))),
   durationSec: Math.max(3, numArg('duration', 15)),

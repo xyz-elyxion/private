@@ -107,24 +107,24 @@ let cachedModelLoadCount = 0;
 
 export async function loadBotModel(url: string): Promise<BotModel | null> {
   if (cachedModelPromise) {
-    console.info('[instagib] bot model: reusing cached load');
+    console.info('[elyxion] bot model: reusing cached load');
     return cachedModelPromise;
   }
   // Three.js's own resource cache helps when blob URLs are re-fetched.
   THREE.Cache.enabled = true;
   cachedModelLoadCount += 1;
   const loadId = cachedModelLoadCount;
-  console.info(`[instagib] bot model: starting fresh load #${loadId} (${url})`);
+  console.info(`[elyxion] bot model: starting fresh load #${loadId} (${url})`);
   cachedModelPromise = (async () => {
     try {
       const loader = new GLTFLoader();
       const gltf = await loader.loadAsync(url);
       console.info(
-        `[instagib] bot model: load #${loadId} resolved (${gltf.animations.length} animations, ${gltf.scene.children.length} root children)`,
+        `[elyxion] bot model: load #${loadId} resolved (${gltf.animations.length} animations, ${gltf.scene.children.length} root children)`,
       );
       return { scene: gltf.scene, animations: gltf.animations };
     } catch (err) {
-      console.warn(`[instagib] bot model: load #${loadId} failed`, err);
+      console.warn(`[elyxion] bot model: load #${loadId} failed`, err);
       cachedModelPromise = null; // permit retry next mount
       return null;
     }

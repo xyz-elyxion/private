@@ -16,7 +16,7 @@ import { createCamera, createRenderer, createScene } from './renderer';
 import type { ReplayData } from './replay-codec';
 import type { Vec3 } from './types';
 
-const BOT_MODEL_URL = '/models/instagib/soldier.glb';
+const BOT_MODEL_URL = '/models/elyxion/soldier.glb';
 const BEAM_LIFE = 0.14; // seconds a replayed rail trace lingers before fading
 const STATE_EMIT_MS = 80; // throttle the progress callback (≈12.5 Hz) for React
 

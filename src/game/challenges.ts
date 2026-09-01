@@ -3,7 +3,7 @@
 // credits, never power. See docs/progression.md §7.
 //
 // Definitions are a static manifest; the DB only stores per-player progress
-// (instagib_challenges). Which challenges are "active" for a player in a given
+// (elyxion_challenges). Which challenges are "active" for a player in a given
 // period is derived deterministically from (player_id, period) — no scheduler.
 
 export type ChallengePeriod = 'daily' | 'weekly';

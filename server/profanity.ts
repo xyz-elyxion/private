@@ -1,6 +1,6 @@
 // Username moderation for account registration. This is the ONLY place a human
 // picks a name: in-game display names are server-assigned (the account username,
-// or "Guest N" for guests — see server/instagib-game.ts), so guarding the
+// or "Guest N" for guests — see server/elyxion-game.ts), so guarding the
 // register endpoint keeps slurs and profanity off the scoreboard, killfeed, and
 // leaderboard everywhere they could be seen.
 //

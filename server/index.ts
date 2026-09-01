@@ -23,7 +23,7 @@ import { feedbackRouter } from './feedback';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
-import { attachInstagibWs } from './instagib-game';
+import { attachElyxionWs } from './elyxion-game';
 
 const ELYXION_WS_PATH = '/ws/elyxion';
 
@@ -261,7 +261,7 @@ const elyxionWss = new WebSocketServer({
   maxPayload: 16 * 1024,
   perMessageDeflate: false,
 });
-({ liveCounts } = attachInstagibWs(elyxionWss));
+({ liveCounts } = attachElyxionWs(elyxionWss));
 // Let the token-gated metrics API report live concurrency too (one-call /report).
 setLiveCountsSource(liveCounts);
 elyxionWss.on('error', (err) => console.error('[ws] server error', err));

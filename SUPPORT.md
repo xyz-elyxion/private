@@ -1,13 +1,13 @@
 # Support
 
-Instagib Arena is maintained as an open-source game project. Please choose the
+Elyxion is maintained as an open-source game project. Please choose the
 right channel so reports are easy to triage.
 
 ## Bugs and feature requests
 
 - Use the in-game **Send feedback** button for quick player feedback.
 - Use GitHub issues for reproducible bugs, feature requests, and documentation
-  problems: <https://github.com/8tp/instagib-arena/issues/new/choose>
+  problems: <https://github.com/8tp/elyxion/issues/new/choose>
 
 ## Security and game integrity
 

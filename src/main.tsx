@@ -7,7 +7,7 @@ import Landing from './pages/Landing';
 // Code-split the game client: it drags in the whole Three.js engine (~1MB), and
 // the landing page shouldn't pay for that on first paint. The /play route loads
 // it lazily; Landing stays eager so the splash is instant.
-const InstagibClient = lazy(() => import('./InstagibClient'));
+const ElyxionClient = lazy(() => import('./ElyxionClient'));
 const PodiumLab = lazy(() => import('./PodiumLab'));
 const LockerLab = lazy(() => import('./LockerLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
@@ -43,7 +43,7 @@ createRoot(document.getElementById('root')!).render(
         path="/play"
         element={
           <Suspense fallback={<Loading />}>
-            <InstagibClient />
+            <ElyxionClient />
           </Suspense>
         }
       />

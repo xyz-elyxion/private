@@ -1,6 +1,6 @@
 # Contributor License Agreement
 
-Thank you for contributing to Instagib Arena (the "Project"). This Contributor
+Thank you for contributing to Elyxion (the "Project"). This Contributor
 License Agreement ("Agreement") clarifies the intellectual-property rights granted
 with Contributions from any person or entity. It protects you, the Project, and its
 users, and it lets the Project's maintainer (the "Maintainer", currently

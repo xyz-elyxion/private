@@ -1,7 +1,7 @@
-// Instagib Arena — authoritative game server, in-process with the Next app.
+// Elyxion — authoritative game server, in-process with the web client.
 //
-// Served at `/ws/instagib` on the main app port so it rides the existing
-// Cloudflare tunnel (wss://<domain>/ws/instagib) — no separate port/process.
+// Served at `/ws/elyxion` on the main app port so it rides the existing
+// edge proxy (wss://<domain>/ws/elyxion) — no separate port/process.
 //
 // ROOMS: every match is a Room. A socket is either a "lister" (browsing the
 // lobby) or "in" exactly one room. Quick-match drops you into an open public
@@ -461,7 +461,7 @@ function rayAabb(
   return tmin < 0 ? 0 : tmin;
 }
 
-export function attachInstagibWs(wss: WebSocketServer) {
+export function attachElyxionWs(wss: WebSocketServer) {
   const clients = new Map<ClientId, ClientRecord>();
   const rooms = new Map<RoomId, Room>();
   const listers = new Set<ClientId>();
@@ -732,7 +732,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const outlier = hr > 0.95 || hsr > 0.9;
       if (outlier && !s.aimFlagged) {
         console.warn(
-          `[instagib] aim outlier ${s.id} (${s.name}): hitRate=${hr.toFixed(2)} hsRate=${hsr.toFixed(2)} — throttling frags`,
+          `[elyxion] aim outlier ${s.id} (${s.name}): hitRate=${hr.toFixed(2)} hsRate=${hsr.toFixed(2)} — throttling frags`,
         );
       }
       s.aimFlagged = outlier;

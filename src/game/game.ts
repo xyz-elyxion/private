@@ -157,7 +157,7 @@ export type NetMatchEvent =
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
-const BOT_MODEL_URL = '/models/instagib/soldier.glb';
+const BOT_MODEL_URL = '/models/elyxion/soldier.glb';
 // Stream our position at the sim-tick rate (64Hz) rather than the 32Hz snapshot
 // rate. The server samples whatever pos it last received when it builds each
 // 32Hz snapshot; if we only send at 32Hz those two unsynchronized clocks beat
@@ -1108,10 +1108,10 @@ export class Game {
   private applyMultiplayerState() {
     if (this.wantMultiplayer && !this.net) {
       if (!this.multiplayerUrl) {
-        console.warn('[instagib] multiplayer enabled but no serverUrl set');
+        console.warn('[elyxion] multiplayer enabled but no serverUrl set');
         return;
       }
-      console.info(`[instagib] connecting to ${this.multiplayerUrl} room=${this.multiplayerRoomId}`);
+      console.info(`[elyxion] connecting to ${this.multiplayerUrl} room=${this.multiplayerRoomId}`);
       this.net = new NetClient({
         url: this.multiplayerUrl,
         name: this.playerName,

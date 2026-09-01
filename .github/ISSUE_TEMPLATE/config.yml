@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Security or cheat/exploit report
-    url: https://github.com/8tp/instagib-arena/security/advisories/new
+    url: https://github.com/8tp/elyxion/security/advisories/new
     about: Report vulnerabilities and game-integrity exploits privately.
   - name: Play live
     url: https://xyz-elyxion.onrender.com

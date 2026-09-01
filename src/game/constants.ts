@@ -157,7 +157,7 @@ export const LOCAL_WARMUP_SEC = 3; // offline pre-match countdown (no fragging y
 
 // ── Game modes ─────────────────────────────────────────────────────────────
 // Shared client+server. FFA is the original mode; duel + tdm build on the same
-// room/snapshot machinery (see server/instagib-game.ts).
+// room/snapshot machinery (see server/elyxion-game.ts).
 export type GameMode = 'ffa' | 'duel' | 'tdm';
 export const DEFAULT_GAME_MODE: GameMode = 'ffa';
 export const GAME_MODES: ReadonlyArray<{
@@ -173,7 +173,7 @@ export const GAME_MODES: ReadonlyArray<{
 // Duel (casual + ranked share one format): a single continuous 1v1 race to the
 // frag limit — no rounds, no between-round pauses (anti-camp spawns do the rest).
 // Casual ends in the usual end-of-match map vote; ranked ends in an Elo update +
-// room dissolve (server/instagib-game.ts). Two constants so they can diverge.
+// room dissolve (server/elyxion-game.ts). Two constants so they can diverge.
 export const DUEL_FRAG_LIMIT = 15; // casual 1v1 target
 export const RANKED_DUEL_FRAG_LIMIT = 15; // ranked 1v1 target (login-only)
 

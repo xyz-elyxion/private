@@ -424,7 +424,7 @@ export class NetClient {
       // default Blob — the state snapshot arrives as a binary frame at 64Hz.
       this.ws.binaryType = 'arraybuffer';
     } catch (err) {
-      console.warn('[instagib-net] failed to construct WebSocket', err);
+      console.warn('[elyxion-net] failed to construct WebSocket', err);
       this.setStatus('error');
       this.scheduleReconnect();
       return;
@@ -1148,7 +1148,7 @@ export type LobbyRoom = {
 
 export type LobbyStatus = 'connecting' | 'open' | 'closed' | 'error';
 
-// Live menu presence + global chat (server-authoritative; see server/instagib-game.ts).
+// Live menu presence + global chat (server-authoritative; see server/elyxion-game.ts).
 export type PresencePlayer = { name: string; admin: boolean; verified: boolean; inMatch: boolean };
 export type PresenceState = { online: number; guests: number; players: PresencePlayer[] };
 export type ChatMessage = {

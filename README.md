@@ -12,7 +12,7 @@ No health bars, no loadouts — the whole game is **aim and movement**.
 
 <br/>
 
-[![CI](https://github.com/8tp/instagib-arena/actions/workflows/ci.yml/badge.svg)](https://github.com/8tp/instagib-arena/actions/workflows/ci.yml)
+[![CI](https://github.com/8tp/elyxion/actions/workflows/ci.yml/badge.svg)](https://github.com/8tp/elyxion/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![TypeScript](https://img.shields.io/badge/TypeScript-end_to_end-3178c6.svg)](tsconfig.json)
@@ -94,7 +94,7 @@ interesting parts are all in this repo.
 [`fnm`](https://github.com/Schniz/fnm) or `nvm`, e.g. `fnm use 20.19.0`.
 
 ```bash
-git clone https://github.com/8tp/instagib-arena.git
+git clone https://github.com/8tp/elyxion.git
 cd elyxion
 npm install
 npm run dev
@@ -189,7 +189,7 @@ elyxion/
 ├─ src/
 │  ├─ main.tsx            # React root + router (/ and /play)
 │  ├─ pages/Landing.tsx   # marketing / controls splash
-│  ├─ InstagibClient.tsx  # the game client: canvas mount, HUD, menus, lobby
+│  ├─ ElyxionClient.tsx  # the game client: canvas mount, HUD, menus, lobby
 │  ├─ AdminDashboard.tsx  # /admin — metrics, players, feedback moderation
 │  └─ game/               # the Three.js engine (framework-agnostic)
 │     ├─ game.ts          #   main loop, match/HUD orchestration
@@ -205,7 +205,7 @@ elyxion/
 │     └─ …                #   audio, effects, hats, input, training, podium
 ├─ server/
 │  ├─ index.ts            # http + express static + /api + WS upgrade routing
-│  ├─ instagib-game.ts    # authoritative game server (modes, rooms, lag comp, anti-cheat)  [brand-neutral filename]
+│  ├─ elyxion-game.ts    # authoritative game server (modes, rooms, lag comp, anti-cheat)  [brand-neutral filename]
 │  ├─ db.ts               # better-sqlite3 store (stats, accounts, feedback, audit)
 │  ├─ auth.ts             # optional username/password accounts (cookie session)
 │  ├─ admin.ts            # admin metrics API + feedback moderation
@@ -234,7 +234,7 @@ owns spawns, tunables, and the wire format without pulling in a renderer.
 | [`docs/progression.md`](docs/progression.md) | XP / levels / credits / unlock design. |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Where this is going. |
 | [`docs/distribution-kit.md`](docs/distribution-kit.md) | Launch kit: portal listings, embeds, store copy. |
-| [`docs/instagib-arena-plan.md`](docs/instagib-arena-plan.md) | The original design doc (some of it aspirational; pre-rebrand filename). |
+| [`docs/elyxion-plan.md`](docs/elyxion-plan.md) | The original design doc (some of it aspirational; pre-rebrand filename). |
 
 ---
 
@@ -252,7 +252,7 @@ multiplayer match results, by contrast, are server-authoritative.
 ## Audio assets
 
 Announcer voice lines and multi-kill medal callouts ship as `.ogg` files in
-`public/sounds/instagib/`. The railgun **fire / hit / kill** SFX have no bundled
+`public/sounds/elyxion/`. The railgun **fire / hit / kill** SFX have no bundled
 clip and are **synthesized procedurally** via the Web Audio API at runtime. Drop
 a matching `.ogg` at the path listed in `src/game/audio.ts` (`SOUND_URLS`) to
 override any sound; missing announcer lines fall back to speech synthesis.
@@ -280,7 +280,7 @@ PRs and issues welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Contributions
 require agreeing to the lightweight [Contributor License Agreement](CLA.md) via
 the checkbox in the pull request template. Found a bug or have an idea? Use the
 in-game **Send feedback** button (it lands in the admin panel) or
-[open an issue](https://github.com/8tp/instagib-arena/issues/new/choose).
+[open an issue](https://github.com/8tp/elyxion/issues/new/choose).
 
 ## Security
 

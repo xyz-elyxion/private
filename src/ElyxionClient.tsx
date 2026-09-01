@@ -369,7 +369,7 @@ const DEFAULT_SETTINGS: Settings = {
   hideChat: false,
 };
 
-const SETTINGS_KEY = 'instagib-settings-v2';
+const SETTINGS_KEY = 'elyxion-settings-v2';
 
 // Rarity → accent color for cosmetic cards in the Locker.
 const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
@@ -382,7 +382,7 @@ const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
 const CARD_STAT_DEFS: ReadonlyArray<{
   key: string;
   label: string;
-  from: (p: InstagibProfile) => string;
+  from: (p: ElyxionProfile) => string;
 }> = [
   { key: 'kills', label: 'KILLS', from: (p) => String(p.stats.totalKills) },
   { key: 'deaths', label: 'DEATHS', from: (p) => String(p.stats.totalDeaths) },
@@ -406,7 +406,7 @@ const CARD_STAT_DEFS: ReadonlyArray<{
 const MAX_CARD_STATS = 3;
 
 function buildCardPayload(
-  profile: InstagibProfile,
+  profile: ElyxionProfile,
   settings: Settings,
   account?: Account,
 ): CardPayload {
@@ -443,12 +443,12 @@ function CardStatsEditor({
   onChange: (s: Settings) => void;
   account?: Account;
 }) {
-  const [profile, setProfile] = useState<InstagibProfile | null>(null);
+  const [profile, setProfile] = useState<ElyxionProfile | null>(null);
   useEffect(() => {
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (active && d.profile) setProfile(d.profile);
       })
       .catch(() => {});
@@ -782,7 +782,7 @@ const INITIAL_HUD: HudState = {
   spectator: null,
 };
 
-export default function InstagibClient() {
+export default function ElyxionClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -809,7 +809,7 @@ export default function InstagibClient() {
     setSettings(loaded);
     // First visit (no onboarded flag) → show the welcome / name / controls primer.
     const firstRun =
-      typeof window !== 'undefined' && !window.localStorage.getItem('instagib-onboarded');
+      typeof window !== 'undefined' && !window.localStorage.getItem('elyxion-onboarded');
     if (firstRun) setShowOnboarding(true);
 
     // Invite link: ?join=ROOMID drops straight into that room. The map is
@@ -867,7 +867,7 @@ export default function InstagibClient() {
   }, [config, startMatch]);
 
   const finishOnboarding = useCallback(() => {
-    if (typeof window !== 'undefined') window.localStorage.setItem('instagib-onboarded', '1');
+    if (typeof window !== 'undefined') window.localStorage.setItem('elyxion-onboarded', '1');
     setShowOnboarding(false);
     // A held invite-join now proceeds (the player saw the primer first).
     if (pendingJoinRef.current) {
@@ -927,7 +927,7 @@ export default function InstagibClient() {
 }
 
 // First-run welcome: pick a display name + a quick controls primer. Shown once
-// (guarded by the `instagib-onboarded` localStorage flag).
+// (guarded by the `elyxion-onboarded` localStorage flag).
 function OnboardingModal({
   onPlayGuest,
   onCreateAccount,
@@ -1116,7 +1116,7 @@ function GameView({
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (!active || !d.profile) return;
         const card = buildCardPayload(d.profile, settings);
         gameRef.current?.setCardPayload?.(card);
@@ -1731,7 +1731,7 @@ function Locker({
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (!active || !d.profile) return;
         const p = d.profile;
         setProfile({
@@ -4040,7 +4040,7 @@ function randomMapId(): string {
   return QUICK_MAP_POOL[Math.floor(Math.random() * QUICK_MAP_POOL.length)];
 }
 
-type InstagibStats = {
+type ElyxionStats = {
   totalKills: number;
   totalDeaths: number;
   totalGames: number;
@@ -4224,7 +4224,7 @@ type RankedLeaderEntry = {
 const RANKED_BASE = 1000;
 // The live flair text for the dynamic ranked title from a profile's standing:
 // top-10 → "#N", otherwise the tier name; '' if the player has no ranked games.
-function rankedStandingText(ranked: InstagibProfile['ranked']): string {
+function rankedStandingText(ranked: ElyxionProfile['ranked']): string {
   if (!ranked) return '';
   return ranked.rank >= 1 && ranked.rank <= 10 ? `#${ranked.rank}` : rankedTierName(ranked.rating);
 }
@@ -4907,7 +4907,7 @@ function Lobby({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('controls');
   const [lockerOpen, setLockerOpen] = useState(false);
-  const [lobbyProfile, setLobbyProfile] = useState<InstagibProfile | null>(null);
+  const [lobbyProfile, setLobbyProfile] = useState<ElyxionProfile | null>(null);
   const [claimable, setClaimable] = useState(0); // completed-but-unclaimed challenges
   const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
@@ -5034,7 +5034,7 @@ function Lobby({
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (active && d.profile) setLobbyProfile(d.profile);
       })
       .catch(() => {});
@@ -6110,7 +6110,7 @@ function DifficultyPicker({
   );
 }
 
-type InstagibProfile = {
+type ElyxionProfile = {
   level: number;
   totalXp: number;
   xpIntoLevel: number;
@@ -6118,19 +6118,19 @@ type InstagibProfile = {
   credits: number;
   unlocked: string[];
   equipped: Record<string, string>;
-  stats: InstagibStats;
+  stats: ElyxionStats;
   ranked: { rating: number; rank: number; provisional: boolean } | null;
 };
 
 function StatsModal({ onClose }: { onClose: () => void }) {
-  const [profile, setProfile] = useState<InstagibProfile | null>(null);
+  const [profile, setProfile] = useState<ElyxionProfile | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
 
   useEffect(() => {
     let active = true;
     fetch('/api/profile')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile unavailable'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (!active) return;
         setProfile(d.profile ?? null);
         setState('ready');

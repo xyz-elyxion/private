@@ -1,4 +1,4 @@
-# Contributing to Instagib Arena
+# Contributing to Elyxion
 
 Thanks for your interest — bug reports, ideas, and pull requests are all welcome.
 
@@ -6,7 +6,7 @@ Thanks for your interest — bug reports, ideas, and pull requests are all welco
 
 - **Report a bug or suggest a feature** — use the in-game **Send feedback** button
   (it goes straight to the admin panel) or
-  [open a GitHub issue](https://github.com/8tp/instagib-arena/issues/new/choose).
+  [open a GitHub issue](https://github.com/8tp/elyxion/issues/new/choose).
 - **Send a pull request** — fix a bug, add a map/mode/cosmetic, improve the netcode
   or the docs.
 
@@ -36,7 +36,7 @@ npm run dev
 
 ## Contributor License Agreement (CLA)
 
-Instagib Arena is open source under the AGPL-3.0, and the maintainer also offers
+Elyxion is open source under the AGPL-3.0, and the maintainer also offers
 commercial/dual licenses. So that contributions don't cloud those rights, all
 contributors must agree to the [Contributor License Agreement](CLA.md). For now,
 confirm agreement with the CLA checkbox in the pull request template.
