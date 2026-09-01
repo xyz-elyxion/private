@@ -1,0 +1,10 @@
+# Elyxion — https://xyz-elyxion.onrender.com
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+# Dev-lab routes (cosmetic preview sandboxes) — not for the index.
+Disallow: /podiumlab
+Disallow: /lockerlab
+
+Sitemap: https://xyz-elyxion.onrender.com/sitemap.xml

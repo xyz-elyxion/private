@@ -1,0 +1,296 @@
+# Architecture
+
+How Elyxion fits together: the client engine, the authoritative game
+server, the netcode (including lag compensation and the anti-cheat boundary),
+and the wire protocol.
+
+For the high-level "what is this / how do I run it," see the
+[README](../README.md). For the original (partly aspirational) design rationale,
+see [`instagib-arena-plan.md`](instagib-arena-plan.md).
+
+---
+
+## 1. Topology
+
+```
+                    ┌──────────────────────── browser ────────────────────────┐
+                    │  React (menus / HUD / lobby)   Three.js (<canvas> world) │
+                    │            src/InstagibClient.tsx + src/game/*           │
+                    └───────────────┬───────────────────────────┬─────────────┘
+                                    │ /api/stats (HTTP)          │ /ws/instagib (WS)
+                                    ▼                            ▼
+                    ┌──────────────────────────  Node server  ─────────────────────────┐
+                    │  express: static dist/ + stats API        ws: authoritative game  │
+                    │  server/index.ts → server/stats.ts        server/instagib-game.ts │
+                    │                    → server/db.ts (SQLite)                          │
+                    └────────────────────────────────────────────────────────────────────┘
+```
+
+- **Dev:** Vite serves the client on `:5173` and proxies `/api` + `/ws` to the
+  Node server on `:8787`. One origin in the browser.
+- **Prod:** the Node server serves the built client *and* both endpoints from a
+  single port. Same origin.
+
+The browser only ever sees one origin, so the client derives its WebSocket URL
+straight from `window.location` (`ws[s]://<host>/ws/instagib`) — no env config.
+
+---
+
+## 2. Client engine (`src/game/`)
+
+React owns the **menus, HUD, and lobby UI**. Three.js owns the **canvas world**.
+They meet at exactly one seam: `InstagibClient.tsx` mounts a `<canvas>`,
+constructs a `Game`, and subscribes to a HUD listener for per-frame state
+(health-free, so: ammo cooldown, frags, killfeed, medals, banners). All
+hot-path state lives in plain objects and typed arrays — never React state — so
+the 60–144 Hz render loop never triggers reconciliation.
+
+Module map:
+
+| Module            | Responsibility |
+| ----------------- | -------------- |
+| `game.ts`         | The main loop. Owns the scene, camera, match state, HUD/medal orchestration, and the net client. Entry point for everything. |
+| `player.ts`       | The local player: a **kinematic capsule** character controller (not a physics rigid body). |
+| `locomotion.ts`   | The movement math: ground friction/accel, Quake-style **air acceleration** (capped projection onto wishdir), dash, double-jump, wall-jump. |
+| `weapon.ts`       | Railgun: cooldown, client-side hitscan ray, tracer/impact spawning. |
+| `map.ts`          | Arena geometry, materials, and the collision representation the player controller sweeps against. |
+| `arena-data.ts`   | **THREE-free.** Spawn points, bounds, the map pool, vote constants, room-code length — the table both client and server read. |
+| `constants.ts`    | **THREE-free.** Tunables: frag limit, cooldowns, speeds, eye height, sensitivity defaults, keybinds. |
+| `types.ts`        | **THREE-free.** Shared structural types (`Vec3`, `AABB`, …). |
+| `net.ts`          | Client netcode: the `LobbyClient`, snapshot buffering, and **interpolation** of remote players against a delayed render clock. |
+| `remote-player.ts`| A remote avatar: skinned model, interpolated transform, nameplate. |
+| `bots.ts`         | Offline bot AI (navigation, aim with human-like error, difficulty tiers). Offline only — bots have map geometry; the online server does not. |
+| `audio.ts`        | Procedural weapon SFX (Web Audio) + announcer/medal voice lines (`.ogg`, TTS fallback), with an SFX/announcer volume split. |
+| `effects.ts`      | Tracers, impacts, muzzle flashes, hit sparks. |
+| `renderer.ts`     | WebGL renderer + environment setup. |
+| `textures.ts`     | Procedural texture generation. |
+| `medals.ts`       | Streak/medal state machine (first blood, multi-kills, sprees, headshots). |
+| `input.ts`        | Pointer lock, mouse-to-yaw/pitch with raw-input + cm/360 sensitivity, keybind resolution. |
+| `cosmetics.ts`    | **THREE-free.** The single cosmetic manifest — every kill-effect / rail-colour / hat / unusual / card / emote, its rarity + unlock source, and the cross-slot helpers (`slotOf`, `defaultUnlockedIds`, `levelGrantsAt`) the progression backend reads. |
+| `progression.ts`  | **THREE-free.** XP curve + level math shared by client (XP bar) and server (level grants). |
+| `challenges.ts`   | **THREE-free.** Daily/weekly challenge definitions + period keys. |
+| `hats.ts`         | `WornHat`: a glTF hat seated on the model's `mixamorigHead` each frame (auto-fit, world-follower) + the "unusual" additive particle effects. |
+| `emotes.ts`       | Procedural emote poses (`buildEmoteRig` + `applyEmote`): whole-body transforms + arm-bone overrides layered on the idle clip. Shared by the podium + the Locker preview. |
+| `podium.ts`       | `PodiumScene`: the self-contained end-of-match top-3 pedestal (soldiers + hats + emotes + label sprites). |
+| `character-preview.ts` | `CharacterPreview`: the Locker's live 3D loadout viewer (soldier + hat/unusual + emote + showcase rail beam → kill burst), one focused view per tab. |
+
+The three **THREE-free** modules are the contract between client and server: the
+server imports `constants`, `arena-data`, and `types` directly and never pulls in
+a renderer.
+
+---
+
+## 3. Movement model
+
+Movement is the skill ceiling, so it is hand-rolled rather than handed to a
+physics engine. The player is a kinematic capsule:
+
+- **Ground:** friction then acceleration toward `wishdir`, capped at run speed.
+- **Air:** acceleration is applied as a *projection* of `wishdir` onto velocity
+  with a separate air cap — the classic Q3 trick that lets strafe-jumping
+  accelerate you past straight-run speed.
+- **Dash:** an impulse along the input direction on a cooldown.
+- **Jumps:** ground jump + a limited number of air jumps; **wall-jump** when
+  touching a wall.
+
+The same tunables (`constants.ts`) feed both the client controller and the
+server's sanity checks, so honest movement never trips anti-cheat.
+
+---
+
+## 4. Netcode
+
+### Connection & clock
+
+On connect the server sends `welcome { clientId, serverTime }`. The client
+periodically `ping { ts }` / receives `pong { ts, serverTime }` to estimate RTT
+and align to the **server clock**. Everything time-related (snapshot
+interpolation, lag-comp rewind) is expressed in server-clock milliseconds.
+
+### Snapshots & interpolation
+
+The server broadcasts a `state` snapshot at **64 Hz** to every occupied room as
+a **binary frame** (`src/game/netcodec.ts`): positions/angles quantized to i16
+(3.9 mm / ~0.005° steps), frags/deaths/invuln/ping as u16 — ~30–35 bytes per
+player per tick, no `JSON.parse` on the hot path. Slow-changing identity
+(name, team, cosmetics, badges) rides a separate **`meta` channel** sent only
+on change, so the per-tick row is all numbers.
+
+The client buffers snapshots and **renders remote players in the past** — at a
+**fixed** interpolation delay (110 ms at 2 players, scaling to 170 ms at 8,
+because bigger rooms push more bytes through a constrained link). Fixed is the
+key word: a delay derived from arrival timing wobbles under TCP burst delivery
+and becomes jitter itself. Roster changes **slew** the delay at a bounded
+120 ms/s rather than snapping, so a join/leave doesn't hitch every remote. On
+buffer underrun (loss / a stall) remotes **dead-reckon** from their last
+velocity for up to 120 ms instead of freezing. The local player is **not**
+interpolated — it's simulated immediately for responsiveness.
+
+Both hot messages cross a **transport seam** (`sendUnreliable` /
+`onUnreliableBytes`) rather than touching the WebSocket directly. Today the
+seam is backed by the same WS; it exists so an unreliable datagram transport
+(WebTransport/QUIC — see `docs/NETCODE-UDP-PLAN.md`) can carry them without
+touching game code. Snapshots are idempotent absolute state, so a lost or
+reordered frame is simply skipped.
+
+### Position updates
+
+The client uploads `pos` at **64 Hz** as a 21-byte binary frame. The server
+does NOT snapshot the last-received position directly — independent client and
+server clocks would make that sample 0–16 ms stale by a *varying* amount,
+which renders as wobble at rocket-jump speeds. Instead it keeps a short
+received-pos buffer per player and **resamples everyone to a single consistent
+instant** (`now − lag`, where lag adapts per sender: clean 64 Hz senders get
+the 20 ms floor, bursty/high-ping senders are buffered up to 180 ms so they
+stay smoothly interpolated). The resampled-and-quantized pose is what goes
+into BOTH the snapshot and the lag-comp **position history** — so what a
+shooter renders and what the server rewinds to are equal *by construction*.
+
+---
+
+## 5. Server authority & lag compensation
+
+The server decides **every hit**. The client never reports a kill — it reports a
+*shot ray*.
+
+When a player fires, the client sends:
+
+```
+shoot { ox, oy, oz,  dx, dy, dz,  maxDist?,  renderTime? }
+```
+
+- `o*` — ray origin (the shooter's eye), `d*` — ray direction (normalized server-side).
+- `maxDist` — the distance at which the shot hit a **wall** on the client. The
+  server owns no map geometry, so the client supplies this wall cap; the server
+  only needs to know "the ray was occluded at this range."
+- `renderTime` — the server-clock time the shooter was *displaying others at*
+  (i.e. the interpolation delay). This is the key to lag comp.
+
+The server then, for the shooter's room:
+
+1. **Rewinds** every other player to `renderTime` by interpolating their
+   position history — reconstructing what the shooter actually saw.
+2. Builds each rewound player's **AABB hitbox** (`PLAYER_RADIUS` × `PLAYER_HEIGHT`)
+   and raycasts the shot against them.
+3. Takes the **nearest** hit inside `maxDist` (so walls still block) and resolves
+   a kill — headshot if the hit Y is in the top fraction of the box.
+
+A kill broadcasts `kill { killerId, victimId, headshot, victimPos, respawnPos }`;
+the victim is respawned server-side with brief spawn invulnerability. Reaching
+the frag limit opens the end-of-match map vote.
+
+This is why online play has **no bots**: bots need map geometry to navigate, and
+the server intentionally has none.
+
+---
+
+## 6. Anti-cheat boundary
+
+Because the server is authoritative for hits and score, a modified client is the
+threat model. The server is *geometry-free*, so anti-cheat is distance/rate
+based rather than occlusion based:
+
+- **Fire-rate gate** — shots faster than the railgun cooldown (minus a small
+  jitter tolerance) are dropped.
+- **Shot-origin sanity** — the ray origin must be within a few meters of the
+  shooter's authoritative server-side eye, so a modified client can't place the
+  origin flush against a victim and fire "through" walls.
+- **Speed clamp** — `pos` updates implying faster-than-possible movement are
+  rejected (they'd otherwise poison both the broadcast snapshot and the
+  lag-comp rewind buffer).
+- **Rewind clamp** — a shot may only rewind targets so far into the past, so a
+  spoofed `renderTime` can't resurrect long-dead positions.
+- **Message-rate flood guard** — a socket exceeding an inbound message budget per
+  second is closed.
+
+These make modified clients *bounded*, not impossible — stats are explicitly
+unranked and best-effort.
+
+---
+
+## 7. Rooms, lobby & map voting (`server/instagib-game.ts`)
+
+Every match is a **Room**. A socket is either a **lister** (browsing the lobby)
+or **in** exactly one room. Each room has a **mode** (`ffa` | `duel` | `tdm`)
+chosen at create/quick-match time; the mode drives capacity and the win
+condition, evaluated server-side after every kill:
+
+- **FFA** — first player to `MATCH_FRAG_LIMIT` ends the match → map vote.
+- **Duel** — capacity 2. A single continuous 1v1 race: first to
+  `DUEL_FRAG_LIMIT` ends the match → map vote (no rounds, no between-round
+  pauses). A mid-match leave forfeits to the survivor. **Ranked Duel** reuses
+  this exact format (a room with `isRanked`) but ends in an Elo update + room
+  dissolve instead of a vote — see "Ranked ladder" below.
+- **TDM** — players are balanced onto two teams on join (`team` index 0/1).
+  Friendly fire is rejected in `handleShoot`; the first team whose summed frags
+  reach `TDM_FRAG_LIMIT` wins (the win rides `vote-start` as `winnerTeam`).
+
+- **Quick-match** drops you into the fullest joinable public room, or makes one.
+- **Create** makes a public ("Custom Lobby") or private (invite-code) room.
+- **Join** enters a room by id/code; fails with `join-failed { reason }` if it's
+  gone or full.
+
+Lobby listers receive `rooms` updates (public, occupied rooms only). When a
+player reaches the frag limit the room enters a **vote**: `vote-start` ships a
+ballot of maps (excluding the current one); players `vote { mapId }`;
+`vote-update` streams the tally; `vote-result` picks the winner (random on ties),
+resets the scoreboard, and repositions everyone onto the new map after a short
+breather. Empty rooms are reaped on a grace timer (longer for never-joined
+invite rooms so a shared code doesn't race a reap).
+
+---
+
+## 8. Wire protocol summary
+
+**Client → server:** `hello` · `list` · `create` · `quickmatch` · `join` ·
+`leave` · `vote` · `pos` · `ping` · `shoot`
+(`create` and `quickmatch` carry a `mode` — `ffa` | `duel` | `tdm`.)
+
+**Server → client:** `welcome` · `rooms` · `created` · `matched` · `joined` ·
+`join-failed` · `peer-joined` · `peer-left` · `state` · `kill` · `respawn` ·
+`vote-start` · `vote-update` · `vote-result` · `round` · `pong`
+(`joined` carries `mode`/`team`/`roundsToWin`; `state` players carry `team`;
+`vote-start` carries `winnerTeam` for TDM; `round` is the Duel between-round
+reset with the round tally.)
+
+The wire format is JSON. (The original plan called for a hand-packed binary
+snapshot path; JSON is what ships today and is comfortable at the current snapshot
+rate — see the plan doc for the binary-protocol notes if you want to revisit it.)
+
+---
+
+## 9. Stats subsystem
+
+`/api/stats` (Express, `server/stats.ts`) is auth-free:
+
+- First request mints a random id into an `httpOnly`, `SameSite=Lax` cookie
+  (`igpid`); subsequent requests carry it back. No login, no external provider.
+- `GET` returns the player's aggregate stats; `POST` records one match.
+- Reported integers are **clamped** server-side, then applied as an **atomic
+  SQL upsert** (`column + delta`, with `max()` for bests) in `server/db.ts`, so
+  concurrent submits can't clobber each other.
+
+The store is a few SQLite tables created on first import — no ORM, no migrations
+(additive columns are added via guarded `ALTER TABLE`). It lives under `DATA_DIR`
+(default `./data`).
+
+**Progression** rides the same cookie + table. `POST /api/stats` derives XP from
+the clamped delta (curve `floor(100·n^1.5)`), grants level-gated unlocks + credits,
+and returns `xpGained` / `level` / `leveledUp` / `newUnlocks` / `creditsGained`.
+`GET /api/profile` returns level / XP / credits / unlocked + equipped cosmetics;
+`POST /api/equip`, `/api/shop/buy`, `/api/shop/open-case`, and `/api/challenges*`
+manage the Locker + daily/weekly challenges. Definitions live in the THREE-free
+`src/game/cosmetics.ts` manifest (no DB rows for cosmetic definitions). In MP the
+`igpid` cookie also rides the WS upgrade so the game server can **ownership-check**
+cosmetic equips.
+
+`GET /api/leaderboard?sort=kills|wins|accuracy&window=all|weekly|daily&limit=N`
+(`server/leaderboard.ts`) — one prepared statement per (sort × window), no user
+input reaching SQL. `all` reads `instagib_stats`; `weekly`/`daily` read
+`instagib_period_stats` (buckets keyed `d:YYYYMMDD` / `w:<Monday>`, upserted on
+online matches only). It pins the caller's own rank, floors the accuracy board at
+≥5 games, and only surfaces players with `total_games > 0`. To keep the board from
+being trivially inflated, `POST /api/stats` is rate-limited (a dependency-free
+in-memory sliding window: ~30 submits per identity per minute, keyed by the player
+cookie or IP).
+```

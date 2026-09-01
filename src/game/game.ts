@@ -1,0 +1,3229 @@
+import * as THREE from 'three';
+import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
+import {
+  BotManager,
+  loadBotModel,
+  pickFreeSpot,
+  type BotFireIntent,
+  type BotModel,
+  type BotTarget,
+} from './bots';
+import {
+  BANNER_DURATION_SEC,
+  BOT_HEADSHOT_THRESHOLD,
+  BOT_HEIGHT,
+  DEFAULT_BOT_DIFFICULTY,
+  DEFAULT_FOV,
+  DEFAULT_ZOOM_FOV,
+  MIN_ZOOM_FOV,
+  MAX_ZOOM_FOV,
+  VIEWMODEL_BASE,
+  VIEWMODEL_SCALE,
+  EYE_HEIGHT,
+  HIT_MARKER_KILL_DURATION_SEC,
+  MAX_FOV,
+  MIN_FOV,
+  KILL_CONFIRM_DURATION_SEC,
+  KILLCAM_DURATION_SEC,
+  KILLFEED_DURATION_SEC,
+  LOCAL_RESPAWN_INVULN_SEC,
+  LOCAL_WARMUP_SEC,
+  MATCH_FRAG_LIMIT,
+  MAX_KILLFEED_ENTRIES,
+  MAX_PLAYERS,
+  MAX_TOASTS,
+  NUM_BOTS,
+  WEEKLY_CHALLENGE_FRAG_LIMIT,
+  WEEKLY_CHALLENGE_MAP,
+  PITCH_LIMIT,
+  PLAYER_HEIGHT,
+  PLAYER_RADIUS,
+  KILL_FLASH_DURATION_SEC,
+  RAIL_RANGE,
+  SHAKE_DEATH,
+  SHAKE_FIRE,
+  SHAKE_KILL,
+  SHAKE_MAX,
+  TICK_DT,
+  TOAST_DURATION_SEC,
+  TEAM_COLORS,
+  TDM_FRIEND_COLOR,
+  TDM_FRAG_LIMIT,
+  DUEL_FRAG_LIMIT,
+  RANKED_DUEL_FRAG_LIMIT,
+  type BotDifficulty,
+  type GameMode,
+  type KeybindAction,
+} from './constants';
+import { EffectsManager } from './effects';
+import { TrainingRange, type TrainingStats } from './training';
+import { InputManager } from './input';
+import { buildMapMesh, DEFAULT_MAP, mapById, rayAabb, type ArenaMap } from './map';
+import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';
+import {
+  DEFAULT_KILL_EFFECT,
+  DEFAULT_RAIL_COLOR,
+  DEFAULT_HAT,
+  DEFAULT_UNUSUAL,
+  DEFAULT_EMOTE,
+  DEFAULT_RAILGUN_FINISH,
+  DEFAULT_NAME_COLOR,
+  DEFAULT_SPAWN_EFFECT,
+  DEFAULT_TITLE,
+  isKillEffectStyle,
+  isRailColor,
+  isRailgunFinish,
+  isHat,
+  isUnusual,
+  isEmote,
+  isNameColor,
+  isSpawnEffect,
+  isTitle,
+  railColorById,
+  railgunFinishById,
+  spawnEffectById,
+  SPAWN_EFFECTS,
+  titleById,
+  type KillEffectStyle,
+} from './cosmetics';
+import { NetClient, type KillEvent, type ChatMessage, type RankedResult } from './net';
+import { Player } from './player';
+import { RemotePlayer } from './remote-player';
+import {
+  MatchRecorder,
+  ReplayPlayer,
+  type ReplayPose,
+  type HighlightClip,
+  type ReplayOptions,
+} from './replay';
+import { encodeReplay } from './replay-codec';
+
+// End-of-match cinematic: how the final-blow slow-mo is paced before the PotG.
+const FINALE_TIME_SCALE = 0.5; // play the final blow at half speed
+const FINALE_FREEZE_SEC = 1.9; // then hold on the frozen frame: the VICTORY/DEFEAT beat
+
+// Killcam framing: the camera sits a FIXED distance from the killer (on the side
+// you died from) and follows them, so a long-range frag isn't a tiny speck — and
+// a tighter FOV zooms in on who got you.
+const KILLCAM_DIST = 5; // metres from the killer
+const KILLCAM_HEIGHT = 1.6; // metres above the killer's centre (mild down-angle)
+const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
+
+// One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
+type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
+import { createCamera, createRenderer, createScene } from './renderer';
+import { buildRailgun } from './weapon-model';
+import type {
+  AABB,
+  BannerState,
+  CardPayload,
+  ChatLine,
+  HitMarker,
+  HudState,
+  KillConfirm,
+  KillFlash,
+  KillcamState,
+  KillfeedEntry,
+  MapVoteState,
+  Medal,
+  PlayerScore,
+  PomState,
+  SpectatorHud,
+  ToastEntry,
+} from './types';
+import { Railgun, type RailTarget } from './weapon';
+
+export type HudListener = (state: HudState) => void;
+
+// Reported to the client when a match ends (frag limit) or the player leaves.
+export type MatchResult = {
+  won: boolean;
+  kills: number;
+  deaths: number;
+  bestStreak: number;
+  headshots: number;
+  shotsFired: number;
+  shotsHit: number;
+};
+export type MatchEndListener = (result: MatchResult) => void;
+
+// Multiplayer-only lifecycle signals the client surfaces outside the HUD
+// (e.g. "couldn't join — lobby is gone/full" → bounce back to the menu). Map
+// changes are shown in-game via a HUD banner, not through this channel.
+export type NetMatchEvent =
+  | { type: 'join-failed'; reason: string }
+  | { type: 'spectate-ended' } // the watched match ended / room reaped → leave to lobby
+  | { type: 'ranked-result'; result: RankedResult; won: boolean }; // ranked match over → show overlay
+export type NetMatchListener = (ev: NetMatchEvent) => void;
+
+const PLAYER_NAME_DEFAULT = 'You';
+const BOT_MODEL_URL = '/models/instagib/soldier.glb';
+// Stream our position at the sim-tick rate (64Hz) rather than the 32Hz snapshot
+// rate. The server samples whatever pos it last received when it builds each
+// 32Hz snapshot; if we only send at 32Hz those two unsynchronized clocks beat
+// against each other, so the captured sample is anywhere from 0–31ms stale and
+// the staleness wobbles snapshot-to-snapshot. Remote viewers interpolate
+// assuming an even 31.25ms spacing, so that wobble reads as velocity jitter —
+// the worse the faster you strafe. Sending every tick keeps the server's
+// sample ≤~16ms fresh, halving the aliasing. Idle frames are deduped below so
+// this isn't a bandwidth regression when nobody's moving.
+const POS_SEND_HZ = 64;
+// Heartbeat a position even when we haven't moved, so the server's activity /
+// AFK bookkeeping and any late joiner stay current. Well under the snapshot
+// rate, so idle players cost almost nothing on the wire.
+const POS_HEARTBEAT_MS = 250;
+// Below these deltas a frame counts as "not moved" and the pos send is skipped
+// (subject to the heartbeat). Tight enough that real movement always sends.
+const POS_EPSILON = 1e-3; // metres
+const YAW_EPSILON = 5e-4; // radians
+// A single sim tick can move the local player at most ~0.8m (max speed × TICK_DT).
+// A render-frame delta above this is a teleport (respawn / vote reset / OOB
+// recovery), so we snap the camera instead of gliding the interpolation across it.
+const LOCAL_RENDER_TELEPORT_M = 2;
+
+const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
+  'first-blood':   'first-blood',
+  'double-kill':   'double-kill',
+  'multi-kill':    'triple-kill',
+  'ultra-kill':    'quad-kill',
+  'monster-kill':  'penta-kill',
+  'killing-spree': 'killing-spree',
+  'rampage':       'rampage',
+  'dominating':    'dominating',
+  'unstoppable':   'unstoppable',
+  'godlike':       'godlike',
+  'headshot':      'headshot',
+  'mid-air':       'humiliation',
+  'comeback':      'comeback',
+};
+
+// A single kill can earn several medals at once (e.g. a headshot that's also a
+// double kill and a killing spree). To avoid overlapping announcer lines + a
+// banner that flickers to whichever medal happened to be last, we pick ONE
+// "headline" — the most significant — to drive the banner + the announcer voice;
+// the rest still show as stacked toasts. Higher number = more headline-worthy.
+// Deploy/encouragement announcer line on respawn: min seconds between lines + the
+// chance one fires when off cooldown (kept sparse — you respawn a lot in instagib).
+const SPAWN_LINE_COOLDOWN_SEC = 18;
+const SPAWN_LINE_CHANCE = 0.55;
+
+const MEDAL_PRIORITY: Record<Medal, number> = {
+  'godlike':       95,
+  'unstoppable':   85,
+  'monster-kill':  80,
+  'dominating':    75,
+  'ultra-kill':    70,
+  'rampage':       65,
+  'multi-kill':    60,
+  'comeback':      55,
+  'killing-spree': 50,
+  'double-kill':   40,
+  'first-blood':   30,
+  'headshot':      20,
+  'mid-air':       15,
+};
+
+export class Game {
+  private renderer: THREE.WebGLRenderer;
+  private scene: THREE.Scene;
+  private camera: THREE.PerspectiveCamera;
+  private map: ArenaMap = DEFAULT_MAP;
+  private mapMesh: THREE.Group;
+  private player: Player;
+  private weapon = new Railgun();
+  private input: InputManager;
+  private bots: BotManager | null = null;
+  private botModel: BotModel | null = null;
+  private medals = new MedalTracker();
+  private effects = new EffectsManager();
+  private audio = new SoundManager();
+  private locked = false;
+  private accumulator = 0;
+  private lastTime = 0;
+  private rafHandle: number | null = null;
+  private contextLost = false; // true while the WebGL context is lost (skip render)
+  // Frame scheduler: 0 = VSync (rAF, default), >0 = cap to that fps (setTimeout),
+  // <0 = uncapped (MessageChannel tight loop — renders past vsync for the lowest
+  // input latency, at high CPU cost). See scheduleFrame().
+  private fpsLimit = 0;
+  private netDebugOn = false; // F3 net-debug overlay
+  private frameTimeout: ReturnType<typeof setTimeout> | null = null;
+  private fpsChannel: MessageChannel | null = null;
+  private tickFn: ((now: number) => void) | null = null;
+  private disposed = false;
+  private resizeHandler: () => void;
+  private elapsed = 0;
+  private lastSpawnLine = -999; // elapsed-seconds of the last deploy/encouragement line
+
+  private playerName = PLAYER_NAME_DEFAULT;
+  private playerFrags = 0;
+  private playerDeaths = 0;
+  private playerHeadshots = 0;
+  private playerShotsFired = 0;
+  private playerShotsHit = 0;
+  private botDeathCounts = new Map<string, number>();
+  private botFrags = new Map<string, number>();
+  // Per-bot shot tallies so the scoreboard can show bot accuracy too.
+  private botShotsFired = new Map<string, number>();
+  private botShotsHit = new Map<string, number>();
+
+  // Match config + state
+  private botCount = NUM_BOTS;
+  private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
+  private botMode: GameMode = 'ffa'; // offline game mode (ffa/duel/tdm) for Solo vs Bots
+  // Weekly-challenge run: an 8p FFA speedrun vs easy bots. Uses a dedicated frag
+  // cap and exports the whole run as a rewatchable replay (see getChallengeRun).
+  private challenge = false;
+  private challengeMapId = WEEKLY_CHALLENGE_MAP;
+  private matchOver = false;
+  private matchWon = false;
+  // Match "drama" cues, evaluated from the scoreboard in emitHud. One-shot per
+  // match (offline: a fresh Game per match; online: reset on vote/round).
+  private worstDeficit = 0; // largest frag gap you've trailed the leader by
+  private comebackAwarded = false; // Comeback medal fires at most once per match
+  private matchPointAnnounced = false; // "Match point" banner fires once per match
+  private matchFirstBloodAwarded = false; // First Blood fires on the first kill of the match/round
+  private training = false; // endless practice — never hit the frag limit
+  private trainingRange: TrainingRange | null = null; // target-practice range (training mode)
+  private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
+  private localWarmupUntil = 0; // perf.now() ms; offline pre-match no-fire window
+  // Offline only: true once beginLocalWarmup has run (bots spawned, the match has
+  // truly opened). Before this — during the async bot-model load at start() —
+  // localWarmupUntil is 0 so inCountdown is false; gating the recorder/clock on
+  // this flag keeps the run from recording bot-less load frames or starting the
+  // timer early (the replay + run timer begin exactly at the gun-go).
+  private localWarmupArmed = false;
+  private shake = 0; // camera screen-shake amount, decays each render frame
+
+  // Visual customization
+  private worldColor = new THREE.Color(0xffffff);
+  private worldBrightness = 0;
+  private enemyColor: THREE.Color | null = null; // null = natural enemies
+
+  // Multiplayer
+  private net: NetClient | null = null;
+  private remotePlayers = new Map<string, RemotePlayer>();
+  private wantBots = true;
+  private wantMultiplayer = false;
+  private multiplayerUrl = '';
+  private multiplayerRoomId = '';
+  // Spectator mode: this client WATCHES the room (no local player sim, no fire,
+  // no pos upload). The camera rides `spectatedId`'s first-person POV.
+  private spectator = false;
+  private spectatedId: string | null = null;
+  // When set, buildViewmodel() uses this finish (the watched player's gun skin)
+  // instead of the local player's; cleared outside spectator mode.
+  private viewmodelFinishOverride: string | null = null;
+  private posSendAccumMs = 0;
+  // The local player's sim position at the start of the most recent sim step, so
+  // render() can interpolate the camera between the last two 64Hz sim states by
+  // the leftover accumulator fraction. Without this the camera translates in
+  // 64Hz steps and judders on >64Hz displays (aim is already per-frame smooth).
+  private simPrevPos = { x: 0, y: 0, z: 0 };
+  // performance.now() of the last LOCALLY-PREDICTED hit, so the server kill
+  // broadcast doesn't replay the hit-confirm sound we already played instantly.
+  private predictedHitMs = 0;
+  // Reused AABB for the predicted-hit raycast (no per-shot allocation).
+  private tmpAabb: AABB = { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
+  // Last position/orientation actually sent to the server + when, for idle dedup
+  // (see POS_SEND_HZ / POS_HEARTBEAT_MS). lastPosSentMs = 0 makes the heartbeat
+  // branch fire on the very first tick, so we always send an initial position.
+  private lastSentPos = { x: NaN, y: NaN, z: NaN };
+  private lastSentYaw = NaN;
+  private lastSentPitch = NaN;
+  private lastPosSentMs = 0;
+  // End-of-match map vote (server-driven). Non-null → vote overlay + pointer
+  // released; the local player idles until the result resumes play.
+  private vote: MapVoteState | null = null;
+  private onNetEvent: NetMatchListener = () => {};
+  // Multiplayer match result latch: in MP the server (not checkMatchEnd) ends a
+  // match — the vote opening IS the end. wonLastMatch is latched from the
+  // vote-start winnerId; matchSubmitted guards a single stats POST per match.
+  private wonLastMatch = false;
+  private matchSubmitted = false;
+  // Active online game mode + this client's team (TDM). Offline is always FFA.
+  private netMode: GameMode = 'ffa';
+  private ranked = false; // current online match is a ranked Duel (first-to-N)
+  private localTeam: number | null = null;
+
+  private killfeed: KillfeedEntry[] = [];
+  private toasts: ToastEntry[] = [];
+  private banner: BannerState | null = null;
+  private hitMarker: HitMarker | null = null;
+  private killConfirm: KillConfirm | null = null;
+  private killFlash: KillFlash | null = null;
+  private damageFlash = 0; // 0..1, set on death, decays — red "you were hit" vignette
+  private killcam: KillcamState | null = null;
+  private killcamLookAt = new THREE.Vector3();
+
+  // Play of the Match: record the live match, then on match-end pick the best
+  // moment and replay it cinematically before the results screen. All captured
+  // client-side, so it works offline-vs-bots and online (no server changes).
+  private recorder = new MatchRecorder();
+  private replay: ReplayPlayer | null = null;
+  private replaySegments: ReplaySegment[] = [];
+  private replaySegIdx = 0;
+  private pom: PomState | null = null;
+  private pomOnDone: (() => void) | null = null;
+  // In-game chat (online matches only). chatOpen = composer showing; chatLines =
+  // recent log (server-authoritative, capped). hideChat mirrors the setting.
+  private chatOpen = false;
+  private chatLines: ChatLine[] = [];
+  private nextChatLineId = 1;
+  private hideChat = false;
+  private endWon = false; // win/loss latched for the end-of-match cinematic
+  private verdictSpoken = false; // guards the one-shot VICTORY/DEFEAT callout
+  private nextEventId = 1;
+  private fireWasAirborne = false;
+  private weaponWasReady = true; // tracks cooldown-to-ready transition
+
+  private fps = 60;
+  private fpsFrames = 0;
+  private fpsAccumMs = 0;
+  private hudAccumMs = 0; // throttles HUD delivery in runLoop (#24)
+  private frameDt = 1 / 60; // last real frame delta (s) — for framerate-independent juice
+
+  private tmpForward = new THREE.Vector3();
+  private tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  private tmpRight = new THREE.Vector3();
+  private tmpUp = new THREE.Vector3();
+  private tmpBeamOrigin = new THREE.Vector3();
+
+  // Railgun viewmodel (first-person), parented to the camera. Quake-centered low
+  // so it never blocks the crosshair; user offset + hide applied on top.
+  private viewmodel: THREE.Group | null = null;
+  private viewmodelGlow: THREE.MeshStandardMaterial | null = null;
+  private viewmodelOffset = { x: 0, y: 0, z: 0 };
+  private hideViewmodel = false;
+  private killEffectStyle: KillEffectStyle = DEFAULT_KILL_EFFECT;
+  private localRailgunFinish: string = DEFAULT_RAILGUN_FINISH; // viewmodel skin (local)
+  private localNameColor: string = DEFAULT_NAME_COLOR; // nameplate tint (broadcast)
+  private localSpawnEffect: string = DEFAULT_SPAWN_EFFECT; // spawn-in burst (broadcast)
+  private localTitle: string = DEFAULT_TITLE; // earned title flair under the name (broadcast)
+  private botAlive = new Map<string, boolean>(); // prev alive-state per bot (spawn fx edge)
+  private localHat: string = DEFAULT_HAT; // equipped hat (broadcast to remotes)
+  private localUnusual: string = DEFAULT_UNUSUAL; // equipped unusual effect
+  private localEmote: string = DEFAULT_EMOTE; // equipped podium emote (broadcast to remotes)
+  private localCard: CardPayload | null = null; // your playercard (kill banner)
+  private reducedEffects = false; // accessibility: gate shake/flash/heavy bursts
+  // Weapon feedback: recoil kicks the viewmodel back+up; viewKick punches the
+  // view up. Both are transient and decay to 0 each frame (aim is unaffected —
+  // viewKick is purely visual, layered on top of the real pitch).
+  private recoil = 0;
+  private viewKick = 0;
+
+  // FOV / zoom. baseFov is the settings FOV; camera.fov lerps toward zoomFov
+  // while the zoom bind is held.
+  private baseFov = DEFAULT_FOV;
+  private zoomFov = DEFAULT_ZOOM_FOV;
+  private zoomSensMul = 1; // ADS sensitivity multiplier (blends in while zoomed)
+  private wantZoom = false;
+  // Graphics quality
+  private resolutionScale = 1;
+  private lowSpec = false;
+
+  private onMatchEnd: MatchEndListener;
+
+  constructor(
+    private canvas: HTMLCanvasElement,
+    private onHud: HudListener,
+    onMatchEnd?: MatchEndListener,
+  ) {
+    this.onMatchEnd = onMatchEnd ?? (() => {});
+    this.renderer = createRenderer(canvas);
+    this.scene = createScene(this.renderer);
+    this.camera = createCamera(canvas);
+    // Parent the viewmodel to the camera so it tracks the view. The camera is
+    // added to the scene so its child (the gun) is part of the render.
+    this.scene.add(this.camera);
+    this.buildViewmodel();
+
+    // WebGL context loss (GPU reset, driver hiccup, backgrounded low-VRAM tab):
+    // preventDefault keeps the context recoverable; we pause GL rendering and
+    // tell the player, then resume automatically when it's restored.
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: 'Graphics paused',
+        subtitle: 'GPU context lost — restoring…',
+        remaining: 999,
+        total: 999,
+      };
+      this.emitHud();
+    });
+    this.canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.banner = null;
+      this.emitHud();
+    });
+    this.mapMesh = buildMapMesh(this.map);
+    this.scene.add(this.mapMesh);
+    this.player = new Player(this.map.spawn);
+
+    this.input = new InputManager(
+      canvas,
+      (locked) => {
+        this.locked = locked;
+        // Losing the pointer (Esc / alt-tab) closes the chat composer too — Esc
+        // can't be intercepted before the browser exits pointer lock.
+        if (!locked && this.chatOpen) this.closeChat();
+        this.emitHud();
+        if (locked) this.audio.resume();
+      },
+      () => {
+        // Pointer lock was refused (no gesture / unsupported / touch). Surface a
+        // hint instead of a silently dimmed screen (#14).
+        this.banner = {
+          id: this.nextEventId++,
+          tier: 'special',
+          title: 'Click the arena to play',
+          subtitle: 'mouse capture needed',
+          remaining: BANNER_DURATION_SEC,
+          total: BANNER_DURATION_SEC,
+        };
+        this.emitHud();
+      },
+    );
+    void this.audio.init();
+
+    this.resizeHandler = () => this.handleResize();
+    window.addEventListener('resize', this.resizeHandler);
+    this.handleResize();
+    this.emitHud();
+  }
+
+  requestLock() {
+    // Refuse to re-capture the cursor once the match is over / a cinematic or
+    // vote is up — otherwise a stray click on the canvas during the Play of the
+    // Match re-locks the pointer and the results screen opens with no cursor.
+    if (this.matchOver || this.vote || this.replay || this.replaySegments.length) return;
+    this.input.requestLock();
+    this.audio.resume();
+  }
+
+  setSensitivity(s: number) {
+    this.input.setSensitivity(s);
+  }
+
+  setVertScale(v: number) {
+    this.input.setVertScale(v);
+  }
+
+  setRawInput(on: boolean) {
+    this.input.setRawInput(on);
+  }
+
+  setKeybinds(binds: Record<KeybindAction, string>) {
+    this.input.setBindings(binds);
+  }
+
+  // ── In-game chat (online only) ────────────────────────────────────────
+  setHideChat(on: boolean) {
+    this.hideChat = on;
+    if (on && this.chatOpen) this.closeChat();
+  }
+
+  // Open the chat composer: in a live online match, including while dead (you can
+  // chat through your killcam). Not over the results/vote/replay screens (the
+  // pointer is unlocked there). Keyboard input is routed to the chat box; the
+  // pointer stays locked and the game ignores keys via input.setChatting.
+  openChat() {
+    if (this.hideChat || !this.net || this.chatOpen) return;
+    if (!this.locked || this.matchOver || this.vote || this.replay) return;
+    this.chatOpen = true;
+    this.input.setChatting(true);
+    this.emitHud();
+  }
+
+  closeChat() {
+    if (!this.chatOpen) return;
+    this.chatOpen = false;
+    this.input.setChatting(false);
+    this.emitHud();
+  }
+
+  // Send a chat line to the match room (server validates + echoes it back, so we
+  // render our own message from handleNetChat — never optimistically).
+  sendChat(text: string) {
+    const t = text.trim();
+    if (t) this.net?.sendChat(t);
+    this.closeChat();
+  }
+
+  // Server-authoritative incoming chat line → append to the capped log.
+  private handleNetChat(m: ChatMessage) {
+    this.chatLines.push({
+      id: this.nextChatLineId++,
+      name: m.name,
+      text: m.text,
+      admin: m.admin,
+      verified: m.verified,
+      guest: m.guest,
+      at: Date.now(),
+    });
+    if (this.chatLines.length > 8) this.chatLines.shift();
+    this.emitHud();
+  }
+
+  setFov(fov: number) {
+    // Clamp + finite-guard so a corrupt/hand-edited persisted FOV can't write an
+    // invalid projection matrix (black/garbled viewport with no recovery). (#25)
+    const f = Number.isFinite(fov) ? fov : DEFAULT_FOV;
+    this.baseFov = Math.max(MIN_FOV, Math.min(MAX_FOV, f));
+    // Apply immediately unless mid-zoom (the per-frame lerp owns it then).
+    if (!this.wantZoom) {
+      this.camera.fov = this.baseFov;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  setZoomFov(fov: number) {
+    const f = Number.isFinite(fov) ? fov : DEFAULT_ZOOM_FOV;
+    this.zoomFov = Math.max(MIN_ZOOM_FOV, Math.min(MAX_ZOOM_FOV, f));
+  }
+
+  // Independent zoom/ADS sensitivity multiplier (1 = same feel as the FOV-scaled
+  // default; <1 = slower while zoomed for precise long-range flicks).
+  setZoomSens(mul: number) {
+    this.zoomSensMul = Number.isFinite(mul) ? Math.max(0.1, Math.min(3, mul)) : 1;
+  }
+
+  // Render quality. resolutionScale scales the render resolution (perf ↔ sharp);
+  // lowSpec caps high-DPI rendering at 1× and thins out particle effects.
+  setQuality(resolutionScale: number, lowSpec: boolean) {
+    this.resolutionScale = Number.isFinite(resolutionScale)
+      ? Math.max(0.4, Math.min(2, resolutionScale))
+      : 1;
+    this.lowSpec = !!lowSpec;
+    this.applyPixelRatio();
+    this.effects.setQuality(lowSpec ? 0.5 : 1);
+  }
+
+  private applyPixelRatio() {
+    if (typeof window === 'undefined') return;
+    const dpr = window.devicePixelRatio || 1;
+    const cap = this.lowSpec ? 1 : 2; // low-spec ignores high-DPI displays
+    const pr = Math.min(Math.min(dpr, cap) * this.resolutionScale, this.lowSpec ? 1.5 : 3);
+    this.renderer.setPixelRatio(pr);
+  }
+
+  setViewmodel(offset: { x: number; y: number; z: number }, hide: boolean) {
+    this.viewmodelOffset = { x: offset.x, y: offset.y, z: offset.z };
+    this.hideViewmodel = hide;
+    this.applyViewmodelTransform();
+  }
+
+  private applyViewmodelTransform() {
+    if (!this.viewmodel) return;
+    this.viewmodel.position.set(
+      VIEWMODEL_BASE.x + this.viewmodelOffset.x,
+      VIEWMODEL_BASE.y + this.viewmodelOffset.y,
+      VIEWMODEL_BASE.z + this.viewmodelOffset.z,
+    );
+  }
+
+  setMasterVolume(v: number) {
+    this.audio.setVolume(v);
+  }
+
+  setSfxVolume(v: number) {
+    this.audio.setSfxVolume(v);
+  }
+
+  setAnnouncerVolume(v: number) {
+    this.audio.setAnnouncerVolume(v);
+  }
+
+  setAnnouncerEnabled(on: boolean) {
+    this.audio.setAnnouncerEnabled(on);
+  }
+
+  setAnnouncerPack(id: AnnouncerPackId) {
+    this.audio.setAnnouncerPack(id);
+  }
+
+  setPlayerName(name: string) {
+    const trimmed = name?.trim() ?? '';
+    this.playerName = trimmed || PLAYER_NAME_DEFAULT;
+  }
+
+  setTraining(on: boolean) {
+    this.training = on;
+  }
+
+  setBotsEnabled(enabled: boolean) {
+    this.wantBots = enabled;
+    this.applyBotsState();
+  }
+
+  setBotCount(n: number) {
+    const next = Math.max(0, Math.min(MAX_PLAYERS - 1, Math.floor(n)));
+    if (next === this.botCount) return;
+    this.botCount = next;
+    this.rebuildBots();
+  }
+
+  setBotDifficulty(difficulty: BotDifficulty) {
+    if (difficulty === this.botDifficulty) return;
+    this.botDifficulty = difficulty;
+    this.rebuildBots();
+  }
+
+  // Offline game mode for Solo vs Bots (ffa/duel/tdm). Drives the win condition,
+  // the HUD, and — in TDM — bot team assignment + friendly fire + team colors.
+  setBotMode(mode: GameMode) {
+    this.botMode = mode;
+    this.applyBotTeams();
+    this.emitHud();
+  }
+
+  // Mark this offline run as the weekly challenge: a fixed-map FFA speedrun whose
+  // whole run is exported to a replay. `mapId` must match the MAPS registry so the
+  // rewatch viewer can rebuild the same arena.
+  setChallenge(mapId: string) {
+    this.challenge = true;
+    this.challengeMapId = mapId || WEEKLY_CHALLENGE_MAP;
+  }
+
+  // Assign offline teams from the current bot mode. TDM splits the player (team 0)
+  // + bots across two balanced teams and tints bot nameplates (ally green / foe
+  // team color) since friendly fire is off; FFA/Duel clear teams. Online is
+  // server-driven, so this is a no-op there. Re-run after any bot (re)build.
+  private applyBotTeams() {
+    if (this.net) return;
+    this.netMode = this.botMode;
+    if (this.botMode === 'tdm' && this.bots) {
+      this.localTeam = 0;
+      const list = this.bots.bots;
+      const total = list.length + 1; // bots + the human
+      const team0Bots = Math.max(0, Math.ceil(total / 2) - 1); // human takes one team-0 slot
+      list.forEach((b, i) => {
+        const team = i < team0Bots ? 0 : 1;
+        b.setTeam(team, this.teamColorHex(team) ?? '#ffd1d8');
+      });
+    } else {
+      this.localTeam = null;
+      if (this.bots) for (const b of this.bots.bots) b.setTeam(null);
+    }
+  }
+
+  private rebuildBots() {
+    if (!this.bots) return; // not spawned yet — applyBotsState() will use the new values
+    this.bots.dispose(this.scene);
+    this.bots = null;
+    this.botDeathCounts.clear();
+    this.botFrags.clear();
+    this.botShotsFired.clear();
+    this.botShotsHit.clear();
+    this.applyBotsState();
+  }
+
+  // Tint + full-bright the arena surfaces (Ratz-style world color).
+  setWorldStyle(colorHex: string, brightness: number) {
+    this.worldColor.set(colorHex);
+    this.worldBrightness = brightness;
+    this.applyWorldStyle();
+  }
+
+  private applyWorldStyle() {
+    const tint = this.worldColor;
+    const intensity = this.worldBrightness * 1.6;
+    this.mapMesh.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material;
+      const apply = (m: THREE.Material) => {
+        const sm = m as THREE.MeshStandardMaterial;
+        if (!sm.isMeshStandardMaterial || !sm.emissiveMap) return; // textured surfaces only
+        sm.color.copy(tint);
+        sm.emissive.copy(tint);
+        sm.emissiveIntensity = intensity;
+      };
+      if (Array.isArray(mat)) mat.forEach(apply);
+      else if (mat) apply(mat);
+    });
+  }
+
+  // Make enemies glow a bright colour for visibility (null = natural).
+  setEnemyStyle(colorHex: string | null) {
+    this.enemyColor = colorHex ? new THREE.Color(colorHex) : null;
+    this.applyEnemyStyle();
+  }
+
+  // Equipped kill-effect cosmetic (the explosion that plays at YOUR frags).
+  // Cosmetic-only; unknown IDs fall back to the default so a stale/forged value
+  // can never break rendering.
+  setKillEffect(id: string) {
+    this.killEffectStyle = isKillEffectStyle(id) ? id : DEFAULT_KILL_EFFECT;
+  }
+
+  // Equipped rail-beam color cosmetic — recolors the local player's beam, and is
+  // echoed to the server so other players + spectators see it on this beam too.
+  setRailColor(id: string) {
+    const safe = isRailColor(id) ? id : DEFAULT_RAIL_COLOR;
+    const c = railColorById(safe);
+    this.weapon.setBeamColors(c.data.core, c.data.helix);
+    this.net?.setLocalRailColor(safe);
+  }
+
+  // Crosshair (a share-code string) — echoed so a spectator can render the same
+  // reticle. Cosmetic-only on this client (the React HUD draws the local one).
+  setCrosshairCode(code: string) {
+    this.net?.setLocalCrosshair(typeof code === 'string' ? code : '');
+  }
+
+  // (Re)build the first-person railgun viewmodel with the equipped finish. Called
+  // from the constructor and whenever the finish changes (Locker equip / a
+  // spectator switching to a player whose gun skin differs).
+  private buildViewmodel() {
+    if (this.viewmodel) {
+      this.camera.remove(this.viewmodel);
+      disposeGroup(this.viewmodel);
+    }
+    // Spectators show the WATCHED player's finish; normal play shows the local one.
+    const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
+    const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
+    const vm = buildRailgun(finish);
+    this.viewmodel = vm.group;
+    this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
+    this.viewmodelGlow = vm.glow;
+    this.applyViewmodelTransform();
+    this.camera.add(this.viewmodel);
+  }
+
+  // Equipped railgun finish (gun skin) — recolors the local viewmodel and is
+  // echoed so the 3rd-person gun on this player uses the same skin for others.
+  setRailgunFinish(id: string) {
+    const next = isRailgunFinish(id) ? id : DEFAULT_RAILGUN_FINISH;
+    this.net?.setLocalRailgunFinish(next);
+    if (next === this.localRailgunFinish) return;
+    this.localRailgunFinish = next;
+    if (!this.viewmodelFinishOverride) this.buildViewmodel();
+  }
+
+  // Equipped hat — worn on the local player's model (seen by others online + in
+  // the killcam). Stored here; the net layer broadcasts it so remotes render it.
+  setHat(id: string) {
+    this.localHat = isHat(id) ? id : DEFAULT_HAT;
+    this.net?.setLocalHat(this.localHat);
+  }
+
+  // Equipped unusual particle effect — broadcast so remotes render it on your hat.
+  setUnusual(id: string) {
+    this.localUnusual = isUnusual(id) ? id : DEFAULT_UNUSUAL;
+    this.net?.setLocalUnusual(this.localUnusual);
+  }
+
+  // Equipped podium emote — broadcast so remotes show it on the results podium.
+  setEmote(id: string) {
+    this.localEmote = isEmote(id) ? id : DEFAULT_EMOTE;
+    this.net?.setLocalEmote(this.localEmote);
+  }
+
+  // Equipped nameplate color — broadcast so other players see your tinted name.
+  setNameColor(id: string) {
+    this.localNameColor = isNameColor(id) ? id : DEFAULT_NAME_COLOR;
+    this.net?.setLocalNameColor(this.localNameColor);
+  }
+
+  // Equipped spawn-in effect — broadcast so others see your materialize style,
+  // and used locally for your own + bots' respawns.
+  setSpawnEffect(id: string) {
+    this.localSpawnEffect = isSpawnEffect(id) ? id : DEFAULT_SPAWN_EFFECT;
+    this.net?.setLocalSpawnEffect(this.localSpawnEffect);
+  }
+
+  // Equipped title flair — broadcast so others see it under your name on the
+  // nameplate + scoreboard (and on your killcard).
+  setTitle(id: string) {
+    this.localTitle = isTitle(id) ? id : DEFAULT_TITLE;
+    this.net?.setLocalTitle(this.localTitle);
+  }
+
+  // Your playercard (built client-side from your profile + card settings).
+  // Broadcast so the victim's killcam shows it when you frag them.
+  setCardPayload(card: CardPayload) {
+    this.localCard = card;
+    this.net?.setLocalCard(card);
+  }
+
+  // Accessibility: when on, suppress camera shake + full-screen kill flash and
+  // swap the 3D kill burst for a small spark (WCAG vestibular / flashing). The
+  // hit marker, kill-confirm text, killfeed, and SFX still fire (informational).
+  setReducedEffects(v: boolean) {
+    this.reducedEffects = v;
+  }
+
+  private applyEnemyStyle() {
+    if (this.bots) for (const b of this.bots.bots) b.setHighlight(this.enemyColor);
+    // Remotes may be team-colored (TDM) — recolor through the team-aware path so
+    // the enemy-color setting doesn't clobber team identification.
+    this.recolorRemotes();
+  }
+
+  // Swap the arena in place (keeps the renderer/canvas — a second WebGL context
+  // can't be created on the same canvas, so we rebuild scene contents instead).
+  setMap(map: ArenaMap) {
+    if (map === this.map) return;
+    this.map = map;
+    this.scene.remove(this.mapMesh);
+    disposeGroup(this.mapMesh);
+    this.mapMesh = buildMapMesh(map);
+    this.scene.add(this.mapMesh);
+    this.applyWorldStyle(); // re-tint the freshly-built materials
+    // Reset the local player onto the new spawn.
+    this.player.pos = { ...map.spawn };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    // Clear transient visuals tied to the old geometry.
+    this.weapon.disposeAll(this.scene);
+    this.effects.dispose(this.scene);
+    this.killcam = null;
+    // Rebuild bots for the new layout.
+    if (this.bots) {
+      this.bots.dispose(this.scene);
+      this.bots = new BotManager(
+        this.scene,
+        this.map,
+        this.botCount,
+        this.map.spawn,
+        this.botModel,
+        this.botDifficulty,
+      );
+      this.botDeathCounts.clear();
+      this.botFrags.clear();
+      this.botShotsFired.clear();
+      this.botShotsHit.clear();
+      for (const b of this.bots.bots) {
+        this.botDeathCounts.set(b.state.id, 0);
+        this.botFrags.set(b.state.id, 0);
+      }
+      this.applyEnemyStyle();
+    }
+    this.emitHud();
+  }
+
+  setMultiplayer(opts: { enabled: boolean; url: string; roomId?: string; spectate?: boolean }) {
+    this.wantMultiplayer = opts.enabled;
+    this.multiplayerUrl = opts.url;
+    this.multiplayerRoomId = opts.roomId ?? '';
+    this.spectator = opts.enabled && !!opts.spectate;
+    if (this.spectator) {
+      this.matchOver = false;
+      this.killcam = null;
+    } else {
+      this.spectatedId = null;
+      this.viewmodelFinishOverride = null;
+    }
+    this.applyMultiplayerState();
+  }
+
+  // ── Spectator controls (no-ops outside spectator mode) ──────────────────
+  isSpectator(): boolean {
+    return this.spectator;
+  }
+
+  // The ordered list of players a spectator can watch (stable: by id), built from
+  // the authoritative meta roster so a player hidden mid-killcam keeps their slot.
+  private spectateList(): { id: string; name: string }[] {
+    if (!this.net) return [];
+    return this.net
+      .roster()
+      .map((r) => ({ id: r.id, name: r.name }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  // Switch the watched player by a signed step (next/prev), wrapping around.
+  private cycleSpectated(dir: number) {
+    const list = this.spectateList();
+    if (list.length === 0) { this.setSpectated(null); return; }
+    const cur = list.findIndex((p) => p.id === this.spectatedId);
+    const next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
+    this.setSpectated(list[next].id);
+  }
+
+  spectateNext() { this.cycleSpectated(1); }
+  spectatePrev() { this.cycleSpectated(-1); }
+
+  // Jump to the Nth watchable player (0-based); ignored if out of range.
+  spectateByIndex(i: number) {
+    const list = this.spectateList();
+    if (i >= 0 && i < list.length) this.setSpectated(list[i].id);
+  }
+
+  // Adopt a new watched player: remember it + rebuild the viewmodel with their
+  // railgun finish so the first-person gun matches who you're watching.
+  private setSpectated(id: string | null) {
+    if (id === this.spectatedId) return;
+    this.spectatedId = id;
+    const finish = id ? this.net?.cosmeticsOf(id)?.railgunFinish ?? null : null;
+    if (finish !== this.viewmodelFinishOverride) {
+      this.viewmodelFinishOverride = finish;
+      this.buildViewmodel();
+    }
+    this.emitHud();
+  }
+
+  // Keep the watched player valid: auto-pick the first one when none is selected
+  // or the current target left the match. Also re-sync the viewmodel finish if
+  // the watched player swapped their gun skin mid-match.
+  private updateSpectatedTarget() {
+    const list = this.spectateList();
+    if (list.length === 0) {
+      if (this.spectatedId !== null) this.setSpectated(null);
+      return;
+    }
+    if (!this.spectatedId || !list.some((p) => p.id === this.spectatedId)) {
+      this.setSpectated(list[0].id);
+      return;
+    }
+    // Same target, but their finish may have changed (Locker equip mid-match).
+    const finish = this.net?.cosmeticsOf(this.spectatedId)?.railgunFinish ?? null;
+    if (finish !== this.viewmodelFinishOverride) {
+      this.viewmodelFinishOverride = finish;
+      this.buildViewmodel();
+    }
+  }
+
+  // Surface multiplayer lifecycle events (join failure, map change) to the
+  // client orchestrator so it can navigate / toast.
+  setNetEventListener(fn: NetMatchListener) {
+    this.onNetEvent = fn;
+  }
+
+  async start() {
+    if (this.disposed) return;
+    this.lastTime = performance.now();
+    this.runLoop();
+    let model: BotModel | null = null;
+    try {
+      model = await loadBotModel(BOT_MODEL_URL);
+    } catch {
+      model = null;
+    }
+    if (this.disposed) return;
+    this.botModel = model;
+    this.applyBotsState();
+    this.applyMultiplayerState();
+    // Training mode: a target-practice range (no bots, no return fire).
+    if (this.training && !this.net && !this.trainingRange) {
+      this.trainingRange = new TrainingRange(this.scene, this.map);
+    }
+    this.emitHud();
+  }
+
+  dispose() {
+    this.disposed = true;
+    if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
+    this.rafHandle = null;
+    if (this.frameTimeout !== null) clearTimeout(this.frameTimeout);
+    this.frameTimeout = null;
+    if (this.fpsChannel) {
+      this.fpsChannel.port1.onmessage = null;
+      this.fpsChannel.port1.close();
+      this.fpsChannel.port2.close();
+      this.fpsChannel = null;
+    }
+    this.tickFn = null;
+    this.input.detach();
+    window.removeEventListener('resize', this.resizeHandler);
+    this.replay?.dispose();
+    this.replay = null;
+    this.replaySegments = [];
+    this.replaySegIdx = 0;
+    this.pom = null;
+    this.pomOnDone = null;
+    this.recorder.reset();
+    this.weapon.disposeAll(this.scene);
+    this.effects.dispose(this.scene);
+    this.trainingRange?.dispose(this.scene);
+    this.trainingRange = null;
+    if (this.bots) this.bots.dispose(this.scene);
+    for (const rp of this.remotePlayers.values()) rp.dispose(this.scene);
+    this.remotePlayers.clear();
+    if (this.net) this.net.dispose();
+    this.audio.dispose();
+    // The PMREM IBL render target lives on scene.environment and isn't a scene
+    // child, so disposeScene() misses it — free it explicitly so each match
+    // remount (Play Again / new match) doesn't leak a cube render target (#26i).
+    (this.scene.environment as THREE.Texture | null)?.dispose();
+    this.scene.environment = null;
+    this.disposeScene();
+    this.renderer.dispose();
+  }
+
+  private applyBotsState() {
+    if (!this.botModel && this.wantBots) {
+      // Model not loaded yet — applyBotsState() will be called again from start()
+      return;
+    }
+    if (this.wantBots && !this.bots) {
+      this.bots = new BotManager(
+        this.scene,
+        this.map,
+        this.botCount,
+        this.map.spawn,
+        this.botModel,
+        this.botDifficulty,
+      );
+      for (const b of this.bots.bots) {
+        this.botDeathCounts.set(b.state.id, 0);
+        this.botFrags.set(b.state.id, 0);
+      }
+      this.applyEnemyStyle();
+      this.applyBotTeams(); // re-apply TDM teams after a (re)build
+      // A real (non-training) offline match opens with a short warmup: a
+      // countdown during which neither side can frag, plus first-spawn grace so
+      // the cold open isn't a free kill for whoever the bots target first.
+      if (!this.training && !this.net) this.beginLocalWarmup();
+    } else if (!this.wantBots && this.bots) {
+      this.bots.dispose(this.scene);
+      this.bots = null;
+      this.botDeathCounts.clear();
+      this.botFrags.clear();
+      this.botShotsFired.clear();
+      this.botShotsHit.clear();
+    }
+  }
+
+  private beginLocalWarmup() {
+    this.localWarmupArmed = true; // the match has opened — recording may start at gun-go
+    this.localWarmupUntil = performance.now() + LOCAL_WARMUP_SEC * 1000;
+    // Invuln spans the warmup AND a beat past it (ticks down each frame), so the
+    // first live moment still has the normal respawn grace.
+    this.localRespawnInvuln = LOCAL_WARMUP_SEC + LOCAL_RESPAWN_INVULN_SEC;
+  }
+
+  // The 3-2-1 pre-match countdown — offline (localWarmupUntil) OR online
+  // (server resumeAt). During it nobody can move OR fire; bots stay put too.
+  private get inCountdown(): boolean {
+    return this.warmupMsLeft() > 0;
+  }
+
+  private warmupMsLeft(): number {
+    return this.net ? this.net.warmupMsLeft : Math.max(0, this.localWarmupUntil - performance.now());
+  }
+
+  private applyMultiplayerState() {
+    if (this.wantMultiplayer && !this.net) {
+      if (!this.multiplayerUrl) {
+        console.warn('[instagib] multiplayer enabled but no serverUrl set');
+        return;
+      }
+      console.info(`[instagib] connecting to ${this.multiplayerUrl} room=${this.multiplayerRoomId}`);
+      this.net = new NetClient({
+        url: this.multiplayerUrl,
+        name: this.playerName,
+        roomId: this.multiplayerRoomId,
+        spectate: this.spectator,
+        events: {
+          onKill: (ev) => this.handleNetKill(ev),
+          onJoined: (info) => this.handleNetJoined(info),
+          onJoinFailed: (reason) => this.onNetEvent({ type: 'join-failed', reason }),
+          onSpectating: (info) => this.handleNetSpectating(info),
+          onSpectateEnded: () => this.onNetEvent({ type: 'spectate-ended' }),
+          onRespawn: (pos) => this.handleNetRespawn(pos),
+          onVoteStart: (v) => this.handleVoteStart(v),
+          onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
+          onVoteResult: (r) => this.handleVoteResult(r),
+          onRankedResult: (r) => this.handleNetRankedResult(r),
+          onChat: (m) => this.handleNetChat(m),
+          onBeam: (b) => this.handleNetBeam(b),
+        },
+      });
+      this.net.connect();
+    } else if (!this.wantMultiplayer && this.net) {
+      this.net.dispose();
+      this.net = null;
+      this.vote = null;
+      this.netMode = 'ffa';
+      this.ranked = false;
+      this.localTeam = null;
+      for (const rp of this.remotePlayers.values()) rp.dispose(this.scene);
+      this.remotePlayers.clear();
+    }
+  }
+
+  // Server confirmed our room join → adopt the room's authoritative map and
+  // drop onto the server-assigned spawn.
+  private handleNetJoined(info: {
+    mapId: string;
+    spawn: { x: number; y: number; z: number };
+    state: 'active' | 'voting';
+    mode: GameMode;
+    ranked: boolean;
+    team: number | null;
+  }) {
+    this.netMode = info.mode;
+    this.ranked = info.ranked;
+    this.localTeam = info.team;
+    const desired = mapById(info.mapId);
+    if (desired !== this.map) this.setMap(desired);
+    this.player.pos = { x: info.spawn.x, y: info.spawn.y, z: info.spawn.z };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.killcam = null;
+    this.matchSubmitted = false;
+    this.wonLastMatch = false;
+    // Recolor any already-present remotes for the new mode (team colors in TDM).
+    this.recolorRemotes();
+    if (info.state !== 'voting') this.vote = null;
+    // "Now playing: <map>" so a server map adoption on join isn't silent (#26g).
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: desired.name,
+      subtitle: 'Now playing',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    this.emitHud();
+  }
+
+  // Server confirmed we're WATCHING a room → adopt its map/mode. No spawn, team,
+  // or score: a spectator never plays. The POV camera rides a chosen remote.
+  private handleNetSpectating(info: { mapId: string; mode: GameMode; state: 'active' | 'voting' }) {
+    this.netMode = info.mode;
+    this.localTeam = null;
+    const desired = mapById(info.mapId);
+    if (desired !== this.map) this.setMap(desired);
+    this.killcam = null;
+    this.matchOver = false;
+    this.recolorRemotes();
+    if (info.state !== 'voting') this.vote = null;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: desired.name,
+      subtitle: 'Spectating',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    this.emitHud();
+  }
+
+  // Server forced a respawn (we fell out of the world) — snap to the new spot.
+  private handleNetRespawn(pos: { x: number; y: number; z: number }) {
+    this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+  }
+
+  // Another player's rail beam (server-broadcast on every shot): draw the trail
+  // in the SHOOTER's equipped rail color (from the meta roster), and play the
+  // fire SFX, attenuated by distance so you hear who's shooting near you.
+  private handleNetBeam(b: { id?: string; ox: number; oy: number; oz: number; ex: number; ey: number; ez: number }) {
+    const origin = new THREE.Vector3(b.ox, b.oy, b.oz);
+    const end = new THREE.Vector3(b.ex, b.ey, b.ez);
+    const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
+    const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
+    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix);
+    // Spatialized fire SFX at the shot's origin — HRTF-panned + distance-faded by
+    // the audio listener, so you can hear which direction a shot came from.
+    this.audio.playAt('fire', b.ox, b.oy, b.oz, 0.5);
+  }
+
+  private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null; winnerTeam: number | null }) {
+    // Spectators don't vote, submit stats, or run the local Play-of-the-Match
+    // cinematic (no recorded POV) — they keep watching live through the breather
+    // and adopt the new map when the vote resolves.
+    if (this.spectator) {
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: 'Match over',
+        subtitle: 'Voting on next map',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+      this.emitHud();
+      return;
+    }
+    // The vote opening IS the end of the online match — this is the moment to
+    // latch win/loss and submit stats exactly once, BEFORE handleVoteResult
+    // resets the counters for the next map (#4). In TDM the winner is a team.
+    this.wonLastMatch =
+      v.winnerTeam != null
+        ? this.localTeam != null && v.winnerTeam === this.localTeam
+        : v.winnerId != null && v.winnerId === this.net?.clientId;
+    if (this.net && !this.matchSubmitted) {
+      this.matchSubmitted = true;
+      this.onMatchEnd(this.collectStats(this.wonLastMatch));
+    }
+    const counts: Record<string, number> = {};
+    for (const o of v.options) counts[o] = 0;
+    this.vote = {
+      options: v.options,
+      endsAtClient: v.endsAtClient,
+      durationMs: v.durationMs,
+      counts,
+      myVote: null,
+    };
+    // Release the cursor so the player can click a map; freeze sim via vote.
+    if (typeof document !== 'undefined' && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+    // The end cinematic (slow-mo → VICTORY/DEFEAT → Play of the Match) plays over
+    // the now-running vote countdown; the results + vote UI are gated behind
+    // hud.pom in React until it ends. The reveal is a no-op here — those overlays
+    // are React-state driven and simply un-gate when finishPlayOfMatch clears
+    // hud.pom (which also speaks the verdict via the freeze beat).
+    this.startPlayOfMatch(() => {}, this.wonLastMatch);
+    this.emitHud();
+  }
+
+  private handleVoteUpdate(counts: Record<string, number>) {
+    if (this.vote) {
+      this.vote = { ...this.vote, counts };
+      this.emitHud();
+    }
+  }
+
+  private handleVoteResult(r: { mapId: string; resumeAtClient: number; spawn?: { x: number; y: number; z: number } }) {
+    this.vote = null;
+    // Spectators just follow the new map — no local respawn, stat reset, or lock.
+    if (this.spectator) {
+      const desiredSpec = mapById(r.mapId);
+      if (desiredSpec !== this.map) this.setMap(desiredSpec);
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: desiredSpec.name,
+        subtitle: 'Next map',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+      this.emitHud();
+      return;
+    }
+    // The clip is normally done by the time the vote resolves; finish it
+    // defensively (no-op if not playing) so a fresh match starts clean.
+    this.finishPlayOfMatch();
+    this.recorder.reset();
+    // New match on the winning map: reset local medal/streak + per-run stats
+    // (server resets the authoritative scoreboard; HUD reads it from snapshots).
+    // Done AFTER handleVoteStart already submitted the finished match's stats.
+    this.medals = new MedalTracker();
+    this.playerFrags = 0;
+    this.playerDeaths = 0;
+    if (this.net) {
+      // Zero the authoritative counters too, so the scoreboard shows 0 the moment
+      // the new match starts rather than the old total from a stale snapshot.
+      this.net.localFrags = 0;
+      this.net.localDeaths = 0;
+    }
+    this.playerHeadshots = 0;
+    this.playerShotsFired = 0;
+    this.playerShotsHit = 0;
+    this.matchSubmitted = false;
+    this.wonLastMatch = false;
+    this.resetMatchDrama();
+    const desired = mapById(r.mapId);
+    if (desired !== this.map) this.setMap(desired);
+    // Use the server-assigned spawn (distributed per player) so everyone doesn't
+    // land on the same default spot. Fall back to a local pick only if the server
+    // didn't send one (e.g. an older server).
+    this.player.pos = r.spawn
+      ? { x: r.spawn.x, y: r.spawn.y, z: r.spawn.z }
+      : { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: desired.name,
+      subtitle: 'Next map',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    // Best-effort re-lock so the player isn't dropped to a generic Click-to-Play
+    // after every map cycle (#8). Works when the vote resolved right after the
+    // local player clicked an option (transient activation); otherwise the
+    // ClickToPlay overlay is the fallback.
+    this.input.requestLock();
+    this.emitHud();
+  }
+
+  // Duel: the server ended a round and reset the scoreboard. Mirror the reset
+  // locally — also zero the NetClient's authoritative counters so the very next
+  // emitHud doesn't momentarily re-show the pre-reset total from a stale snapshot
+  // (subsequent snapshots are already 0). Then update the round tally + banner.
+  // Ranked Duel resolved (frag limit reached, or a forfeit). The match is over:
+  // latch win/loss, submit career stats once (tagged 'ranked' via getMatchModeTag),
+  // release the cursor, and hand the rating deltas to React for the result overlay.
+  private handleNetRankedResult(r: RankedResult) {
+    // A spectator just bows out — the room dissolves and they'd get spectate-ended
+    // anyway; route them straight back to the lobby with the result they saw.
+    if (this.spectator) {
+      this.onNetEvent({ type: 'spectate-ended' });
+      return;
+    }
+    this.wonLastMatch = r.won;
+    if (this.net && !this.matchSubmitted) {
+      this.matchSubmitted = true;
+      this.onMatchEnd(this.collectStats(this.wonLastMatch));
+    }
+    if (typeof document !== 'undefined' && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+    this.onNetEvent({ type: 'ranked-result', result: r, won: r.won });
+    this.emitHud();
+  }
+
+  // On-screen bearing to the killer at death: 0 = dead ahead, +π/2 = your right.
+  // Uses your view yaw + the death position so the killcam can draw a "shot came
+  // from here" arrow. forward = (-sin yaw,-cos yaw), right = (cos yaw,-sin yaw).
+  private killDirAngle(killerPos: { x: number; z: number }, fromPos: { x: number; z: number }): number {
+    const dx = killerPos.x - fromPos.x;
+    const dz = killerPos.z - fromPos.z;
+    if (Math.hypot(dx, dz) < 1e-3) return 0;
+    const yaw = this.player.yaw;
+    const vf = dx * -Math.sin(yaw) + dz * -Math.cos(yaw);
+    const vr = dx * Math.cos(yaw) + dz * -Math.sin(yaw);
+    return Math.atan2(vr, vf);
+  }
+
+  // TDM team highlight: friendlies green, foes wear their team color. Returns
+  // null in non-TDM modes so the caller falls back to the enemy-highlight color.
+  private teamColorHex(team: number | null): string | null {
+    if (this.netMode !== 'tdm' || this.localTeam == null || team == null) {
+      return null;
+    }
+    return team === this.localTeam
+      ? TDM_FRIEND_COLOR
+      : TEAM_COLORS[team] ?? TEAM_COLORS[0];
+  }
+
+  private applyRemoteColor(rp: RemotePlayer) {
+    const hex = this.teamColorHex(rp.team);
+    if (hex) {
+      rp.setHighlight(new THREE.Color(hex));
+      rp.setTeamColor(hex); // team override > the player's name-color cosmetic
+    } else {
+      rp.setHighlight(this.enemyColor);
+      rp.setTeamColor(null); // fall back to the cosmetic name color
+    }
+  }
+
+  private recolorRemotes() {
+    for (const rp of this.remotePlayers.values()) this.applyRemoteColor(rp);
+  }
+
+  // Submit a map vote (called from the client overlay via the Game wrapper).
+  voteForMap(mapId: string) {
+    if (!this.net || !this.vote) return;
+    if (!this.vote.options.includes(mapId)) return;
+    this.vote = { ...this.vote, myVote: mapId };
+    this.net.sendVote(mapId);
+    this.emitHud();
+  }
+
+  // Frame-rate limit. 0 = VSync (display refresh), a positive number caps to
+  // that fps, a negative value uncaps (renders as fast as the machine allows,
+  // beyond vsync). Applied on the next scheduled frame.
+  setFpsLimit(n: number) {
+    this.fpsLimit = Number.isFinite(n) ? Math.trunc(n) : 0;
+  }
+
+  private runLoop() {
+    this.tickFn = (now: number) => {
+      if (this.disposed) return;
+      const dt = Math.min(0.1, (now - this.lastTime) / 1000);
+      this.lastTime = now;
+      // Apply mouse look once per RENDERED frame, before stepping the sim, so
+      // aim is as smooth as the display refresh (not quantized to the 64Hz sim)
+      // and this frame's movement reads the freshly-updated yaw.
+      this.applyLook();
+      this.accumulator += dt;
+      let steps = 0;
+      while (this.accumulator >= TICK_DT && steps < 5) {
+        // Snapshot the pre-step position so render() can interpolate toward the
+        // post-step one by the leftover accumulator fraction (smooth on any refresh).
+        this.simPrevPos.x = this.player.pos.x;
+        this.simPrevPos.y = this.player.pos.y;
+        this.simPrevPos.z = this.player.pos.z;
+        this.simStep(TICK_DT);
+        this.accumulator -= TICK_DT;
+        steps += 1;
+      }
+      if (steps === 5) this.accumulator = 0;
+      this.tickHudTimers(dt);
+      this.tickFps(dt);
+      this.frameDt = dt;
+      if (this.replay) {
+        // Play-of-the-Match clip is playing: drive the replay and age its
+        // beams + bursts here, since the sim (which normally steps them) is
+        // frozen at match end. The camera is owned by the ReplayPlayer.
+        this.replay.update(dt);
+        this.weapon.step(dt, this.scene);
+        this.effects.step(dt, this.scene);
+        if (this.replay.done) this.advanceReplay();
+      } else {
+        this.syncRemotePlayers(dt);
+        // Record the match for Play of the Match + the weekly-challenge replay
+        // (downsampled; live play only). Skip the pre-match countdown so the
+        // recorder clock starts at the gun-go — that makes it the authoritative
+        // run time for the speedrun challenge and keeps warmup out of the replay.
+        // Offline also requires the warmup to be ARMED (beginLocalWarmup has run):
+        // before that, during the async bot-model load, inCountdown is false but
+        // bots don't exist yet — recording then would capture glitchy bot-less
+        // frames and start the run clock early. Spectators never record.
+        if (
+          !this.spectator &&
+          !this.matchOver &&
+          !this.vote &&
+          !this.training &&
+          !this.inCountdown &&
+          (this.net || this.localWarmupArmed)
+        ) {
+          this.recorder.tick(dt, () => this.sampleReplayFrame());
+        }
+      }
+      // Skip GL work while the WebGL context is lost (GPU reset / driver hiccup)
+      // — rendering to a dead context spams errors and freezes black. The sim
+      // keeps ticking so we resume cleanly once the context is restored.
+      if (!this.contextLost) this.render();
+      // Throttle HUD delivery to ~20Hz so React isn't re-rendering ~14 overlay
+      // components every animation frame (the 3D render stays full-rate). Event
+      // sites (kills, respawn, vote, lock change) still call emitHud() directly
+      // for instant feedback. (#24)
+      this.hudAccumMs += dt * 1000;
+      if (this.hudAccumMs >= 50) {
+        this.hudAccumMs = 0;
+        this.emitHud();
+      }
+      this.scheduleFrame();
+    };
+    this.scheduleFrame();
+  }
+
+  // Schedule the next frame according to the FPS-limit mode. Exactly one frame
+  // is queued per tick, so switching modes at runtime is seamless (no overlap).
+  private scheduleFrame() {
+    const fn = this.tickFn;
+    if (this.disposed || !fn) return;
+    const limit = this.fpsLimit;
+    if (limit < 0) {
+      // Uncapped: re-run ASAP via a MessageChannel — beats setTimeout's ~4ms
+      // clamp, so it can render well past the display refresh.
+      if (!this.fpsChannel) {
+        this.fpsChannel = new MessageChannel();
+        this.fpsChannel.port1.onmessage = () => {
+          if (!this.disposed) fn(performance.now());
+        };
+      }
+      this.fpsChannel.port2.postMessage(null);
+    } else if (limit > 0) {
+      // Cap: aim for the target interval, discounting time already spent this
+      // frame so the cap holds under load.
+      const target = 1000 / limit;
+      const spent = performance.now() - this.lastTime;
+      this.frameTimeout = setTimeout(() => fn(performance.now()), Math.max(0, target - spent));
+    } else {
+      // VSync (default): one render per display refresh.
+      this.rafHandle = requestAnimationFrame(fn);
+    }
+  }
+
+  private tickFps(dt: number) {
+    this.fpsAccumMs += dt * 1000;
+    this.fpsFrames += 1;
+    if (this.fpsAccumMs >= 500) {
+      this.fps = Math.round((this.fpsFrames * 1000) / this.fpsAccumMs);
+      this.fpsFrames = 0;
+      this.fpsAccumMs = 0;
+    }
+  }
+
+  private syncRemotePlayers(dt: number) {
+    if (!this.net) return;
+    // Refresh the interpolated view of remote players (render-delayed so we
+    // always interpolate between two snapshots — see NetClient.interpolate).
+    this.net.interpolate(dt);
+    // Remove disconnected
+    for (const [id, rp] of this.remotePlayers) {
+      if (!this.net.remotes.has(id)) {
+        rp.dispose(this.scene);
+        this.remotePlayers.delete(id);
+      }
+    }
+    // Add new + tick existing
+    for (const [id, snap] of this.net.remotes) {
+      let rp = this.remotePlayers.get(id);
+      // Upgrade a fallback "pill" to the real model once the GLB is ready — the
+      // socket can connect (setMultiplayer) before start()'s awaited model load
+      // finishes, so early remotes are created modelless. Recreate them in place.
+      if (rp && this.botModel && !rp.hasModel()) {
+        const px = rp.group.position.x;
+        const py = rp.group.position.y;
+        const pz = rp.group.position.z;
+        rp.dispose(this.scene);
+        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
+        rp.group.position.set(px, py, pz);
+        rp.team = snap.team;
+        this.applyRemoteColor(rp);
+        this.remotePlayers.set(id, rp);
+      }
+      if (!rp) {
+        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
+        rp.group.position.set(snap.pos.x, snap.pos.y, snap.pos.z);
+        rp.team = snap.team;
+        this.applyRemoteColor(rp);
+        this.remotePlayers.set(id, rp);
+      } else if (rp.team !== snap.team) {
+        rp.team = snap.team;
+        this.applyRemoteColor(rp);
+      }
+      const respawned = rp.apply(snap, dt);
+      if (respawned && !this.reducedEffects) {
+        // This remote just materialized at its new spawn — play its effect.
+        this.effects.spawnInBurst(this.scene, rp.group.position, spawnEffectById(rp.equippedSpawnEffect).style);
+      }
+      rp.setInvuln(snap.invulnMs);
+      // First-person spectating: hide the watched player's own avatar so we're
+      // not inside our own mesh. Composes with the death-hide (see RemotePlayer).
+      rp.setFirstPersonHidden(this.spectator && id === this.spectatedId);
+    }
+  }
+
+  // Map a network client id to the replay actor id: the local player is always
+  // recorded as 'you' (so offline + online kill logs line up with the sampler),
+  // every other id passes through unchanged.
+  private replayId(netId: string): string {
+    return this.net && netId === this.net.clientId ? 'you' : netId;
+  }
+
+  // One downsampled frame for the match recorder: the pose of every entity the
+  // client can see (local player, remotes, bots), keyed by replay actor id.
+  // Also lazily captures each entity's static profile (name + cosmetics).
+  private sampleReplayFrame(): Record<string, ReplayPose> {
+    const poses: Record<string, ReplayPose> = {};
+
+    // Local player — first-person, but recorded as a body so the replay can
+    // show "you" in third person.
+    this.recorder.ensureProfile({
+      id: 'you',
+      name: this.playerName,
+      kind: 'local',
+      hat: this.localHat,
+      unusual: this.localUnusual,
+      nameColor: this.localNameColor,
+      team: this.localTeam,
+    });
+    poses['you'] = {
+      x: this.player.pos.x,
+      y: this.player.pos.y,
+      z: this.player.pos.z,
+      yaw: this.player.yaw,
+      pitch: this.player.pitch,
+      visible: this.killcam === null, // hidden while you're dead (killcam)
+    };
+
+    // Remote players (online). Cosmetics/yaw come from the latest net snapshot.
+    for (const [id, rp] of this.remotePlayers) {
+      const snap = this.net?.remotes.get(id);
+      this.recorder.ensureProfile({
+        id,
+        name: rp.name,
+        kind: 'remote',
+        hat: snap?.hat ?? 'hat.none',
+        unusual: snap?.unusual ?? 'unusual.none',
+        nameColor: snap?.nameColor ?? 'name.default',
+        team: rp.team,
+      });
+      poses[id] = {
+        x: rp.group.position.x,
+        y: rp.group.position.y,
+        z: rp.group.position.z,
+        yaw: snap?.yaw ?? 0,
+        pitch: snap?.pitch ?? 0,
+        visible: rp.group.visible,
+      };
+    }
+
+    // Bots (offline). Their facing uses a +π model offset vs. the player/remote
+    // convention, so convert it here for a faithful replay orientation.
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        const id = b.state.id;
+        this.recorder.ensureProfile({
+          id,
+          name: b.state.name,
+          kind: 'bot',
+          hat: 'hat.none',
+          unusual: 'unusual.none',
+          nameColor: 'name.default',
+          team: null,
+        });
+        poses[id] = {
+          x: b.state.pos.x,
+          y: b.state.pos.y,
+          z: b.state.pos.z,
+          yaw: b.getFacing() + Math.PI,
+          pitch: 0, // bots don't track a persistent look pitch
+          visible: b.state.alive,
+        };
+      }
+    }
+
+    return poses;
+  }
+
+  private addShake(amount: number) {
+    if (this.reducedEffects) return; // accessibility: no camera shake
+    this.shake = Math.min(SHAKE_MAX, this.shake + amount);
+  }
+
+  // Spawn the kill burst at `at`, honoring the reduced-effects setting: the full
+  // 3D explosion is replaced by a small, non-flashing spark.
+  private spawnKillEffect(at: THREE.Vector3, headshot: boolean, style: KillEffectStyle) {
+    if (this.reducedEffects) {
+      this.effects.spawnHitFlash(this.scene, at, headshot ? 0xffd27a : 0x9be8ff);
+      return;
+    }
+    this.effects.spawnKillBurst(this.scene, at, headshot, style);
+  }
+
+  // Punchy feedback when YOU land a kill: a crisp shake, a full-screen edge
+  // flash, and a glow pop on the viewmodel — on top of the hit marker, kill
+  // confirm text, SFX, and 3D burst handled at the call sites.
+  private fireKillFeedback(headshot: boolean) {
+    this.addShake(SHAKE_KILL);
+    if (!this.reducedEffects) {
+      this.killFlash = {
+        id: this.nextEventId++,
+        headshot,
+        remaining: KILL_FLASH_DURATION_SEC,
+        total: KILL_FLASH_DURATION_SEC,
+      };
+    }
+    if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 5.5;
+  }
+
+  // Mouse look, applied once per rendered frame (see the tick loop). Decoupled
+  // from the fixed 64Hz sim so flick aim is as smooth as the monitor on 144Hz+.
+  private applyLook() {
+    // Always drain the accumulator so a held-but-not-applied delta (dead/paused/
+    // match over) can't pile up and snap the view when control resumes.
+    const look = this.input.consumeLook();
+    if (!this.locked || this.matchOver || this.killcam !== null || this.replay) return;
+    this.player.yaw -= look.yawDelta;
+    this.player.pitch -= look.pitchDelta;
+    if (this.player.pitch < -PITCH_LIMIT) this.player.pitch = -PITCH_LIMIT;
+    else if (this.player.pitch > PITCH_LIMIT) this.player.pitch = PITCH_LIMIT;
+  }
+
+  private simStep(dt: number) {
+    // Spectators have no local player and never pointer-lock: just age the
+    // weapon beams + effects so the watched match's visuals decay normally, and
+    // keep the watched-player selection valid.
+    if (this.spectator) {
+      this.elapsed += dt;
+      this.weapon.step(dt, this.scene);
+      this.effects.step(dt, this.scene);
+      this.updateSpectatedTarget();
+      return;
+    }
+    if (!this.locked || this.matchOver) return;
+    this.elapsed += dt;
+
+    const input = this.input.consume();
+    this.wantZoom = input.zoom;
+    if (input.chatPressed) this.openChat(); // open the composer (guards inside)
+    const dead = this.killcam !== null;
+
+    // While dead, movement is frozen — the camera is owned by the killcam in
+    // render(). (Look is drained every frame in applyLook(), so it can't pile up
+    // and snap the view on respawn.)
+    if (!dead) this.player.step(input, dt, this.map, this.inCountdown);
+
+    // Self-heal the local sim: a NaN (degenerate collision) or falling out of
+    // the world (boosted through a seam) would otherwise be unrecoverable
+    // offline — online the server force-respawns us, but offline nothing does.
+    if (!dead) {
+      const p = this.player.pos;
+      const b = this.map.bounds;
+      const finite = Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
+      const voided =
+        p.y < b.min.y - 6 ||
+        p.x < b.min.x - 4 || p.x > b.max.x + 4 ||
+        p.z < b.min.z - 4 || p.z > b.max.z + 4;
+      if (!finite || voided) {
+        this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
+        this.player.vel = { x: 0, y: 0, z: 0 };
+        this.player.onGround = false;
+        this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
+      }
+    }
+
+    // Boost-jump feedback: a cyan spark at the surface the player kicked off.
+    if (this.player.didBoost) {
+      this.player.didBoost = false;
+      const c = this.player.boostContact;
+      this.effects.spawnHitFlash(this.scene, new THREE.Vector3(c.x, c.y, c.z), 0x9be8ff);
+    }
+
+    this.weapon.step(dt, this.scene);
+    this.effects.step(dt, this.scene);
+    this.trainingRange?.update(dt);
+    if (this.localRespawnInvuln > 0) {
+      this.localRespawnInvuln = Math.max(0, this.localRespawnInvuln - dt);
+    }
+    if (this.bots) {
+      // Targetable entities: the local player (only while alive) + all live
+      // bots. Each bot skips itself. Resolve any shots they decide to take.
+      const enemies: BotTarget[] = [];
+      if (!dead) enemies.push({ id: 'player', pos: this.player.pos, team: this.localTeam });
+      for (const b of this.bots.bots) {
+        if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam() });
+      }
+      const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
+      // During the countdown bots are frozen (no intents); afterwards they frag.
+      if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
+      // Spawn-in effect when a bot materializes (dead→alive), so solo play shows
+      // the effect too. A stable per-bot style gives variety without netcode.
+      if (!this.reducedEffects) {
+        for (const b of this.bots.bots) {
+          const was = this.botAlive.get(b.state.id);
+          if (b.state.alive && was === false) {
+            const style = SPAWN_EFFECTS[hashStr(b.state.id) % SPAWN_EFFECTS.length].style;
+            this.effects.spawnInBurst(
+              this.scene,
+              new THREE.Vector3(b.state.pos.x, b.state.pos.y, b.state.pos.z),
+              style,
+            );
+          }
+          this.botAlive.set(b.state.id, b.state.alive);
+        }
+      }
+    }
+
+    // Cooldown-to-ready transition → reload-ready ping. Fires once per shot.
+    const ready = this.weapon.cooldown === 0;
+    if (ready && !this.weaponWasReady && !dead) {
+      this.audio.play('reload-ready', 0.6);
+    }
+    this.weaponWasReady = ready;
+
+    if (input.firePressed && !dead && !this.inCountdown) this.handleFire();
+
+    // Position broadcast at the sim-tick rate, with idle dedup. Sending fresher
+    // samples (vs the old 32Hz) reduces the snapshot-aliasing jitter remote
+    // viewers see (see POS_SEND_HZ); the dedup keeps an idle player near-silent.
+    if (this.net) {
+      this.posSendAccumMs += dt * 1000;
+      const intervalMs = 1000 / POS_SEND_HZ;
+      if (this.posSendAccumMs >= intervalMs) {
+        this.posSendAccumMs = 0;
+        const p = this.player.pos;
+        const moved =
+          Math.abs(p.x - this.lastSentPos.x) > POS_EPSILON ||
+          Math.abs(p.y - this.lastSentPos.y) > POS_EPSILON ||
+          Math.abs(p.z - this.lastSentPos.z) > POS_EPSILON ||
+          Math.abs(this.player.yaw - this.lastSentYaw) > YAW_EPSILON ||
+          Math.abs(this.player.pitch - this.lastSentPitch) > YAW_EPSILON;
+        const nowMs = performance.now();
+        if (moved || nowMs - this.lastPosSentMs >= POS_HEARTBEAT_MS) {
+          this.net.sendPosition(p.x, p.y, p.z, this.player.yaw, this.player.pitch);
+          this.lastSentPos.x = p.x;
+          this.lastSentPos.y = p.y;
+          this.lastSentPos.z = p.z;
+          this.lastSentYaw = this.player.yaw;
+          this.lastSentPitch = this.player.pitch;
+          this.lastPosSentMs = nowMs;
+        }
+      }
+    }
+  }
+
+  // Local prediction of whether a shot hit a remote player, mirroring the
+  // server's lag-comp raycast: same hitbox dims (PLAYER_RADIUS × PLAYER_HEIGHT),
+  // same headshot fraction, same skip rules (spawn-invuln, friendly fire in TDM,
+  // dead/hidden), capped at the wall distance. Cast against the RENDERED
+  // (interpolated, delayed) positions — exactly what the server rewinds to — so
+  // the prediction agrees with the authoritative result the vast majority of the
+  // time. Used only to show instant hit feedback; never touches score.
+  private predictRemoteHit(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number,
+  ): { hit: boolean; headshot: boolean } {
+    if (!this.net) return { hit: false, headshot: false };
+    const tdm = this.net.mode === 'tdm';
+    const localTeam = this.net.localTeam;
+    let bestT = maxDist;
+    let hit = false;
+    let headshot = false;
+    // Raycast the freshly-interpolated snapshot positions (net.remotes) — the
+    // exact positions the server rewinds to at our renderTime. Players hidden
+    // during their killcam / dropped are absent from net.remotes, so skipped.
+    for (const [, snap] of this.net.remotes) {
+      if (snap.invulnMs > 0) continue; // protected — server won't count it
+      if (tdm && localTeam != null && snap.team === localTeam) continue; // friendly fire off
+      const px = snap.pos.x;
+      const py = snap.pos.y;
+      const pz = snap.pos.z;
+      this.tmpAabb.min.x = px - PLAYER_RADIUS;
+      this.tmpAabb.min.y = py;
+      this.tmpAabb.min.z = pz - PLAYER_RADIUS;
+      this.tmpAabb.max.x = px + PLAYER_RADIUS;
+      this.tmpAabb.max.y = py + PLAYER_HEIGHT;
+      this.tmpAabb.max.z = pz + PLAYER_RADIUS;
+      const t = rayAabb(origin, dir, this.tmpAabb);
+      if (t == null || t <= 0 || t >= bestT) continue;
+      bestT = t;
+      hit = true;
+      const hitY = origin.y + dir.y * t;
+      headshot = hitY >= py + PLAYER_HEIGHT * BOT_HEADSHOT_THRESHOLD;
+    }
+    return { hit, headshot };
+  }
+
+  private handleFire() {
+    this.tmpEuler.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
+    this.tmpForward.set(0, 0, -1).applyEuler(this.tmpEuler);
+    this.tmpRight.set(1, 0, 0).applyEuler(this.tmpEuler);
+    this.tmpUp.set(0, 1, 0).applyEuler(this.tmpEuler);
+    const eye = new THREE.Vector3(
+      this.player.pos.x,
+      this.player.pos.y + EYE_HEIGHT,
+      this.player.pos.z,
+    );
+    const muzzle = eye.addScaledVector(this.tmpForward, 0.3);
+    // The VISIBLE beam leaves the gun muzzle (lower-right of the eye, tracking
+    // the viewmodel offset) instead of the crosshair, so it never blocks POV.
+    // Hits + the server shot still use `muzzle` (eye) so aim stays exact.
+    this.tmpBeamOrigin
+      .set(this.player.pos.x, this.player.pos.y + EYE_HEIGHT, this.player.pos.z)
+      .addScaledVector(this.tmpRight, 0.16 + this.viewmodelOffset.x)
+      .addScaledVector(this.tmpUp, -0.16 + this.viewmodelOffset.y)
+      .addScaledVector(this.tmpForward, 0.5);
+
+    // Bots are resolved locally; remote players are resolved by the SERVER
+    // (lag-compensated). So the local raycast only carries bots — the wall
+    // distance (result.end) becomes the shot's range cap sent to the server.
+    const targets: RailTarget[] = [];
+    const bots = this.bots?.bots ?? [];
+    for (const b of bots) {
+      if (!b.state.alive) continue;
+      // TDM: can't hit teammates (friendly fire off) — leave them off the raycast.
+      if (this.localTeam != null && b.getTeam() === this.localTeam) continue;
+      targets.push({
+        kind: 'bot',
+        id: b.state.id,
+        name: b.state.name,
+        bounds: b.bounds(),
+        headshotY: b.state.pos.y + BOT_HEIGHT * BOT_HEADSHOT_THRESHOLD,
+        centerY: b.centerY(),
+      });
+    }
+    // Training-range targets are raycast just like bots (collateral allowed).
+    if (this.trainingRange) targets.push(...this.trainingRange.targets());
+
+    // Training range: drop the rail cooldown so players can drill fast flick
+    // shots. firePressed is edge-triggered, so this is one shot per click — not
+    // full-auto. (See the matching reset after the shot lands.)
+    const trainingShot = this.trainingRange !== null;
+    if (trainingShot) this.weapon.cooldown = 0;
+    const result = this.weapon.fire(
+      muzzle,
+      this.tmpForward,
+      this.scene,
+      this.map.boxes,
+      targets,
+      this.tmpBeamOrigin,
+    );
+    // Cooldown blocked the shot → no SFX, no side effects.
+    if (!result) return;
+
+    // Firing ends your spawn grace (offline vs bots; the server does the same for
+    // online play) — no shooting from behind protection.
+    if (this.localRespawnInvuln > 0) this.localRespawnInvuln = 0;
+
+    // Real shot: play fire SFX exactly once. The weapon already set cooldown.
+    // In training, clear the cooldown again and keep weaponWasReady true so the
+    // reload-ready ping doesn't replay after every shot.
+    this.weaponWasReady = trainingShot;
+    if (trainingShot) this.weapon.cooldown = 0;
+    this.fireWasAirborne = !this.player.onGround;
+    this.playerShotsFired += 1;
+    // Record the visible beam so the Play-of-the-Match replay can re-draw it.
+    this.recorder.logShot({
+      origin: { x: this.tmpBeamOrigin.x, y: this.tmpBeamOrigin.y, z: this.tmpBeamOrigin.z },
+      end: { x: result.end.x, y: result.end.y, z: result.end.z },
+      killerId: 'you',
+    });
+    this.audio.play('fire', 0.55);
+    this.addShake(SHAKE_FIRE);
+    // Weapon feedback: recoil the gun, punch the view up, flash the muzzle, and
+    // spike the gun's energy glow (all decay back over the next few frames).
+    this.recoil = 1;
+    this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
+    if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
+    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin);
+
+    // Training range: count the shot, pop any targets the rail passed through,
+    // and break the streak on a clean miss. Live stats refresh to the HUD.
+    if (this.trainingRange) {
+      this.trainingRange.registerShot();
+      let hitTarget = false;
+      for (const hit of result.hits) {
+        if (hit.target.kind !== 'target') continue;
+        const pos = this.trainingRange.onHit(hit.target.id);
+        if (pos) {
+          hitTarget = true;
+          this.spawnKillEffect(pos, hit.headshot, this.killEffectStyle);
+          this.audio.play(hit.headshot ? 'headshot' : 'hit', 0.5);
+        }
+      }
+      if (!hitTarget) this.trainingRange.registerMiss();
+      this.emitHud();
+    }
+
+    // Hand the shot to the server for authoritative, lag-compensated hit
+    // detection against remote players. maxDist = distance to the nearest wall.
+    if (this.net) {
+      const maxDist = muzzle.distanceTo(result.end);
+      // Refresh remote positions to THIS instant before predicting + sending, so
+      // the prediction raycast and the shot's renderTime agree with what the
+      // server rewinds to. Without this the prediction used last frame's render
+      // (~16ms stale), which flips edge hits on fast movers → ghost markers.
+      this.net.interpolate(0);
+      this.net.sendShot(
+        { x: muzzle.x, y: muzzle.y, z: muzzle.z },
+        { x: this.tmpForward.x, y: this.tmpForward.y, z: this.tmpForward.z },
+        maxDist,
+      );
+      // Predicted hit feedback. We render remotes at the same delayed positions
+      // the server rewinds to, so a local raycast against them (with the server's
+      // hitbox dims + the same invuln/team/wall rules) matches the authoritative
+      // result almost always — so show the hitmarker + confirm tick NOW instead
+      // of a full round-trip later. Purely cosmetic: the kill, killfeed, medals,
+      // and score still come from the server's `kill` broadcast (handleNetKill),
+      // which de-dupes the sound against this prediction.
+      // Only predict when the buffer is healthy (we're interpolating, so the
+      // rendered remotes match what the server will rewind to). If we're
+      // extrapolating (underrun), the remotes are ahead of the server's truth,
+      // so a local "hit" would likely ghost — wait for the server's kill.
+      const pred = this.net.extrapolating
+        ? { hit: false, headshot: false }
+        : this.predictRemoteHit(muzzle, this.tmpForward, maxDist);
+      if (pred.hit) {
+        this.predictedHitMs = performance.now();
+        this.hitMarker = {
+          id: this.nextEventId++,
+          kind: pred.headshot ? 'headshot' : 'kill',
+          remaining: HIT_MARKER_KILL_DURATION_SEC,
+          total: HIT_MARKER_KILL_DURATION_SEC,
+        };
+        this.audio.hitConfirm(pred.headshot, 0.5);
+        this.emitHud();
+      }
+    }
+
+    if (result.hits.length === 0) return; // missed every bot
+
+    // Local bot kills resolve immediately. (Remote-player kills are decided by
+    // the server via the shot above and arrive through handleNetKill.)
+    let firstHitHeadshot = false;
+    let anyHit = false;
+
+    for (const hit of result.hits) {
+      if (hit.target.kind !== 'bot') continue;
+      anyHit = true;
+      if (!firstHitHeadshot && hit === result.hits[0]) {
+        firstHitHeadshot = hit.headshot;
+      }
+      this.effects.spawnHitFlash(this.scene, hit.point, 0xffd1d8);
+
+      const bot = bots.find((b) => b.state.id === hit.target.id);
+      if (!bot) continue;
+      const midAir = this.fireWasAirborne;
+      const special = hit.headshot ? 'headshot' : midAir ? 'mid-air' : null;
+      this.spawnKillEffect(
+        new THREE.Vector3(bot.state.pos.x, bot.centerY(), bot.state.pos.z),
+        hit.headshot,
+        this.killEffectStyle,
+      );
+      bot.kill();
+      this.recorder.logKill({
+        killerId: 'you',
+        victimId: bot.state.id,
+        headshot: hit.headshot,
+        killerName: this.playerName,
+        victimName: hit.target.name,
+      });
+      this.botDeathCounts.set(
+        bot.state.id,
+        (this.botDeathCounts.get(bot.state.id) ?? 0) + 1,
+      );
+      this.playerFrags += 1;
+      if (hit.headshot) this.playerHeadshots += 1;
+      this.audio.play('kill', 0.7);
+      this.audio.hitConfirm(hit.headshot, 0.5);
+      this.pushKillfeed({
+        killer: this.playerName,
+        killerLocal: true,
+        victim: hit.target.name,
+        weapon: 'rail',
+        special,
+      });
+      const medals = this.medals.onKill(this.elapsed, {
+        midAir,
+        headshot: hit.headshot,
+        firstBlood: this.claimFirstBlood(),
+      });
+      this.awardMedals(medals);
+    }
+
+    if (anyHit) {
+      this.playerShotsHit += 1;
+      this.hitMarker = {
+        id: this.nextEventId++,
+        kind: firstHitHeadshot ? 'headshot' : 'kill',
+        remaining: HIT_MARKER_KILL_DURATION_SEC,
+        total: HIT_MARKER_KILL_DURATION_SEC,
+      };
+      // Prominent kill confirmation on EVERY frag (offline path — the online
+      // path sets this in handleNetKill). result.hits[0] is the nearest victim.
+      this.killConfirm = {
+        id: this.nextEventId++,
+        victimName: result.hits[0].target.name,
+        headshot: firstHitHeadshot,
+        remaining: KILL_CONFIRM_DURATION_SEC,
+        total: KILL_CONFIRM_DURATION_SEC,
+      };
+      this.fireKillFeedback(firstHitHeadshot);
+      this.checkMatchEnd();
+    }
+  }
+
+  // ── Bot combat: resolve a bot's fired shot against the world ──────────────
+  private handleBotShot(intent: BotFireIntent) {
+    // Every intent is one shot fired — count it for the bot's accuracy.
+    this.botShotsFired.set(intent.botId, (this.botShotsFired.get(intent.botId) ?? 0) + 1);
+    const origin = new THREE.Vector3(intent.origin.x, intent.origin.y, intent.origin.z);
+    const dir = new THREE.Vector3(intent.dir.x, intent.dir.y, intent.dir.z).normalize();
+    const o = intent.origin;
+    const d = { x: dir.x, y: dir.y, z: dir.z };
+
+    // Nearest wall caps the beam + the shot.
+    let wallT = RAIL_RANGE;
+    for (const b of this.map.boxes) {
+      const t = rayAabb(o, d, b);
+      if (t !== null && t > 0 && t < wallT) wallT = t;
+    }
+
+    // Nearest victim (player + other bots) closer than the wall.
+    let victimKind: 'player' | 'bot' | null = null;
+    let victimId = '';
+    let victimName = '';
+    let victimPos: { x: number; y: number; z: number } | null = null;
+    let bestT = wallT;
+    // TDM: a bot never hits its own team — skip the player (if same team) and any
+    // same-team bot when resolving the shot (friendly fire is off).
+    const playerIsTeammate = intent.team != null && this.localTeam === intent.team;
+    if (this.killcam === null && this.localRespawnInvuln <= 0 && !playerIsTeammate) {
+      const t = rayAabb(o, d, this.playerBounds());
+      if (t !== null && t > 0 && t < bestT) {
+        bestT = t;
+        victimKind = 'player';
+        victimId = 'player';
+        victimName = this.playerName;
+        victimPos = { ...this.player.pos };
+      }
+    }
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        if (!b.state.alive || b.state.id === intent.botId) continue;
+        if (intent.team != null && b.getTeam() === intent.team) continue; // teammate — friendly fire off
+        const t = rayAabb(o, d, b.bounds());
+        if (t !== null && t > 0 && t < bestT) {
+          bestT = t;
+          victimKind = 'bot';
+          victimId = b.state.id;
+          victimName = b.state.name;
+          victimPos = { ...b.state.pos };
+        }
+      }
+    }
+
+    // Visible beam to the impact point (enemy fire reveals positions).
+    const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
+    this.weapon.spawnBeam(origin, end, this.scene);
+    this.recorder.logShot({
+      origin: { x: origin.x, y: origin.y, z: origin.z },
+      end: { x: end.x, y: end.y, z: end.z },
+      killerId: intent.botId,
+    });
+    // Spatialized so you can hear which direction a bot is firing from.
+    this.audio.playAt('fire', origin.x, origin.y, origin.z, 0.4);
+    if (!victimKind || !victimPos) return;
+    // A bot scoring the match's first kill consumes First Blood, so the local
+    // player can't later claim it for what is really the second kill.
+    this.claimFirstBlood();
+
+    // Landed on someone (instagib = every hit is a kill) → count for accuracy.
+    this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
+    this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
+    this.recorder.logKill({
+      killerId: intent.botId,
+      victimId: victimKind === 'player' ? 'you' : victimId,
+      headshot: false,
+      killerName: intent.botName,
+      victimName,
+    });
+    if (victimKind === 'player') {
+      this.handleLocalDeath(intent.botName, intent.botId);
+    } else {
+      const victim = this.bots?.bots.find((b) => b.state.id === victimId);
+      if (victim) {
+        this.spawnKillEffect(
+          new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
+          false,
+          DEFAULT_KILL_EFFECT,
+        );
+        victim.kill();
+        this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
+      }
+      this.pushKillfeed({
+        killer: intent.botName,
+        killerLocal: false,
+        victim: victimName,
+        weapon: 'rail',
+        special: null,
+      });
+    }
+    this.botFrags.set(intent.botId, (this.botFrags.get(intent.botId) ?? 0) + 1);
+    this.checkMatchEnd();
+  }
+
+  private playerBounds(): AABB {
+    const p = this.player.pos;
+    return {
+      min: { x: p.x - PLAYER_RADIUS, y: p.y, z: p.z - PLAYER_RADIUS },
+      max: { x: p.x + PLAYER_RADIUS, y: p.y + PLAYER_HEIGHT, z: p.z + PLAYER_RADIUS },
+    };
+  }
+
+  // Local (single-player vs bots) death + respawn. Mirrors the multiplayer
+  // victim branch of handleNetKill but for a bot killer.
+  private handleLocalDeath(killerName: string, killerId: string) {
+    if (this.killcam) return;
+    const deathPos = { ...this.player.pos };
+    // Respawn away from where we died AND from every live bot (not just one).
+    const avoid = [this.player.pos];
+    if (this.bots) for (const b of this.bots.bots) if (b.state.alive) avoid.push(b.state.pos);
+    const spot = pickFreeSpot(this.map, avoid, PLAYER_RADIUS);
+    this.player.pos = { x: spot.x, y: spot.y, z: spot.z };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.weapon.cooldown = 0;
+    this.weaponWasReady = true;
+    this.audio.play('hit', 0.6);
+    this.addShake(SHAKE_DEATH);
+    if (!this.reducedEffects) this.damageFlash = 1;
+    this.medals.onDeath();
+    this.playerDeaths += 1;
+    // Invuln spans the killcam plus a short grace once you respawn.
+    this.localRespawnInvuln = KILLCAM_DURATION_SEC + LOCAL_RESPAWN_INVULN_SEC;
+    const bot = this.bots?.bots.find((b) => b.state.id === killerId);
+    this.killcam = {
+      killerId,
+      killerName,
+      deathPos,
+      remaining: KILLCAM_DURATION_SEC,
+      total: KILLCAM_DURATION_SEC,
+      dirAngle: bot ? this.killDirAngle(bot.state.pos, deathPos) : undefined,
+    };
+    if (bot) {
+      this.killcamLookAt.set(bot.state.pos.x, bot.centerY(), bot.state.pos.z);
+    } else {
+      this.killcamLookAt.set(deathPos.x, deathPos.y + 1.5, deathPos.z);
+    }
+    this.pushKillfeed({
+      killer: killerName,
+      killerLocal: false,
+      victim: this.playerName,
+      weapon: 'rail',
+      special: null,
+    });
+  }
+
+  // Offline TDM team frag totals [team0, team1] = each team's members' frags.
+  private teamFragTotals(): [number, number] {
+    const totals: [number, number] = [0, 0];
+    if (this.localTeam === 0) totals[0] += this.playerFrags;
+    else if (this.localTeam === 1) totals[1] += this.playerFrags;
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        const t = b.getTeam();
+        if (t === 0 || t === 1) totals[t] += this.botFrags.get(b.state.id) ?? 0;
+      }
+    }
+    return totals;
+  }
+
+  private checkMatchEnd() {
+    // Multiplayer match-end is server-authoritative (it triggers the map vote),
+    // training is endless — only local/bot matches end client-side.
+    if (this.matchOver || this.training || this.net) return;
+    // TDM: first TEAM to the team frag limit wins.
+    if (this.botMode === 'tdm' && this.localTeam != null) {
+      const [t0, t1] = this.teamFragTotals();
+      if (Math.max(t0, t1) >= TDM_FRAG_LIMIT) {
+        const mine = this.localTeam === 0 ? t0 : t1;
+        const other = this.localTeam === 0 ? t1 : t0;
+        this.endMatch(mine >= other);
+      }
+      return;
+    }
+    // FFA / Duel: first PLAYER to the frag limit wins (duel is a 1v1 race; the
+    // weekly challenge is an FFA race to its own dedicated cap).
+    const limit = this.botMode === 'duel'
+      ? DUEL_FRAG_LIMIT
+      : this.challenge
+        ? WEEKLY_CHALLENGE_FRAG_LIMIT
+        : MATCH_FRAG_LIMIT;
+    const counts = [this.playerFrags];
+    if (this.bots) {
+      for (const b of this.bots.bots) counts.push(this.botFrags.get(b.state.id) ?? 0);
+    }
+    counts.sort((a, b) => b - a);
+    const top = counts[0];
+    if (top >= limit) {
+      this.endMatch(this.playerFrags >= top); // you win iff you (co-)lead
+    }
+  }
+
+  private endMatch(won: boolean) {
+    if (this.matchOver) return;
+    this.matchOver = true;
+    this.matchWon = won;
+    // Release the cursor and freeze the sim; the client shows a results screen.
+    if (typeof document !== 'undefined' && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+    // Reveal the results — deferred until the whole cinematic finishes. The
+    // VICTORY/DEFEAT callout fires earlier, on the slow-mo freeze (see tick).
+    const reveal = () => this.onMatchEnd(this.collectStats(won));
+    if (this.startPlayOfMatch(reveal, won)) {
+      this.emitHud(); // surface the cinematic now; reveal() fires when it ends
+    } else {
+      this.audio.play(won ? 'victory' : 'defeat', 1); // pack clip, or TTS fallback
+      reveal();
+      this.emitHud();
+    }
+  }
+
+  // ── Play of the Match ──────────────────────────────────────────────────────
+
+  // Pick the best moment of the just-ended match and start its cinematic replay
+  // in the live scene. Returns false when there's nothing worth showing (the
+  // caller then jumps straight to results). `onDone` runs once the clip ends.
+  private startPlayOfMatch(onDone: () => void, won: boolean): boolean {
+    if (this.replay || this.replaySegments.length) return true; // already playing
+    this.endWon = won;
+    this.verdictSpoken = false;
+
+    // The cinematic is up to two first-person segments: a slow-motion replay of
+    // the match-ending blow (whose freeze frame is the VICTORY/DEFEAT beat), then
+    // the Play of the Match. Either may be absent (a 0-kill match has neither).
+    const segments: ReplaySegment[] = [];
+    const finale = this.recorder.selectFinale();
+    if (finale) {
+      segments.push({
+        kind: 'finale',
+        clip: finale,
+        opts: { timeScale: FINALE_TIME_SCALE, freezeSec: FINALE_FREEZE_SEC },
+      });
+    }
+    const potg = this.recorder.selectHighlight('you');
+    if (potg) segments.push({ kind: 'potg', clip: potg, opts: {} });
+    if (segments.length === 0) return false;
+
+    // Hide the live world — the replay renders its own actors on the real map.
+    for (const rp of this.remotePlayers.values()) rp.group.visible = false;
+    if (this.bots) for (const b of this.bots.bots) b.group.visible = false;
+    if (this.viewmodel) this.viewmodel.visible = false;
+
+    this.replaySegments = segments;
+    this.replaySegIdx = 0;
+    this.pomOnDone = onDone;
+    this.startReplaySegment(0);
+    return true;
+  }
+
+  // Spin up the ReplayPlayer for one cinematic segment and surface its overlay.
+  private startReplaySegment(i: number) {
+    const seg = this.replaySegments[i];
+    const replay = this.makeReplayPlayer();
+    replay.start(seg.clip, this.recorder, seg.opts);
+    this.replay = replay;
+    this.pom = {
+      phase: seg.kind,
+      won: this.endWon,
+      star: seg.clip.starName,
+      label: seg.clip.label,
+      subLabel: seg.clip.subLabel,
+      remaining: replay.totalWall,
+      total: replay.totalWall,
+      hitId: 0,
+      hitHeadshot: false,
+    };
+  }
+
+  // Current segment finished: advance to the next, or end the whole cinematic.
+  private advanceReplay() {
+    if (this.replay) {
+      this.replay.dispose();
+      this.replay = null;
+    }
+    this.replaySegIdx += 1;
+    if (this.replaySegIdx < this.replaySegments.length) {
+      this.startReplaySegment(this.replaySegIdx);
+      this.emitHud(); // refresh the overlay for the new phase (e.g. PotG title)
+    } else {
+      this.finishPlayOfMatch();
+    }
+  }
+
+  private makeReplayPlayer(): ReplayPlayer {
+    return new ReplayPlayer({
+      scene: this.scene,
+      camera: this.camera,
+      botModel: this.botModel,
+      spawnBeam: (o, e) =>
+        this.weapon.spawnBeam(
+          new THREE.Vector3(o.x, o.y, o.z),
+          new THREE.Vector3(e.x, e.y, e.z),
+          this.scene,
+        ),
+      spawnMuzzleFlash: (at) =>
+        this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
+      spawnKillEffect: (at, headshot) => this.spawnKillEffect(at, headshot, this.killEffectStyle),
+      reducedEffects: () => this.reducedEffects,
+      // Each star kill in the clip flashes a crosshair hit-marker + a soft cue so
+      // it reads as "they just fragged someone" during the cinematic.
+      onStarKill: (headshot) => {
+        if (this.pom) {
+          this.pom.hitId += 1;
+          this.pom.hitHeadshot = headshot;
+        }
+        this.audio.play(headshot ? 'headshot' : 'hit', 0.6);
+        this.emitHud();
+      },
+    });
+  }
+
+  // End the whole cinematic (finished or skipped): tear down the replay, restore
+  // the live world, and run the deferred results reveal exactly once.
+  private finishPlayOfMatch() {
+    if (!this.replay && this.replaySegments.length === 0) return;
+    if (this.replay) {
+      this.replay.dispose();
+      this.replay = null;
+    }
+    this.replaySegments = [];
+    this.replaySegIdx = 0;
+    this.pom = null;
+    for (const rp of this.remotePlayers.values()) rp.group.visible = true;
+    if (this.bots) for (const b of this.bots.bots) b.group.visible = b.state.alive;
+    const done = this.pomOnDone;
+    this.pomOnDone = null;
+    done?.();
+    this.emitHud(); // push pom:null so the overlay clears and results show
+  }
+
+  private collectStats(won: boolean): MatchResult {
+    return {
+      won,
+      kills: this.playerFrags,
+      deaths: this.playerDeaths,
+      bestStreak: this.medals.bestStreak,
+      headshots: this.playerHeadshots,
+      shotsFired: this.playerShotsFired,
+      // Clamp: a single rail can pierce multiple remotes (collateral), so the
+      // per-kill hit count can briefly exceed shots fired — keep accuracy ≤100%.
+      shotsHit: Math.min(this.playerShotsHit, this.playerShotsFired),
+    };
+  }
+
+  // Snapshot of the current run for the client to submit if the player leaves
+  // before the frag limit is reached. Online, "won" is the server-authoritative
+  // latch (the local match never sets matchOver); offline it's the frag limit.
+  getStats(): MatchResult {
+    const won = this.net
+      ? this.wonLastMatch
+      : this.matchOver && this.playerFrags >= MATCH_FRAG_LIMIT;
+    return this.collectStats(won);
+  }
+
+  // True only when this run produced something worth recording — guards the
+  // client from POSTing an all-zero match (enter→leave / dead-lobby bounce) that
+  // would inflate totalGames and pollute win-rate / K-D-per-game (#4).
+  hasRecordableStats(): boolean {
+    return this.playerFrags > 0 || this.playerDeaths > 0 || this.playerShotsFired > 0;
+  }
+
+  // Weekly-challenge result for the client to submit: the score (won → run time;
+  // lost → total kills) plus the WHOLE run encoded as a replay blob. The recorder
+  // clock starts at the gun-go (warmup excluded), so it IS the run time. Returns
+  // null unless this was a finished challenge run. Called once at match end.
+  getChallengeRun(): { kills: number; won: boolean; timeMs: number; replay: Uint8Array } | null {
+    if (!this.challenge || !this.matchOver) return null;
+    const won = this.matchWon;
+    const timeMs = Math.round(this.recorder.durationSec * 1000);
+    const data = this.recorder.export('you', this.challengeMapId, won);
+    return { kills: this.playerFrags, won, timeMs, replay: encodeReplay(data) };
+  }
+
+  // Live elapsed run time (ms) for the weekly-challenge HUD count-up timer. This is
+  // the recorder clock, which starts at the gun-go (warmup excluded) and freezes at
+  // match end — the exact value getChallengeRun() submits. 0 during the countdown.
+  getChallengeElapsedMs(): number {
+    return Math.round(this.recorder.durationSec * 1000);
+  }
+
+  // The active match's mode tag for the stats POST: 'ranked' for a ranked Duel,
+  // else the joined room's game mode (offline is always 'ffa'). Powers the admin
+  // dashboard's mode breakdown. Cosmetic metadata only.
+  getMatchModeTag(): GameMode | 'ranked' {
+    return this.ranked ? 'ranked' : this.netMode;
+  }
+
+  // Server `kill` broadcast — drives the same effect set as a local bot kill
+  // but works for every client in the match (including the victim).
+  private handleNetKill(ev: KillEvent) {
+    const myId = this.net?.clientId ?? null;
+    const iAmKiller = ev.killerId === myId;
+    const iAmVictim = ev.victimId === myId;
+
+    // Visual effects at the victim's last-known position.
+    const burstAt = new THREE.Vector3(
+      ev.victimPos.x,
+      ev.victimPos.y + 0.9,
+      ev.victimPos.z,
+    );
+    // Your equipped kill effect plays on YOUR frags; everyone else's frags use
+    // the default until the server broadcasts each player's equipped cosmetics
+    // (progression Phase 1 — remote cosmetics in the snapshot payload).
+    this.spawnKillEffect(burstAt, ev.headshot, iAmKiller ? this.killEffectStyle : DEFAULT_KILL_EFFECT);
+
+    if (iAmKiller) {
+      // Killer: trust the server-authoritative score (next snapshot will
+      // confirm); play kill SFX + medal locally for immediate feedback.
+      // If we already predicted this hit (handleFire), the confirm tick + ring
+      // played instantly — don't replay the tick now (a full RTT later); the
+      // 'kill' gib SFX still fires here as the authoritative confirmation.
+      const wasPredicted = performance.now() - this.predictedHitMs < 1000;
+      this.audio.play('kill', 0.7);
+      if (!wasPredicted) this.audio.hitConfirm(ev.headshot, 0.5);
+      this.fireKillFeedback(ev.headshot);
+      // Crosshair hitmarker — refreshed here as the authoritative confirmation
+      // (or shown for the first time if the hit wasn't predicted, e.g. the
+      // server's rewind landed a shot our local raycast didn't).
+      this.hitMarker = {
+        id: this.nextEventId++,
+        kind: ev.headshot ? 'headshot' : 'kill',
+        remaining: HIT_MARKER_KILL_DURATION_SEC,
+        total: HIT_MARKER_KILL_DURATION_SEC,
+      };
+      // Credit the confirmed hit so online accuracy/headshots aren't ~0 (#5).
+      // (MP has no bots, so this is the only place these increment online — no
+      // double-count with the local bot path.)
+      this.playerShotsHit += 1;
+      if (ev.headshot) this.playerHeadshots += 1;
+      // "Gibbed <name>" / "Headshot <name>" floating text near crosshair.
+      this.killConfirm = {
+        id: this.nextEventId++,
+        victimName: ev.victimName,
+        headshot: ev.headshot,
+        remaining: KILL_CONFIRM_DURATION_SEC,
+        total: KILL_CONFIRM_DURATION_SEC,
+      };
+      // midAir is unreliable a full RTT after the shot (the server doesn't
+      // report it), so don't award the Jump Shot medal on networked kills (#26a).
+      const medals = this.medals.onKill(this.elapsed, {
+        midAir: false,
+        headshot: ev.headshot,
+        firstBlood: ev.firstBlood,
+      });
+      this.awardMedals(medals);
+    } else if (iAmVictim) {
+      // Capture deathPos for the killcam BEFORE teleporting to respawn.
+      const deathPos = { ...this.player.pos };
+      // Snap the player data to the server-picked respawn. The camera
+      // stays at deathPos during the killcam — see render().
+      this.player.pos = {
+        x: ev.respawnPos.x,
+        y: ev.respawnPos.y,
+        z: ev.respawnPos.z,
+      };
+      this.player.vel = { x: 0, y: 0, z: 0 };
+      this.weapon.cooldown = 0;
+      this.weaponWasReady = true;
+      this.audio.play('hit', 0.6);
+      this.addShake(SHAKE_DEATH);
+      if (!this.reducedEffects) this.damageFlash = 1;
+      this.medals.onDeath();
+      this.playerDeaths += 1;
+      const killer = this.remotePlayers.get(ev.killerId);
+      this.killcam = {
+        killerId: ev.killerId,
+        killerName: ev.killerName,
+        deathPos,
+        remaining: KILLCAM_DURATION_SEC,
+        total: KILLCAM_DURATION_SEC,
+        killerCard: ev.killerCard,
+        dirAngle: killer ? this.killDirAngle(killer.group.position, deathPos) : undefined,
+      };
+      // Initialize the killcam's smoothed look-at near the killer's
+      // current position so we don't whip from origin on the first
+      // frame.
+      if (killer) {
+        this.killcamLookAt.set(
+          killer.group.position.x,
+          killer.centerY(),
+          killer.group.position.z,
+        );
+      } else {
+        this.killcamLookAt.set(deathPos.x, deathPos.y + 1.5, deathPos.z);
+      }
+    } else {
+      // Bystander — just hide the dead remote player briefly.
+      const rp = this.remotePlayers.get(ev.victimId);
+      if (rp) rp.markDead();
+    }
+
+    // For non-victim clients that are local-rendering the victim, hide them.
+    if (!iAmVictim) {
+      const rp = this.remotePlayers.get(ev.victimId);
+      if (rp) rp.markDead();
+    }
+
+    // Killfeed everywhere.
+    this.pushKillfeed({
+      killer: ev.killerName,
+      killerLocal: iAmKiller,
+      victim: ev.victimName,
+      weapon: 'rail',
+      special: ev.headshot ? 'headshot' : null,
+    });
+
+    // Record for Play of the Match (the local player is keyed as 'you').
+    this.recorder.logKill({
+      killerId: this.replayId(ev.killerId),
+      victimId: this.replayId(ev.victimId),
+      headshot: ev.headshot,
+      killerName: ev.killerName,
+      victimName: ev.victimName,
+    });
+  }
+
+  private pushKillfeed(
+    opts: Omit<KillfeedEntry, 'id' | 'remaining' | 'total'>,
+  ) {
+    this.killfeed.unshift({
+      ...opts,
+      id: this.nextEventId++,
+      remaining: KILLFEED_DURATION_SEC,
+      total: KILLFEED_DURATION_SEC,
+    });
+    if (this.killfeed.length > MAX_KILLFEED_ENTRIES) {
+      this.killfeed.length = MAX_KILLFEED_ENTRIES;
+    }
+  }
+
+  // Award all medals earned on one kill: every medal becomes a stacked toast, but
+  // only the single most significant ("headline") drives the center banner AND the
+  // announcer voice line. This stops headshot + double-kill + spree from blaring
+  // over each other, and keeps the banner showing the same thing that's announced.
+  private awardMedals(medals: Medal[]) {
+    if (medals.length === 0) return;
+    for (const m of medals) this.addMedalToast(m);
+
+    let headline = medals[0];
+    for (const m of medals) {
+      if (MEDAL_PRIORITY[m] > MEDAL_PRIORITY[headline]) headline = m;
+    }
+    if (BANNER_MEDALS.has(headline)) this.showMedalBanner(headline);
+    const voice = MEDAL_VOICE[headline];
+    if (voice) this.audio.play(voice, 1); // audio layer also enforces one-at-a-time
+  }
+
+  private addMedalToast(medal: Medal) {
+    const meta = MEDAL_LABELS[medal];
+    this.toasts.unshift({
+      id: this.nextEventId++,
+      medal,
+      title: meta.title,
+      subtitle: meta.subtitle,
+      tier: meta.tier,
+      remaining: TOAST_DURATION_SEC,
+      total: TOAST_DURATION_SEC,
+    });
+    if (this.toasts.length > MAX_TOASTS) this.toasts.length = MAX_TOASTS;
+  }
+
+  private showMedalBanner(medal: Medal) {
+    const meta = MEDAL_LABELS[medal];
+    this.banner = {
+      id: this.nextEventId++,
+      tier: meta.tier,
+      title: meta.title,
+      subtitle: meta.subtitle,
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+  }
+
+  private tickHudTimers(dt: number) {
+    for (let i = this.killfeed.length - 1; i >= 0; i--) {
+      this.killfeed[i].remaining -= dt;
+      if (this.killfeed[i].remaining <= 0) this.killfeed.splice(i, 1);
+    }
+    for (let i = this.toasts.length - 1; i >= 0; i--) {
+      this.toasts[i].remaining -= dt;
+      if (this.toasts[i].remaining <= 0) this.toasts.splice(i, 1);
+    }
+    if (this.banner) {
+      this.banner.remaining -= dt;
+      if (this.banner.remaining <= 0) this.banner = null;
+    }
+    if (this.hitMarker) {
+      this.hitMarker.remaining -= dt;
+      if (this.hitMarker.remaining <= 0) this.hitMarker = null;
+    }
+    if (this.killConfirm) {
+      this.killConfirm.remaining -= dt;
+      if (this.killConfirm.remaining <= 0) this.killConfirm = null;
+    }
+    if (this.killFlash) {
+      this.killFlash.remaining -= dt;
+      if (this.killFlash.remaining <= 0) this.killFlash = null;
+    }
+    if (this.damageFlash > 0) this.damageFlash = Math.max(0, this.damageFlash - dt / 0.5);
+    if (this.killcam) {
+      this.killcam.remaining -= dt;
+      if (this.killcam.remaining <= 0) {
+        this.killcam = null;
+        this.playLocalSpawnEffect(); // you materialize at your new spawn
+        this.maybeAnnounceSpawn(); // occasional deploy/encouragement line
+      }
+    }
+    // Play-of-the-Match countdown mirrors the replay clock (single source of
+    // truth, so Skip / completion stay consistent with the progress bar).
+    if (this.pom && this.replay) {
+      this.pom.remaining = this.replay.wallRemaining;
+      // The finale freezes on the final-kill frame — that hold IS the VICTORY/
+      // DEFEAT beat. Flip the overlay to the verdict card and call it out once.
+      if (
+        this.replaySegments[this.replaySegIdx]?.kind === 'finale' &&
+        this.replay.isFrozen &&
+        this.pom.phase !== 'verdict'
+      ) {
+        this.pom.phase = 'verdict';
+        if (!this.verdictSpoken) {
+          this.verdictSpoken = true;
+          this.audio.play(this.endWon ? 'victory' : 'defeat', 1);
+        }
+        this.emitHud();
+      }
+    }
+  }
+
+  // Play the local player's spawn-in effect at their feet. Suppressed under
+  // reduced-effects (it's a particle burst). Called when you (re)materialize.
+  // Occasional deploy/encouragement announcer line on respawn — cooldown + chance
+  // gated so it's flair, not spam (you respawn often in instagib). Only packs that
+  // define spawn lines voice it; the legacy pack stays silent.
+  private maybeAnnounceSpawn() {
+    if (this.matchOver) return;
+    if (this.elapsed - this.lastSpawnLine < SPAWN_LINE_COOLDOWN_SEC) return;
+    if (Math.random() > SPAWN_LINE_CHANCE) return;
+    this.lastSpawnLine = this.elapsed;
+    this.audio.play('spawn', 1);
+  }
+
+  private playLocalSpawnEffect() {
+    if (this.reducedEffects) return;
+    const p = this.player.pos;
+    this.effects.spawnInBurst(
+      this.scene,
+      new THREE.Vector3(p.x, p.y, p.z),
+      spawnEffectById(this.localSpawnEffect).style,
+    );
+  }
+
+  // Net-debug overlay toggle (F3). Surfaces live netcode diagnostics so we can
+  // SEE the cause of jitter in a real match (localhost can't reproduce it).
+  toggleNetDebug() {
+    this.netDebugOn = !this.netDebugOn;
+    this.emitHud();
+  }
+
+  private emitHud() {
+    const speed = Math.hypot(this.player.vel.x, this.player.vel.z);
+    const pct = (hit: number, fired: number): number | null =>
+      fired > 0 ? (hit / fired) * 100 : null;
+    const scores: PlayerScore[] = [
+      {
+        id: 'you',
+        name: this.playerName,
+        isLocal: true,
+        frags: this.playerFrags,
+        deaths: this.playerDeaths,
+        bestStreak: this.medals.bestStreak,
+        currentStreak: this.medals.currentStreak,
+        accuracy: pct(this.playerShotsHit, this.playerShotsFired),
+        team: this.localTeam,
+        hat: this.localHat,
+        emote: this.localEmote,
+        title: titleById(this.localTitle).text,
+      },
+    ];
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        scores.push({
+          id: b.state.id,
+          name: b.state.name,
+          isLocal: false,
+          frags: this.botFrags.get(b.state.id) ?? 0,
+          deaths: this.botDeathCounts.get(b.state.id) ?? 0,
+          bestStreak: 0,
+          currentStreak: 0,
+          accuracy: pct(
+            this.botShotsHit.get(b.state.id) ?? 0,
+            this.botShotsFired.get(b.state.id) ?? 0,
+          ),
+          team: b.getTeam(), // TDM team (null in FFA/Duel) → drives team score + colors
+        });
+      }
+    }
+    if (this.net) {
+      // The server is authoritative for the local player's frag/death (online
+      // kills aren't predicted locally — they arrive via the kill broadcast +
+      // snapshots). Track it in BOTH directions: a previous "only raise" left the
+      // scoreboard stuck at the old total after a round/match reset (server →0)
+      // because emitHud re-raised it from a stale snapshot value.
+      this.playerFrags = this.net.localFrags;
+      this.playerDeaths = this.net.localDeaths;
+      scores[0].frags = this.playerFrags;
+      scores[0].deaths = this.playerDeaths;
+      // Online, the name is server-authoritative (your account username, or the
+      // "Guest N" the server assigned in this room) — show that, not the local
+      // label, so your scoreboard row matches what everyone else sees.
+      if (this.net.localName) scores[0].name = this.net.localName;
+      scores[0].admin = this.net.localAdmin;
+      scores[0].verified = this.net.localVerified;
+      // Server-resolved title flair (so a dynamic ranked title shows our live #N).
+      scores[0].title = this.net.localTitleText || titleById(this.localTitle).text;
+      // Local player's accuracy is tracked client-side from confirmed kills.
+      scores[0].accuracy = pct(this.playerShotsHit, this.playerShotsFired);
+      scores[0].ping = Math.round(this.net.rttMs);
+      // Build from the meta roster, not `net.remotes`: a player hidden from
+      // snapshots during their killcam is absent from `remotes`, so iterating it
+      // would drop their scoreboard row for ~2.4s. roster() keeps every room
+      // member with their last-known score.
+      for (const r of this.net.roster()) {
+        scores.push({
+          id: r.id,
+          name: r.name,
+          isLocal: false,
+          frags: r.frags,
+          deaths: r.deaths,
+          bestStreak: 0,
+          currentStreak: 0,
+          accuracy: null, // server doesn't report remote shot counts
+          team: r.team,
+          hat: r.hat,
+          emote: r.emote,
+          title: r.titleText ?? titleById(r.title).text,
+          ping: r.ping,
+          admin: r.admin,
+          verified: r.verified,
+        });
+      }
+    }
+    // A spectator isn't a player: drop the placeholder local ("you") row so the
+    // scoreboard shows only the real combatants.
+    const board = this.spectator ? scores.filter((s) => !s.isLocal) : scores;
+    board.sort(
+      (a, b) =>
+        b.frags - a.frags ||
+        a.deaths - b.deaths ||
+        a.name.localeCompare(b.name),
+    );
+
+    // TDM team frag totals [red, blue] from the (authoritative) scoreboard.
+    let teamScores: [number, number] | null = null;
+    if (this.netMode === 'tdm') {
+      const totals: [number, number] = [0, 0];
+      for (const s of board) {
+        if (s.team === 0) totals[0] += s.frags;
+        else if (s.team === 1) totals[1] += s.frags;
+      }
+      teamScores = totals;
+    }
+
+    // Match-drama cues read the local player's standing — skip while spectating.
+    if (!this.spectator) this.updateMatchDrama(board, teamScores);
+
+    // Spectator HUD: who's in view + the switch list + their crosshair share-code.
+    let spectatorHud: SpectatorHud | null = null;
+    if (this.spectator) {
+      const list = this.spectateList();
+      const idx = this.spectatedId ? list.findIndex((p) => p.id === this.spectatedId) : -1;
+      const watched = idx >= 0 ? list[idx] : null;
+      spectatorHud = {
+        watchingId: watched?.id ?? null,
+        watchingName: watched?.name ?? '',
+        index: idx >= 0 ? idx + 1 : 0,
+        count: list.length,
+        players: list,
+        crosshairCode: watched ? this.net?.cosmeticsOf(watched.id)?.crosshair ?? '' : '',
+      };
+    }
+
+    this.onHud({
+      frags: this.playerFrags,
+      railCooldown: this.weapon.cooldown,
+      dashCooldown: this.player.dashCooldown,
+      airJumpsLeft: this.player.airJumpsLeft,
+      boostReady: this.player.boostInRange,
+      speed,
+      locked: this.locked,
+      currentStreak: this.medals.currentStreak,
+      bestStreak: this.medals.bestStreak,
+      fps: this.fps,
+      scores: board,
+      killfeed: this.killfeed.map((k) => ({ ...k })),
+      toasts: this.toasts.map((t) => ({ ...t })),
+      banner: this.banner ? { ...this.banner } : null,
+      hitMarker: this.hitMarker ? { ...this.hitMarker } : null,
+      killConfirm: this.killConfirm ? { ...this.killConfirm } : null,
+      killFlash: this.killFlash ? { ...this.killFlash } : null,
+      damageFlash: this.damageFlash,
+      killcam: this.killcam ? { ...this.killcam } : null,
+      showScoreboard: this.input.scoreboardHeld,
+      matchOver: this.matchOver ? { won: this.matchWon } : null,
+      netStatus: this.net?.status ?? 'off',
+      // Room membership (meta roster), NOT the interpolated `remotes` view: a
+      // killed player is hidden from snapshots during their killcam, so
+      // remotes.size briefly hits 0 in a 1v1 — keying "waiting for opponents"
+      // off that falsely pauses the match. They're still in the room.
+      netPeers: this.net ? this.net.otherPeers() : 0,
+      netRttMs: this.net ? Math.round(this.net.rttMs) : 0,
+      warmupMsLeft: this.warmupMsLeft(),
+      localInvulnMs: this.net?.localInvulnMs ?? 0,
+      vote: this.vote ? { ...this.vote, counts: { ...this.vote.counts } } : null,
+      mode: this.netMode,
+      localTeam: this.localTeam,
+      teamScores,
+      training: this.trainingRange ? { ...this.trainingRange.stats() } : null,
+      pom: this.pom ? { ...this.pom } : null,
+      chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },
+      netDebug: this.netDebugOn && this.net ? this.net.getDebugStats() : null,
+      spectator: spectatorHud,
+    });
+  }
+
+  private resetMatchDrama() {
+    this.worstDeficit = 0;
+    this.comebackAwarded = false;
+    this.matchPointAnnounced = false;
+    this.matchFirstBloodAwarded = false;
+  }
+
+  // First Blood = the first kill of the match (offline) or round (online, where
+  // the server is authoritative and we mirror its per-room flag). Returns true
+  // exactly once per reset; later kills get false.
+  private claimFirstBlood(): boolean {
+    if (this.matchFirstBloodAwarded) return false;
+    this.matchFirstBloodAwarded = true;
+    return true;
+  }
+
+  // Match "drama" cues derived from the live scoreboard (so they work the same
+  // offline vs. online): a one-shot "MATCH POINT" call when the leader is a
+  // single frag from winning, and the Comeback medal when you retake the lead
+  // after trailing badly. Both fire at most once per match (reset on vote/round).
+  private updateMatchDrama(scores: PlayerScore[], teamScores: [number, number] | null) {
+    if (this.matchOver || this.vote || this.training) return;
+
+    // My score, the best opponent's score, and the frags needed to win — all
+    // mode-aware. TDM compares team totals; FFA/Duel compare individuals.
+    let mine: number;
+    let oppBest: number;
+    let limit: number;
+    if (this.netMode === 'tdm') {
+      if (!teamScores || this.localTeam == null) return;
+      const other = this.localTeam === 0 ? 1 : 0;
+      mine = teamScores[this.localTeam];
+      oppBest = teamScores[other];
+      limit = TDM_FRAG_LIMIT;
+    } else {
+      mine = 0;
+      oppBest = 0;
+      for (const s of scores) {
+        if (s.isLocal) mine = s.frags;
+        else oppBest = Math.max(oppBest, s.frags);
+      }
+      limit =
+        this.netMode === 'duel'
+          ? this.ranked
+            ? RANKED_DUEL_FRAG_LIMIT
+            : DUEL_FRAG_LIMIT
+          : MATCH_FRAG_LIMIT;
+    }
+
+    // "MATCH POINT": the leader (either side) needs exactly one more frag.
+    if (!this.matchPointAnnounced && Math.max(mine, oppBest) === limit - 1) {
+      this.matchPointAnnounced = true;
+      const leadingMe = mine > oppBest;
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'multi',
+        title: 'MATCH POINT',
+        subtitle: leadingMe ? 'one frag to win' : 'hold the line',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+      this.audio.play('match-point', 1);
+    }
+
+    // Comeback: track the worst hole you've been in, and award the medal the
+    // moment you climb back into a clear lead from a meaningful deficit. The
+    // threshold scales with the mode's frag limit (FFA 25→5, Duel 7→2, TDM 40→8).
+    this.worstDeficit = Math.max(this.worstDeficit, oppBest - mine);
+    const threshold = Math.max(2, Math.round(limit * 0.2));
+    if (
+      !this.comebackAwarded &&
+      this.worstDeficit >= threshold &&
+      mine > oppBest &&
+      mine > 0
+    ) {
+      this.comebackAwarded = true;
+      this.awardMedals(['comeback']);
+    }
+  }
+
+  private render() {
+    if (this.replay) {
+      // Play of the Match: the ReplayPlayer owns the camera (positioned in its
+      // update() earlier this frame), so leave it untouched here.
+    } else if (this.spectator) {
+      // First-person spectator: ride the watched player's eyes + aim. Their pose
+      // comes from the interpolated remote snapshot (pitch is transmitted), so we
+      // see exactly what they see — their viewmodel + crosshair sell the POV.
+      // (The watched player's 3rd-person body is hidden in syncRemotePlayers so
+      // we're not staring at the inside of our own mesh.)
+      const snap = this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
+      if (snap) {
+        this.camera.position.set(snap.pos.x, snap.pos.y + EYE_HEIGHT, snap.pos.z);
+        this.camera.rotation.set(snap.pitch, snap.yaw, 0, 'YXZ');
+      }
+    } else if (this.killcam) {
+      // Killcam: track the killer's center (smoothed so them running around
+      // doesn't jitter the shot), then park the camera a FIXED distance from
+      // them — on the side you died from, so you see who shot you up close and
+      // the camera follows them. Long-range frags are framed the same as point
+      // blank instead of showing a distant speck.
+      const killer = this.remotePlayers.get(this.killcam.killerId);
+      const killerBot = killer
+        ? null
+        : this.bots?.bots.find((b) => b.state.id === this.killcam!.killerId);
+      const targetX = killer
+        ? killer.group.position.x
+        : killerBot
+          ? killerBot.state.pos.x
+          : this.killcam.deathPos.x;
+      const targetY = killer
+        ? killer.centerY()
+        : killerBot
+          ? killerBot.centerY()
+          : this.killcam.deathPos.y + 1.5;
+      const targetZ = killer
+        ? killer.group.position.z
+        : killerBot
+          ? killerBot.state.pos.z
+          : this.killcam.deathPos.z;
+      // Exponential smoothing toward the target (real dt → framerate-independent).
+      const dt = this.frameDt;
+      const a = 1 - Math.exp(-6 * dt);
+      this.killcamLookAt.x += (targetX - this.killcamLookAt.x) * a;
+      this.killcamLookAt.y += (targetY - this.killcamLookAt.y) * a;
+      this.killcamLookAt.z += (targetZ - this.killcamLookAt.z) * a;
+      const look = this.killcamLookAt;
+      // Horizontal direction from the killer back toward where you died (so the
+      // camera is on your side, looking at the killer roughly face-on). Falls
+      // back to a fixed axis for a point-blank frag (killer ≈ death spot).
+      let dx = this.killcam.deathPos.x - look.x;
+      let dz = this.killcam.deathPos.z - look.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.5) {
+        dx = 0;
+        dz = 1;
+      } else {
+        dx /= len;
+        dz /= len;
+      }
+      this.camera.position.set(
+        look.x + dx * KILLCAM_DIST,
+        look.y + KILLCAM_HEIGHT,
+        look.z + dz * KILLCAM_DIST,
+      );
+      this.camera.lookAt(look);
+    } else {
+      // Interpolate the camera between the last two 64Hz sim positions by the
+      // leftover accumulator fraction, so motion is smooth at any refresh rate
+      // instead of stepping at the sim rate. Snap across teleports. The shot
+      // still fires from the authoritative sim pos (handleFire), so this ≤1-tick
+      // visual blend never affects where bullets actually come from; aim
+      // (rotation) is exact every frame.
+      const p = this.player.pos;
+      const moved =
+        Math.abs(p.x - this.simPrevPos.x) +
+        Math.abs(p.y - this.simPrevPos.y) +
+        Math.abs(p.z - this.simPrevPos.z);
+      let cx = p.x;
+      let cy = p.y;
+      let cz = p.z;
+      if (moved <= LOCAL_RENDER_TELEPORT_M) {
+        const a = Math.min(1, Math.max(0, this.accumulator / TICK_DT));
+        cx = this.simPrevPos.x + (p.x - this.simPrevPos.x) * a;
+        cy = this.simPrevPos.y + (p.y - this.simPrevPos.y) * a;
+        cz = this.simPrevPos.z + (p.z - this.simPrevPos.z) * a;
+      }
+      this.camera.position.set(cx, cy + EYE_HEIGHT, cz);
+      // viewKick is a transient upward view-punch on fire — visual only, so it
+      // never alters the authoritative aim (player.pitch).
+      this.camera.rotation.set(this.player.pitch - this.viewKick, this.player.yaw, 0, 'YXZ');
+    }
+    // Screen shake: jitter the camera position, decaying each frame. (Skipped
+    // during the PoM replay — the ReplayPlayer owns the camera.)
+    if (!this.replay && this.shake > 1e-4) {
+      this.camera.position.x += (Math.random() * 2 - 1) * this.shake;
+      this.camera.position.y += (Math.random() * 2 - 1) * this.shake;
+      this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
+      this.shake *= Math.exp(-9.05 * this.frameDt); // ≈ 0.86/frame at 60fps, fps-independent
+    }
+    // Zoom: ease FOV toward the zoom target. The killcam tightens to KILLCAM_FOV
+    // (a cinematic zoom onto your killer); otherwise it's the ADS zoom while held,
+    // else the base FOV. The shared ease handles the smooth zoom-in and the
+    // zoom-out back to gameplay when the killcam ends.
+    const zooming =
+      this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote && !this.replay;
+    const targetFov = this.killcam ? KILLCAM_FOV : zooming ? this.zoomFov : this.baseFov;
+    if (Math.abs(this.camera.fov - targetFov) > 0.01) {
+      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 * this.frameDt));
+      this.camera.updateProjectionMatrix();
+    }
+    // Scale look sensitivity with the current (lerping) FOV so zoomed aim stays
+    // steady, then fold in the ADS multiplier — which eases in as you zoom (1×
+    // at hipfire → zoomSensMul at full zoom) so hipfire feel is untouched.
+    const fovRatio = this.baseFov > 0 ? this.camera.fov / this.baseFov : 1;
+    const zoomT =
+      this.baseFov > this.zoomFov
+        ? Math.max(0, Math.min(1, (this.baseFov - this.camera.fov) / (this.baseFov - this.zoomFov)))
+        : 0;
+    this.input.lookScale = fovRatio * (1 + (this.zoomSensMul - 1) * zoomT);
+    // Decay weapon feedback — exp easing keyed to real dt so the punch feels the
+    // same at 60fps and uncapped (the marketed FPS-uncap would otherwise change
+    // recoil/kick feel with framerate). Constants match the old /frame factors.
+    const fdt = this.frameDt;
+    this.recoil *= Math.exp(-10.46 * fdt); // ≈ 0.84/frame at 60fps
+    this.viewKick *= Math.exp(-11.9 * fdt); // ≈ 0.82/frame at 60fps
+    if (this.viewmodelGlow) {
+      const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
+      this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * g;
+    }
+    // Viewmodel: show while actively playing in first person, OR while watching a
+    // player in first-person spectator POV (so you see THEIR gun skin). Apply
+    // recoil (kicks back toward the camera + muzzle tilts up, easing back to rest).
+    if (this.viewmodel) {
+      const specPov = this.spectator && !!this.spectatedId && !!this.net?.remotes.get(this.spectatedId);
+      this.viewmodel.visible =
+        !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay;
+      const r = this.recoil;
+      this.viewmodel.position.set(
+        VIEWMODEL_BASE.x + this.viewmodelOffset.x,
+        VIEWMODEL_BASE.y + this.viewmodelOffset.y + r * 0.02,
+        VIEWMODEL_BASE.z + this.viewmodelOffset.z + r * 0.08,
+      );
+      this.viewmodel.rotation.x = r * 0.22;
+    }
+    // Track the HRTF audio listener to the (now finalized) camera so spatial
+    // sounds — other players' rail fire etc. — pan to where they actually are.
+    this.camera.getWorldDirection(this.tmpForward);
+    this.audio.setListenerPose(
+      this.camera.position.x, this.camera.position.y, this.camera.position.z,
+      this.tmpForward.x, this.tmpForward.y, this.tmpForward.z,
+      0, 1, 0,
+    );
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private handleResize() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    // Re-apply pixelRatio (honoring the quality settings) so moving the window to
+    // a different-DPI monitor (or a browser-zoom change) re-sharpens instead of
+    // staying at the mount-time DPR (#26j).
+    this.applyPixelRatio();
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  private disposeScene() {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.scene.traverse((obj) => {
+      if (obj.userData.shared) return;
+      const mesh = obj as THREE.Mesh & THREE.Line & THREE.Sprite;
+      if (mesh.isMesh || mesh.isLine || mesh.isSprite) {
+        const geom = (mesh as unknown as { geometry?: THREE.BufferGeometry })
+          .geometry;
+        if (geom) geometries.add(geom);
+        const mat = (mesh as unknown as { material?: THREE.Material | THREE.Material[] })
+          .material;
+        if (Array.isArray(mat)) mat.forEach((m) => materials.add(m));
+        else if (mat) materials.add(mat);
+      }
+    });
+    geometries.forEach((g) => g.dispose());
+    materials.forEach((m) => m.dispose());
+  }
+}
+
+// Dispose every geometry + material under a group (used when swapping the
+// arena mesh on a map change). Map meshes aren't tagged `shared`, so their
+// resources are ours to free.
+// Small stable string hash (for picking a per-bot spawn-effect style).
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function disposeGroup(group: THREE.Object3D) {
+  const geoms = new Set<THREE.BufferGeometry>();
+  const mats = new Set<THREE.Material>();
+  group.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (mesh.geometry) geoms.add(mesh.geometry);
+    const mat = mesh.material;
+    if (Array.isArray(mat)) mat.forEach((m) => mats.add(m));
+    else if (mat) mats.add(mat);
+  });
+  geoms.forEach((g) => g.dispose());
+  mats.forEach((m) => m.dispose());
+}

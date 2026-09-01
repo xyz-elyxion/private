@@ -1,6 +1,11 @@
-.git
-data
-dist
 node_modules
-hf-token
+dist
+data
+.git
+.github
 *.log
+npm-debug.log*
+.env
+.env.*
+.DS_Store
+.vite
