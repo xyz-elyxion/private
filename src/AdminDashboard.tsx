@@ -268,7 +268,7 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
@@ -276,6 +276,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'matches', label: 'Matches' },
   { id: 'players', label: 'Players' },
   { id: 'feedback', label: 'Feedback' },
+  { id: 'anticheat', label: 'Anticheat' },
 ];
 
 // ── Tab: Overview ────────────────────────────────────────────────────────────
@@ -1040,6 +1041,123 @@ function FeedbackTab() {
   );
 }
 
+// ── Tab: Anticheat ───────────────────────────────────────────────────────────
+// What the defensive layer caught and did: rejected hacks (speed / fire-rate /
+// shot-origin / aimbot), kicks (afk / flood), blocks (banned at the door /
+// profanity), chat timeouts, and bans applied or lifted. Pulls /api/admin/
+// anticheat on a 5s poll so a live action shows up within moments.
+type AcEvent = {
+  id: number;
+  ts: number;
+  kind: string;
+  target: string;
+  detail: string;
+  actor?: string;
+  reason?: string;
+  count: number;
+};
+type AcCounts = Record<string, number>;
+const AC_KINDS: { kind: string; label: string; cls: string }[] = [
+  { kind: 'reject', label: 'Stopped hack', cls: 'border-amber-400/40 bg-amber-400/10 text-amber-300' },
+  { kind: 'flag', label: 'Flagged', cls: 'border-rose-400/50 bg-rose-400/10 text-rose-300' },
+  { kind: 'ban', label: 'Banned', cls: 'border-rose-400/60 bg-rose-500/10 text-rose-300' },
+  { kind: 'unban', label: 'Unbanned', cls: 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300' },
+  { kind: 'block', label: 'Blocked', cls: 'border-rose-400/40 bg-rose-400/10 text-rose-300' },
+  { kind: 'kick', label: 'Kicked', cls: 'border-amber-400/40 bg-amber-400/10 text-amber-300' },
+  { kind: 'timeout', label: 'Timed out', cls: 'border-cyan-400/40 bg-cyan-400/10 text-cyan-300' },
+];
+function AnticheatTab() {
+  const [events, setEvents] = useState<AcEvent[] | null>(null);
+  const [counts, setCounts] = useState<AcCounts>({});
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const pull = () => {
+      void getJSON<{ events: AcEvent[]; counts: AcCounts }>('/api/admin/anticheat?limit=120').then((d) => {
+        if (active && d) {
+          setEvents(d.events);
+          setCounts(d.counts);
+        }
+      });
+    };
+    pull();
+    const t = setInterval(pull, 5000);
+    return () => {
+      active = false;
+      clearInterval(t);
+    };
+  }, [paused]);
+  const metaFor = (kind: string) => AC_KINDS.find((k) => k.kind === kind);
+  const chips = AC_KINDS.filter((k) => (counts[k.kind] ?? 0) > 0);
+  return (
+    <Panel
+      title='Anticheat activity'
+      right={
+        <div className='flex items-center gap-2'>
+          <button
+            onClick={() => setPaused((p) => !p)}
+            className='rounded-md border border-white/15 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200'
+          >
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/35'>5s poll</span>
+        </div>
+      }
+    >
+      {chips.length > 0 && (
+        <div className='mb-3 flex flex-wrap gap-1.5'>
+          {chips.map((k) => (
+            <span
+              key={k.kind}
+              className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] ${k.cls}`}
+            >
+              {k.label}
+              <span className='tabular-nums opacity-80'>{counts[k.kind]}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {!events ? (
+        <Loading />
+      ) : events.length === 0 ? (
+        <Empty label='Nothing caught yet — the guards are quiet. Launch one of the demo hacks (npm run ac:demo) to watch it react.' />
+      ) : (
+        <div className='max-h-[560px] overflow-y-auto pr-1'>
+          <div className='flex flex-col gap-1'>
+            {events.map((e) => {
+              const meta = metaFor(e.kind);
+              return (
+                <div
+                  key={e.id}
+                  className='flex items-baseline gap-3 rounded-md border border-white/8 bg-black/25 px-3 py-1.5 font-mono text-[11px]'
+                >
+                  <span className='shrink-0 tabular-nums text-white/30'>
+                    {new Date(e.ts).toLocaleTimeString()}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded border px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.14em] ${meta?.cls ?? 'border-white/15 text-white/50'}`}
+                  >
+                    {meta?.label ?? e.kind}
+                  </span>
+                  <span className='shrink-0 font-semibold text-white/85'>{e.target}</span>
+                  <span className='shrink-0 text-white/45'>{e.detail}</span>
+                  {e.reason && <span className='truncate text-white/35'>{e.reason}</span>}
+                  {e.actor && (
+                    <span className='ml-auto shrink-0 text-cyan-200/70'>by {e.actor}</span>
+                  )}
+                  {e.count > 1 && (
+                    <span className='ml-auto shrink-0 font-bold text-amber-300'>×{e.count}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // ── Shared states ────────────────────────────────────────────────────────────
 function Loading() {
   return <div className="py-10 text-center text-[12px] uppercase tracking-[0.2em] text-white/35">Loading…</div>;
@@ -1147,6 +1265,7 @@ export default function AdminDashboard() {
         {tab === 'matches' && <MatchesTab />}
         {tab === 'players' && <PlayersTab />}
         {tab === 'feedback' && <FeedbackTab />}
+        {tab === 'anticheat' && <AnticheatTab />}
       </div>
     </div>
   );

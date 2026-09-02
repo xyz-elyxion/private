@@ -12,6 +12,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { accountId } from './auth';
+import { acCounts, acRecent, type AcKind } from './anticheat';
 import {
   FEEDBACK_STATUSES,
   feedbackCounts,
@@ -79,8 +80,8 @@ type ModerationActions = {
   ban: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] };
   // Direct IP ban — blocks every connection from that address, now + future.
   banIp: (ip: string, reason: string, actorName: string) => { found: boolean; names: string[] };
-  unban: (name: string) => boolean;
-  unbanIp: (ip: string) => boolean;
+  unban: (name: string, actorName: string) => boolean;
+  unbanIp: (ip: string, actorName: string) => boolean;
   list: () => BanListEntry[];
 };
 let moderation: ModerationActions = {
@@ -323,7 +324,7 @@ adminRouter.post('/unban', (req, res) => {
   }
   const admin = (req as AdminRequest).admin;
   if (ip) {
-    const ok = moderation.unbanIp(ip);
+    const ok = moderation.unbanIp(ip, admin.username);
     logEvent({
       event: 'admin.unban_ip',
       actorId: admin.id,
@@ -338,7 +339,7 @@ adminRouter.post('/unban', (req, res) => {
     res.json({ ok: true, ip });
     return;
   }
-  const ok = moderation.unban(name);
+  const ok = moderation.unban(name, admin.username);
   logEvent({
     event: 'admin.unban',
     actorId: admin.id,
@@ -466,5 +467,20 @@ adminRouter.get('/metrics/report', (req, res) => {
     timeseries: getMetricsTimeseries(days),
     recentModeBreakdown: modeBreakdown(sample),
     weekly: { ...getWeeklyChallengeStats(), map: WEEKLY_CHALLENGE_MAP, fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT },
+    // What the anticheat caught (counts over its retained window).
+    anticheat: acCounts(),
+  });
+});
+
+// ── Anticheat feed ─────────────────────────────────────────────────────────
+// What the defensive layer caught and did, newest first: rejected hacks
+// (speed / fire-rate / shot-origin / aimbot), kicked (afk / flood), blocked
+// (banned at the door / profanity), timeouts (chat rate limit), and bans
+// applied or lifted. Read-only → a bearer token may view this too.
+adminRouter.get('/anticheat', (req, res) => {
+  const kind = typeof req.query.kind === 'string' && req.query.kind ? (req.query.kind as AcKind) : undefined;
+  res.json({
+    events: acRecent(intParam(req.query.limit, 100), kind),
+    counts: acCounts(),
   });
 });

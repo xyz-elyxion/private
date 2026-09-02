@@ -76,6 +76,7 @@ import {
   unlockedSetFor,
 } from './db';
 import { accountIdFromCookieHeader } from './auth';
+import { acLog, acThrottledLog } from './anticheat';
 import { containsProfanity } from './profanity';
 
 // Snapshot rate, paired with the client's 64Hz sim + 64Hz position upload so
@@ -744,6 +745,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
         console.warn(
           `[elyxion] aim outlier ${s.id} (${s.name}): hitRate=${hr.toFixed(2)} hsRate=${hsr.toFixed(2)} — throttling frags`,
         );
+        acLog({
+          kind: 'flag',
+          target: s.name,
+          detail: 'aimbot',
+          reason: `hitRate=${(hr * 100).toFixed(0)}% hsRate=${(hsr * 100).toFixed(0)}% over ${s.aimShots} shots — frags throttled`,
+        });
       }
       s.aimFlagged = outlier;
       // Halve the window so it stays recent-weighted (and a reformed player un-flags).
@@ -1177,6 +1184,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     const actorName = actor?.name ?? 'moderator';
     for (const t of targets) addIpBan(t.ip, reason, actorName, name.toLowerCase());
     addBan(name, reason, actorName);
+    acLog({ kind: 'ban', target: name.trim(), actor: actorName, detail: 'name', reason: reason || undefined });
     for (const t of targets) ejectClient(t, reason, true, actor);
     return { found: targets.length > 0, names: targets.map((t) => t.name) };
   };
@@ -1185,6 +1193,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // everyone on it, and boots whoever is online on it right now.
   const banIpAddress = (ip: string, reason: string, actor?: Moderator) => {
     addIpBan(ip, reason, actor?.name ?? 'moderator');
+    acLog({ kind: 'ban', target: ip.trim(), actor: actor?.name ?? 'moderator', detail: 'ip', reason: reason || undefined });
     const targets = liveByIp(ip);
     for (const t of targets) ejectClient(t, reason, true, actor);
     return { found: targets.length > 0, names: targets.map((t) => t.name) };
@@ -1194,6 +1203,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // then close the socket — they must not sit in the lobby browsing either.
   const rejectBanned = (rec: ClientRecord) => {
     rec.moderatedAt = Date.now();
+    acLog({
+      kind: 'block',
+      target: rec.name,
+      detail: 'banned-name',
+      reason: getBanByName(rec.name)?.reason || 'banned at join',
+    });
     sendRaw(rec.socket, { type: 'kicked', reason: getBanByName(rec.name)?.reason ?? '', banned: true });
     try {
       rec.socket.close();
@@ -1246,7 +1261,9 @@ export function attachElyxionWs(wss: WebSocketServer) {
         const r = banIpAddress(ip, restParts.join(' ').trim().slice(0, 200), actor);
         return r.found ? null : `Banned IP ${ip} (nobody online on it).`;
       }
-      return removeIpBan(ip) ? `Unbanned IP ${ip}.` : `IP ${ip} wasn't banned.`;
+      const okIp = removeIpBan(ip);
+      if (okIp) acLog({ kind: 'unban', target: ip.trim(), actor: actor.name, detail: 'ip' });
+      return okIp ? `Unbanned IP ${ip}.` : `IP ${ip} wasn't banned.`;
     }
     let target = rest;
     let reason = '';
@@ -1274,7 +1291,9 @@ export function attachElyxionWs(wss: WebSocketServer) {
       reason = r.reason;
     }
     if (!target) return `Usage: /${verbL} <name> [reason]`;
-    return removeBan(target) ? `Unbanned “${target}”.` : `“${target}” wasn't banned.`;
+    const ok = removeBan(target);
+    if (ok) acLog({ kind: 'unban', target, actor: actor.name, detail: 'name' });
+    return ok ? `Unbanned “${target}”.` : `“${target}” wasn't banned.`;
   };
 
   // ── Lobby listing ─────────────────────────────────────────────────────
@@ -1604,7 +1623,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // Fire-rate gate (#2): RAIL_COOLDOWN is only client-enforced, so a modified
     // client could stream shots. Drop anything faster than the cooldown (minus
     // a small jitter tolerance) and stamp the accepted shot time.
-    if (now - shooter.lastShotMs < RAIL_COOLDOWN * 1000 - FIRE_RATE_TOLERANCE_MS) return;
+    if (now - shooter.lastShotMs < RAIL_COOLDOWN * 1000 - FIRE_RATE_TOLERANCE_MS) {
+      acThrottledLog(`fire:${shooter.id}`, {
+        kind: 'reject',
+        target: shooter.name,
+        detail: 'fire-rate',
+        reason: `shot ${now - shooter.lastShotMs}ms after the last (min ${Math.round(RAIL_COOLDOWN * 1000 - FIRE_RATE_TOLERANCE_MS)}ms)`,
+      }, 10_000);
+      return;
+    }
 
     let { dx, dy, dz } = msg;
     const dl = Math.hypot(dx, dy, dz);
@@ -1622,7 +1649,16 @@ export function attachElyxionWs(wss: WebSocketServer) {
     const ex = shooter.pos.x;
     const ey = shooter.pos.y + EYE_HEIGHT;
     const ez = shooter.pos.z;
-    if (Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez) > SHOT_ORIGIN_MAX_DIST) return;
+    const originDist = Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez);
+    if (originDist > SHOT_ORIGIN_MAX_DIST) {
+      acThrottledLog(`origin:${shooter.id}`, {
+        kind: 'reject',
+        target: shooter.name,
+        detail: 'shot-origin',
+        reason: `ray origin ${originDist.toFixed(1)}m from server eye (max ${SHOT_ORIGIN_MAX_DIST}m)`,
+      });
+      return;
+    }
     shooter.lastShotMs = now;
     shooter.lastActiveMs = now; // firing counts as activity (AFK timer)
     // Firing ends your own spawn invuln — you can't shoot from behind protection.
@@ -1698,7 +1734,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // Throttle a flagged aimbot: the shot landed but we drop the frag (the stat
     // window keeps decaying, so a legit player who dips back under the threshold
     // un-flags within a window or two).
-    if (shooter.aimFlagged) return;
+    if (shooter.aimFlagged) {
+      acThrottledLog(`aim:${shooter.id}`, {
+        kind: 'reject',
+        target: shooter.name,
+        detail: 'aimbot',
+        reason: 'hit suppressed while flagged',
+      }, 30_000);
+      return;
+    }
 
     shooter.frags += 1;
     victim.deaths += 1;
@@ -1848,10 +1892,18 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // Bans apply at the door: a banned NAME (stable for accounts) or banned IP
     // (what actually stops a reconnecting guest — their "Guest N" name renumbers
     // every session, the IP does not) is refused before it can browse the lobby
-    // or join anything. handled by handleDisconnect (moderatedAt → immediate reap).
-    const preBan = getBanByName(record.name) ?? getBanByIp(record.ip);
+    // or join anything. Reaped by handleDisconnect (moderatedAt → immediate reap).
+    const nameBan = getBanByName(record.name);
+    const ipBan = getBanByIp(record.ip);
+    const preBan = nameBan ?? ipBan;
     if (preBan) {
       record.moderatedAt = Date.now();
+      acLog({
+        kind: 'block',
+        target: nameBan ? record.name : record.ip,
+        detail: nameBan ? 'banned-name' : 'banned-ip',
+        reason: preBan.reason || undefined,
+      });
       sendRaw(socket, { type: 'kicked', reason: preBan.reason, banned: true });
       socket.on('close', () => handleDisconnect(record));
       socket.on('error', () => handleDisconnect(record));
@@ -1873,6 +1925,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
       }
       record.msgCount += 1;
       if (record.msgCount > MSG_RATE_LIMIT) {
+        acThrottledLog(`flood:${record.id}`, {
+          kind: 'kick',
+          target: record.name,
+          detail: 'msg-flood',
+          reason: `${record.msgCount} inbound msgs in the last ${MSG_RATE_WINDOW_MS / 1000}s (cap ${MSG_RATE_LIMIT})`,
+        });
         try {
           socket.close();
         } catch {
@@ -1950,10 +2008,21 @@ export function attachElyxionWs(wss: WebSocketServer) {
           }
           record.chatCount += 1;
           if (record.chatCount > CHAT_RATE_LIMIT) {
+            acThrottledLog(`chatrate:${record.id}`, {
+              kind: 'timeout',
+              target: record.name,
+              detail: 'chat-rate',
+              reason: `${record.chatCount} msgs in the last ${CHAT_RATE_WINDOW_MS / 1000}s wait (cap ${CHAT_RATE_LIMIT})`,
+            }, 10_000);
             sendRaw(socket, { type: 'chat-rejected', reason: 'rate' });
             break;
           }
           if (containsProfanity(text)) {
+            acThrottledLog(`chatblock:${record.id}`, {
+              kind: 'block',
+              target: record.name,
+              detail: 'chat-profanity',
+            }, 10_000);
             sendRaw(socket, { type: 'chat-rejected', reason: 'blocked' });
             break;
           }
@@ -2350,11 +2419,18 @@ export function attachElyxionWs(wss: WebSocketServer) {
               const dtSec = (ts - prevPosMs) / 1000;
               const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
               const vert = Math.abs(msg.y - record.pos.y);
-              // Clamp BOTH axes — vertical was previously untrusted, letting a
-              // client fly/noclip straight up (moving its hitbox + snapshot).
-              if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
-                break; // drop, keep last good pos
-              }
+            // Clamp BOTH axes — vertical was previously untrusted, letting a
+            // client fly/noclip straight up (moving its hitbox + snapshot).
+            if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
+              // Anticheat feed (folded — a cheater streams these at 64Hz).
+              acThrottledLog(`speed:${record.id}`, {
+                kind: 'reject',
+                target: record.name,
+                detail: 'speed',
+                reason: `+${horiz.toFixed(1)}m horiz / +${vert.toFixed(1)}m vert in ${(dtSec * 1000).toFixed(0)}ms (${(horiz / dtSec).toFixed(0)} m/s)`,
+              });
+              break; // drop, keep last good pos
+            }
             }
             // Count real movement as activity (resets the AFK timer; pings don't),
             // and break spawn invuln — protection lasts only while you hold still.
@@ -2654,6 +2730,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
       const stale = now - c.lastSeen > STALE_CLIENT_TIMEOUT_MS;
       const afk = c.roomId != null && now - c.lastActiveMs > AFK_TIMEOUT_MS;
       if (stale || afk) {
+        acLog({
+          kind: 'kick',
+          target: c.name,
+          detail: afk ? 'afk' : 'stale',
+          reason: afk ? `no input for ${Math.round((now - c.lastActiveMs) / 1000)}s` : 'no traffic — half-open socket reaped',
+        });
         try {
           if (afk && !stale) sendRaw(c.socket, { type: 'error', message: 'Kicked for inactivity' });
           c.socket.close();
@@ -2717,8 +2799,16 @@ export function attachElyxionWs(wss: WebSocketServer) {
         banByName(name, reason, { name: actorName }),
       banIp: (ip: string, reason: string, actorName: string) =>
         banIpAddress(ip, reason, { name: actorName }),
-      unban: (name: string) => removeBan(name),
-      unbanIp: (ip: string) => removeIpBan(ip),
+      unban: (name: string, actorName: string) => {
+        const ok = removeBan(name);
+        if (ok) acLog({ kind: 'unban', target: name.trim(), actor: actorName, detail: 'name' });
+        return ok;
+      },
+      unbanIp: (ip: string, actorName: string) => {
+        const ok = removeIpBan(ip);
+        if (ok) acLog({ kind: 'unban', target: ip.trim(), actor: actorName, detail: 'ip' });
+        return ok;
+      },
       list: () => listBans(),
     },
   };

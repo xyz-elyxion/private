@@ -272,6 +272,31 @@ override any sound; missing announcer lines fall back to speech synthesis.
 | `npm run lint`     | ESLint.                                                  |
 | `npm run netcode:load` | Netcode load harness against a local server.         |
 
+### Anticheat
+
+The server is authoritative for hits and movement, so it can't be fooled into
+scoring a cheater — but modified clients can still try to *poison the game*:
+teleport/fly movement (feeds snapshots + lag-comp rewind), shots fired faster
+than the rail cooldown, rays cast from off your eye (shooting through walls),
+and statistically impossible aim. Each attempt is dropped/rejected/throttled
+server-side and recorded in the **anticheat feed** (`GET /api/admin/anticheat`,
+worker/read-only token or session; also on the admin dashboard → **Anticheat**
+tab): stopped hacks, aimbot flags, kicked/blocked/timeout actions, and every
+ban applied or lifted. The feed is in-memory and bounded.
+
+Watch it catch real cheats from the browser console (no server flags needed):
+
+1. Open the game in a browser tab and **join a match**.
+2. Open DevTools (F12) in that tab and paste
+   [`public/ac-console-demo.js`](public/ac-console-demo.js) (or open
+   `/ac-console-demo.js` on your dev server to copy it). Pasting just arms a
+   WebSocket hook and defines `window.__ac` — it does nothing yet.
+3. Run `__ac.speed()` (10 speed-hack teleports — every one is dropped and
+   logged) and `__ac.shootBurst()` (5 rapid rails — 4 rejected).
+4. See it caught on the admin dashboard → **Anticheat** tab (5s poll) or via
+   `GET /api/admin/anticheat` with your `ADMIN_API_TOKEN`.
+5. `__ac.clear()` removes the hook when you're done.
+
 ---
 
 ## Contributing
