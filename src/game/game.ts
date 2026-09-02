@@ -153,7 +153,8 @@ export type MatchEndListener = (result: MatchResult) => void;
 export type NetMatchEvent =
   | { type: 'join-failed'; reason: string }
   | { type: 'spectate-ended' } // the watched match ended / room reaped → leave to lobby
-  | { type: 'ranked-result'; result: RankedResult; won: boolean }; // ranked match over → show overlay
+  | { type: 'ranked-result'; result: RankedResult; won: boolean } // ranked match over → show overlay
+  | { type: 'kicked'; reason: string; banned: boolean }; // moderated out — stop reconnecting, show why
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
@@ -1130,6 +1131,7 @@ export class Game {
           onRankedResult: (r) => this.handleNetRankedResult(r),
           onChat: (m) => this.handleNetChat(m),
           onBeam: (b) => this.handleNetBeam(b),
+          onKicked: (info) => this.onNetEvent({ type: 'kicked', reason: info.reason, banned: info.banned }),
         },
       });
       this.net.connect();

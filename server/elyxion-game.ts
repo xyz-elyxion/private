@@ -61,10 +61,18 @@ import {
 } from '../src/game/cosmetics';
 import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
 import {
+  addBan,
+  addIpBan,
   findUserById,
+  getBanByIp,
+  getBanByName,
   getRankedProfile,
   getRankedRating,
+  isBannedName,
+  listBans,
   recordRankedResult,
+  removeBan,
+  removeIpBan,
   unlockedSetFor,
 } from './db';
 import { accountIdFromCookieHeader } from './auth';
@@ -205,6 +213,8 @@ type ClientRecord = {
   rttMs: number; // client-reported round-trip ping, echoed to the scoreboard
   resumeToken: string; // opaque token a reconnecting client presents to reclaim this slot
   disconnectedAt: number; // ms timestamp the socket dropped (0 = connected); resume grace
+  moderatedAt: number; // ms a moderator kicked/banned this socket (0 = normal); no resume-hold, no reconnect
+  ip: string; // resolved client IP (CF-Connecting-IP → X-Forwarded-For → remoteAddress, set in index.ts)
   lastRecoverMs: number; // last void-recovery time (debounces stale OOB positions)
   lastShotMs: number; // server-side fire-rate gate
   lastPosMs: number; // for the pos-update speed clamp
@@ -1036,6 +1046,16 @@ export function attachElyxionWs(wss: WebSocketServer) {
   const handleDisconnect = (rec: ClientRecord) => {
     if (rec.disconnectedAt > 0) return; // already handled (error then close)
     rankedQueue.delete(rec.id); // a queued socket dropping leaves the queue
+    // A moderated (kicked/banned) socket was already removed from its room by
+    // ejectClient — never hold its slot for a resume, the kick must free it now.
+    if (rec.moderatedAt > 0) {
+      leaveRoom(rec);
+      leaveSpectate(rec);
+      listers.delete(rec.id);
+      clients.delete(rec.id);
+      schedulePresence();
+      return;
+    }
     const room = rec.roomId ? rooms.get(rec.roomId) : null;
     if (room && room.state === 'active' && room.members.has(rec.id)) {
       rec.disconnectedAt = Date.now();
@@ -1047,6 +1067,214 @@ export function attachElyxionWs(wss: WebSocketServer) {
     listers.delete(rec.id);
     clients.delete(rec.id);
     schedulePresence();
+  };
+
+  // ── Moderation (kick / ban) ─────────────────────────────────────────
+  // Force-disconnect one live connection: tell the client first (so it stops
+  // reconnecting and can show the reason), stamp the record so handleDisconnect
+  // reaps it immediately (no resume-hold — a kick must free the slot NOW), and
+  // announce to the target's room unless the acting admin is in that audience
+  // already (they get a direct ack instead, so they never read it twice).
+  const systemLine = (text: string): ChatBroadcast => ({
+    type: 'chat',
+    id: (chatSeq += 1),
+    name: 'Server',
+    text,
+    ts: Date.now(),
+    admin: false,
+    verified: false,
+    guest: false,
+  });
+
+  // `actor` is the acting admin (a ClientRecord when the action came from in-
+  // game chat; a bare { name } when it came from the REST API).
+  type Moderator = { id?: string; name: string; socket?: WebSocket };
+  const ejectClient = (rec: ClientRecord, reason: string, banned: boolean, actor?: Moderator) => {
+    rec.moderatedAt = Date.now();
+    rankedQueue.delete(rec.id);
+    const room = rec.roomId ? rooms.get(rec.roomId) ?? null : null;
+    leaveRoom(rec);
+    leaveSpectate(rec);
+    listers.delete(rec.id);
+    sendRaw(rec.socket, { type: 'kicked', reason, banned });
+    try {
+      rec.socket.close(); // triggers handleDisconnect → immediate reap (moderatedAt)
+    } catch {
+      // ignore
+    }
+    const line = `${rec.name} was ${banned ? 'banned' : 'kicked'} by ${actor?.name ?? 'a moderator'}${reason ? ` — ${reason}` : ''}.`;
+    // Announce where the room sees it. When the acting admin is part of that
+    // audience (in-game chat) they get a direct ack instead, never a repeat.
+    if (room && room.members.size + room.spectators.size > 0) {
+      const actorInRoom = !!actor?.id && (room.members.has(actor.id) || room.spectators.has(actor.id));
+      if (actorInRoom && actor?.socket) {
+        sendRaw(actor.socket, systemLine(line));
+      } else {
+        broadcastSystem(room, line);
+      }
+    } else if (actor?.socket) {
+      sendRaw(actor.socket, systemLine(line));
+    }
+  };
+
+  // A text line to a whole room (players + spectators), or the global lobby
+  // chat when no room is given — the same pipeline a normal chat message uses.
+  const broadcastSystem = (room: Room | null, text: string) => {
+    const line = systemLine(text);
+    if (room) {
+      broadcastRoom(room, line);
+    } else {
+      chatHistory.push(line);
+      if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
+      const payload = JSON.stringify(line);
+      for (const lid of listers) {
+        const c = clients.get(lid);
+        if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+      }
+    }
+  };
+
+  // Every LIVE connection whose display name matches (case-insensitive) — a
+  // multi-tab account can hold several. Disconnected (resume-grace) sockets
+  // don't count: only active players/lobby browsers get kicked now.
+  const liveByName = (name: string): ClientRecord[] => {
+    const needle = name.trim().toLowerCase();
+    if (!needle) return [];
+    const out: ClientRecord[] = [];
+    for (const c of clients.values()) {
+      if (c.disconnectedAt > 0) continue;
+      if (c.name.toLowerCase() === needle) out.push(c);
+    }
+    return out;
+  };
+
+  const kickByName = (name: string, reason: string, actor?: Moderator) => {
+    const targets = liveByName(name);
+    for (const t of targets) ejectClient(t, reason, false, actor);
+    return { found: targets.length > 0, names: targets.map((t) => t.name) };
+  };
+
+  // Every LIVE connection from this resolved IP (a whole household/office behind
+  // one address can be running several tabs).
+  const liveByIp = (ip: string): ClientRecord[] => {
+    const needle = ip.trim();
+    if (!needle) return [];
+    const out: ClientRecord[] = [];
+    for (const c of clients.values()) {
+      if (c.disconnectedAt > 0) continue;
+      if (c.ip === needle) out.push(c);
+    }
+    return out;
+  };
+
+  // Ban = persist immediately (survives reconnect / restart), then boot anyone
+  // of that name who is online right now — and AUTO-CAPTURE each online
+  // target's IP into the ban store, so a guest who reconnects (their "Guest N"
+  // name renumbers) is still refused at the door by address. Removing the name
+  // ban later lifts those captured IPs too (true "unban").
+  const banByName = (name: string, reason: string, actor?: Moderator) => {
+    const targets = liveByName(name);
+    const actorName = actor?.name ?? 'moderator';
+    for (const t of targets) addIpBan(t.ip, reason, actorName, name.toLowerCase());
+    addBan(name, reason, actorName);
+    for (const t of targets) ejectClient(t, reason, true, actor);
+    return { found: targets.length > 0, names: targets.map((t) => t.name) };
+  };
+
+  // Direct IP ban (/banip, REST { ip }): blocks the address at connect for
+  // everyone on it, and boots whoever is online on it right now.
+  const banIpAddress = (ip: string, reason: string, actor?: Moderator) => {
+    addIpBan(ip, reason, actor?.name ?? 'moderator');
+    const targets = liveByIp(ip);
+    for (const t of targets) ejectClient(t, reason, true, actor);
+    return { found: targets.length > 0, names: targets.map((t) => t.name) };
+  };
+
+  // A banned player trying to join/spectate: tell them (with the ban's reason),
+  // then close the socket — they must not sit in the lobby browsing either.
+  const rejectBanned = (rec: ClientRecord) => {
+    rec.moderatedAt = Date.now();
+    sendRaw(rec.socket, { type: 'kicked', reason: getBanByName(rec.name)?.reason ?? '', banned: true });
+    try {
+      rec.socket.close();
+    } catch {
+      // ignore
+    }
+  };
+
+  // Display names may contain spaces ("Guest 1"), so a command's NAME is the
+  // LONGEST leading token-sequence that resolves — a live match for kick/ban, an
+  // existing ban for unban — and everything after it is the reason. If nothing
+  // resolves (e.g. banning an offline player), fall back to first-token name +
+  // rest as reason, which is what most admins type anyway.
+  const resolveTarget = (
+    rest: string,
+    resolves: (name: string) => boolean,
+  ): { name: string; reason: string } => {
+    const parts = rest.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return { name: '', reason: '' };
+    for (let i = parts.length; i >= 1; i--) {
+      const name = parts.slice(0, i).join(' ');
+      if (resolves(name)) return { name, reason: parts.slice(i).join(' ') };
+    }
+    return { name: parts[0], reason: parts.slice(1).join(' ') };
+  };
+
+  // Parse an admin chat command: /kick <name> [reason], /ban <name> [reason],
+  // /banip <ip> [reason], /unban <name>[/ip], /bans. Returns the result line to
+  // ack, or null (not a command — the caller moves on; for a live-target action
+  // the ack was already sent to the room by ejectClient).
+  const modCommand = (text: string, actor: ClientRecord): string | null => {
+    const m = /^\/(kick|ban|unban|bans|banip|unbanip)\b[\s\S]*$/i.exec(text);
+    if (!m) return null;
+    const verbL = m[1].toLowerCase();
+    const rest = text.slice(m[0].indexOf(m[1]) + m[1].length).trim();
+    if (verbL === 'bans') {
+      const bans = listBans();
+      if (bans.length === 0) return 'No active bans.';
+      return `Active bans: ${bans
+        .map((b) => (b.kind === 'ip' ? `IP ${b.ip}` : `“${b.name}”`))
+        .join(', ')}`;
+    }
+    if (verbL === 'banip' || verbL === 'unbanip') {
+      // IPs never contain spaces: first token is the address, the rest is reason
+      // (ignored for unban).
+      const [ipTok = '', ...restParts] = rest.split(/\s+/);
+      const ip = ipTok.trim();
+      if (!ip) return `Usage: /${verbL} <ip> [reason]`;
+      if (verbL === 'banip') {
+        const r = banIpAddress(ip, restParts.join(' ').trim().slice(0, 200), actor);
+        return r.found ? null : `Banned IP ${ip} (nobody online on it).`;
+      }
+      return removeIpBan(ip) ? `Unbanned IP ${ip}.` : `IP ${ip} wasn't banned.`;
+    }
+    let target = rest;
+    let reason = '';
+    if (verbL === 'kick') {
+      const r = resolveTarget(rest, (n) => liveByName(n).length > 0);
+      target = r.name;
+      reason = r.reason;
+      if (target) {
+        const hit = kickByName(target, reason, actor);
+        return hit.found ? null : `Couldn't find “${target}” online.`;
+      }
+    } else if (verbL === 'ban') {
+      const r = resolveTarget(rest, (n) => liveByName(n).length > 0);
+      target = r.name;
+      reason = r.reason;
+      if (target) {
+        const hit = banByName(target, reason, actor);
+        return hit.found ? null : `Banned “${target}” (they weren't online).`;
+      }
+    } else {
+      // unban: longest prefix that matches an existing NAME ban (captured IPs
+      // lift with it — see removeBan)
+      const r = resolveTarget(rest, (n) => isBannedName(n));
+      target = r.name;
+      reason = r.reason;
+    }
+    if (!target) return `Usage: /${verbL} <name> [reason]`;
+    return removeBan(target) ? `Unbanned “${target}”.` : `“${target}” wasn't banned.`;
   };
 
   // ── Lobby listing ─────────────────────────────────────────────────────
@@ -1545,7 +1773,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
   };
 
   // ── Connection ────────────────────────────────────────────────────────
-  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
+  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }, ip?: string) => {
     const id = genId();
     const now = Date.now();
     // The progression identity (the logged-in account behind the httpOnly
@@ -1578,6 +1806,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       rttMs: 0,
       resumeToken: genToken(),
       disconnectedAt: 0,
+      moderatedAt: 0,
       lastRecoverMs: 0,
       lastShotMs: 0,
       lastPosMs: 0,
@@ -1598,6 +1827,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       crosshair: '',
       card: null,
       playerId,
+      ip: ip ?? 'unknown',
       admin: !!account?.isAdmin,
       verified: !!account?.isVerified,
       history: [],
@@ -1614,6 +1844,24 @@ export function attachElyxionWs(wss: WebSocketServer) {
     clients.set(id, record);
     sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
     schedulePresence(); // a new socket bumps the online count for everyone in the menu
+
+    // Bans apply at the door: a banned NAME (stable for accounts) or banned IP
+    // (what actually stops a reconnecting guest — their "Guest N" name renumbers
+    // every session, the IP does not) is refused before it can browse the lobby
+    // or join anything. handled by handleDisconnect (moderatedAt → immediate reap).
+    const preBan = getBanByName(record.name) ?? getBanByIp(record.ip);
+    if (preBan) {
+      record.moderatedAt = Date.now();
+      sendRaw(socket, { type: 'kicked', reason: preBan.reason, banned: true });
+      socket.on('close', () => handleDisconnect(record));
+      socket.on('error', () => handleDisconnect(record));
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
+      return;
+    }
 
     socket.on('message', (raw, isBinary) => {
       const ts = Date.now();
@@ -1676,6 +1924,19 @@ export function attachElyxionWs(wss: WebSocketServer) {
           if (!inRoom && !isSpectator && !inLobby) break;
           const text = sanitizeChat(msg.text);
           if (!text) break;
+          // Staff moderation commands (/kick /ban /unban /bans). Intercepted
+          // before the rate-limit/profanity gates so they can't be throttled or
+          // blocked; the raw command is never broadcast — the server acks with
+          // a System line (or the room announcement from ejectClient) instead.
+          if (record.admin && text.startsWith('/')) {
+            const result = modCommand(text, record);
+            if (result !== null) {
+              const cmdRoom = rooms.get(record.spectating ?? record.roomId ?? '') ?? null;
+              if (cmdRoom) broadcastSystem(cmdRoom, result);
+              else sendRaw(socket, systemLine(result));
+            }
+            break;
+          }
           // Global lobby chat is accounts-only — anonymous broadcast is the abuse
           // vector. Match chat (playing OR spectating) allows everyone (guests
           // show as their room/"Guest N" name).
@@ -1846,6 +2107,10 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
         case 'join': {
           rankedQueue.delete(record.id); // joining a room → leave the ranked queue
+          if (isBannedName(record.name)) {
+            rejectBanned(record);
+            break;
+          }
           const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
           if (!room) {
             sendRaw(socket, { type: 'join-failed', reason: 'gone' });
@@ -1864,6 +2129,10 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // exactly what you can't join but should be able to watch. Spectators
           // never enter members, so they're excluded from snapshots, shots,
           // teams, and votes; they only receive the room's broadcasts + state.
+          if (isBannedName(record.name)) {
+            rejectBanned(record);
+            break;
+          }
           const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
           if (!room) {
             sendRaw(socket, { type: 'spectate-failed', reason: 'gone' });
@@ -1908,6 +2177,10 @@ export function attachElyxionWs(wss: WebSocketServer) {
         case 'resume': {
           // A reconnecting client presents its previous resume token to reclaim
           // its in-match slot + score. On miss/expiry, fall back to a fresh join.
+          if (isBannedName(record.name)) {
+            rejectBanned(record); // a ban must also block a mid-grace reclaim
+            break;
+          }
           const token = typeof msg.token === 'string' ? msg.token : '';
           let old: ClientRecord | null = null;
           if (token) {
@@ -2432,6 +2705,21 @@ export function attachElyxionWs(wss: WebSocketServer) {
         loopLagMs: Math.round(loopLagEmaMs), // smoothed event-loop lag
         loopLagMaxMs: Math.round(loopLagMaxMs), // peak lag, rolling ≤30s window
       };
+    },
+    // Live moderation handles for the REST layer (server/admin.ts routes). A
+    // kick disconnects immediately; a ban persists + kicks everyone of that
+    // name; an unban lifts the ban (does nothing to live sockets). All take a
+    // display name as typed on the scoreboard/chat (case-insensitive).
+    moderation: {
+      kick: (name: string, reason: string, actorName: string) =>
+        kickByName(name, reason, { name: actorName }),
+      ban: (name: string, reason: string, actorName: string) =>
+        banByName(name, reason, { name: actorName }),
+      banIp: (ip: string, reason: string, actorName: string) =>
+        banIpAddress(ip, reason, { name: actorName }),
+      unban: (name: string) => removeBan(name),
+      unbanIp: (ip: string) => removeIpBan(ip),
+      list: () => listBans(),
     },
   };
 }

@@ -44,6 +44,17 @@ type MatchRow = {
   xp: number;
   mode: string | null;
 };
+// Moderation ban list entries (mirror server/db.ts): kind 'name' is a display-
+// name ban, kind 'ip' an address ban (auto-captured from an online player, or
+// set directly via /banip).
+type BanEntry = {
+  kind: 'name' | 'ip';
+  name: string;
+  ip?: string;
+  reason: string;
+  bannedBy: string;
+  createdAt: number;
+};
 type PlayerRow = {
   id: string;
   userName: string;
@@ -598,11 +609,84 @@ const PLAYER_SORTS: { id: string; label: string }[] = [
   { id: 'accuracy', label: 'Accuracy' },
   { id: 'xp', label: 'XP' },
 ];
+// Moderation actions on the players table (kick / ban / unban). Bans persist
+// server-side; kick disconnects a live player (must be online to hit). Both are
+// session-only routes — the token/read-only path can't mutate.
 function PlayersTab() {
   const [players, setPlayers] = useState<PlayerRow[] | null>(null);
   const [sort, setSort] = useState('recent');
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
+  const [bans, setBans] = useState<BanEntry[]>([]);
+  const [modBusy, setModBusy] = useState<string | null>(null);
+  const [modMsg, setModMsg] = useState<string | null>(null);
+  // Bans: NAME rows flag the players table (banned chip + Unban toggle); IP rows
+  // render as removable chips below. Re-fetched after every action because a
+  // name unban also lifts the IPs that ban captured (server-side).
+  const reloadBans = useCallback(() => {
+    void getJSON<{ bans: BanEntry[] }>('/api/admin/bans').then((d) => {
+      if (d) setBans(d.bans ?? []);
+    });
+  }, []);
+  useEffect(() => {
+    reloadBans();
+  }, [reloadBans]);
+  const nameBanSet = useMemo(
+    () => new Set(bans.filter((b) => b.kind === 'name').map((b) => b.name.toLowerCase())),
+    [bans],
+  );
+  const ipBans = useMemo(() => bans.filter((b) => b.kind === 'ip'), [bans]);
+  // Auto-dismiss the action result line.
+  useEffect(() => {
+    if (!modMsg) return;
+    const t = setTimeout(() => setModMsg(null), 5000);
+    return () => clearTimeout(t);
+  }, [modMsg]);
+  const moderate = (name: string, verb: 'kick' | 'ban' | 'unban') => {
+    if (modBusy) return;
+    let reason = '';
+    if (verb === 'ban') {
+      const v = window.prompt(`Ban “${name}”? Optional reason:`, '');
+      if (v === null) return; // cancelled
+      reason = v.trim().slice(0, 200);
+    }
+    setModBusy(name);
+    void postJSON<{ ok: boolean }>(`/api/admin/${verb}`, { name, reason }).then((d) => {
+      setModBusy(null);
+      if (d?.ok) {
+        setModMsg(
+          verb === 'kick'
+            ? `Kicked ${name}.`
+            : verb === 'ban'
+              ? `Banned ${name} (their IP too).`
+              : `Unbanned ${name}.`,
+        );
+        if (verb === 'ban' || verb === 'unban') reloadBans();
+      } else {
+        setModMsg(
+          verb === 'unban'
+            ? `“${name}” wasn't banned.`
+            : verb === 'kick'
+              ? `“${name}” isn't online right now (kick needs a live connection).`
+              : `Couldn't ban “${name}”.`,
+        );
+      }
+    });
+  };
+  // Lift a direct IP ban from the strip below.
+  const moderateIp = (ip: string) => {
+    if (modBusy) return;
+    setModBusy(ip);
+    void postJSON<{ ok: boolean }>('/api/admin/unban', { ip }).then((d) => {
+      setModBusy(null);
+      if (d?.ok) {
+        setModMsg(`Unbanned IP ${ip}.`);
+        reloadBans();
+      } else {
+        setModMsg(`IP ${ip} wasn't banned.`);
+      }
+    });
+  };
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q), 250);
     return () => clearTimeout(t);
@@ -642,6 +726,29 @@ function PlayersTab() {
   );
   return (
     <Panel title="Players" right={controls}>
+      {modMsg && <div className='mb-3 rounded-md border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 font-mono text-[11px] text-cyan-100'>{modMsg}</div>}
+      {ipBans.length > 0 && (
+        <div className='mb-3 flex flex-wrap items-center gap-1.5 rounded-md border border-rose-400/25 bg-rose-500/10 px-3 py-2'>
+          <span className='mr-1 font-mono text-[10px] uppercase tracking-[0.16em] text-rose-200/80'>IP bans</span>
+          {ipBans.map((b) => (
+            <span
+              key={b.ip}
+              className='inline-flex items-center gap-1.5 rounded border border-rose-400/30 bg-rose-950/40 px-2 py-0.5 font-mono text-[11px] text-rose-100'
+            >
+              {b.ip}
+              {b.reason && <span className='text-rose-200/60'>— {b.reason}</span>}
+              <button
+                onClick={() => moderateIp(b.ip ?? '')}
+                disabled={modBusy !== null}
+                title='Lift this IP ban'
+                className='text-rose-200/70 underline decoration-dotted transition hover:text-rose-100 disabled:opacity-40'
+              >
+                unban
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {!players ? (
         <Loading />
       ) : players.length === 0 ? (
@@ -660,6 +767,7 @@ function PlayersTab() {
                 <th className="py-1.5 pr-3 font-medium">XP</th>
                 <th className="py-1.5 pr-3 font-medium">Joined</th>
                 <th className="py-1.5 pr-3 font-medium">Last seen</th>
+                <th className="py-1.5 pr-3 font-medium">Moderation</th>
               </tr>
             </thead>
             <tbody className="text-white/75">
@@ -668,6 +776,9 @@ function PlayersTab() {
                   <td className="py-2 pr-3 text-white/85">
                     <span className="flex items-center gap-1.5">
                       {p.userName}
+                      {nameBanSet.has((p.userName ?? '').toLowerCase()) && (
+                        <span className="text-[9px] uppercase tracking-wide text-rose-300">banned</span>
+                      )}
                       {p.admin && <span className="text-[9px] uppercase tracking-wide text-amber-300">staff</span>}
                       {p.verified && <span className="text-cyan-300">✓</span>}
                     </span>
@@ -680,6 +791,37 @@ function PlayersTab() {
                   <td className="py-2 pr-3 tabular-nums text-amber-200">{fmt(p.totalXp)}</td>
                   <td className="py-2 pr-3 text-white/45">{new Date(p.createdAt).toLocaleDateString()}</td>
                   <td className="py-2 pr-3 text-white/45">{ago(p.lastSeen)}</td>
+                  <td className="py-2 pr-3">
+                    <span className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => moderate(p.userName, 'kick')}
+                        disabled={modBusy !== null}
+                        title='Disconnect this player now (must be online)'
+                        className='rounded border border-white/15 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-white/70 transition hover:border-amber-300/60 hover:text-amber-200 disabled:opacity-40'
+                      >
+                        Kick
+                      </button>
+                      {nameBanSet.has((p.userName ?? '').toLowerCase()) ? (
+                        <button
+                          onClick={() => moderate(p.userName, 'unban')}
+                          disabled={modBusy !== null}
+                          title='Lift the ban on this name'
+                          className='rounded border border-amber-400/40 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100 disabled:opacity-40'
+                        >
+                          Unban
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => moderate(p.userName, 'ban')}
+                          disabled={modBusy !== null}
+                          title='Ban this name (persisted; kicks them if online)'
+                          className='rounded border border-rose-500/40 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-rose-300 transition hover:border-rose-400/70 hover:text-rose-200 disabled:opacity-40'
+                        >
+                          Ban
+                        </button>
+                      )}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>

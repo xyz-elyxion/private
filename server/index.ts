@@ -9,6 +9,10 @@
 // server hosts the client and proxies those paths here (see vite.config.ts), so
 // the browser always talks to a single origin — same as production.
 
+// Load .env into process.env before ANY module reads env at import time (see
+// server/env.ts for why: the server gets no automatic .env handling).
+import './env';
+
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,7 +25,7 @@ import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
 import { feedbackRouter } from './feedback';
 import { authRouter, adminUsernamesFromEnv } from './auth';
-import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
+import { adminApiTokenEnabled, adminRouter, setLiveCountsSource, setModerationActions } from './admin';
 import { syncAdminsFromEnv } from './db';
 import { attachElyxionWs } from './elyxion-game';
 
@@ -261,9 +265,13 @@ const elyxionWss = new WebSocketServer({
   maxPayload: 16 * 1024,
   perMessageDeflate: false,
 });
-({ liveCounts } = attachElyxionWs(elyxionWss));
+const elyxion = attachElyxionWs(elyxionWss);
+({ liveCounts } = elyxion);
 // Let the token-gated metrics API report live concurrency too (one-call /report).
 setLiveCountsSource(liveCounts);
+// Live kick/ban handles for the admin moderation routes (session-only, see
+// server/admin.ts).
+setModerationActions(elyxion.moderation);
 elyxionWss.on('error', (err) => console.error('[ws] server error', err));
 
 // Connection caps so a flood can't exhaust slots/memory on a public alpha.
@@ -324,7 +332,9 @@ server.on('upgrade', (req, socket, head) => {
       if (n <= 0) wsPerIp.delete(ip);
       else wsPerIp.set(ip, n);
     });
-    elyxionWss.emit('connection', ws, req);
+    // Pass the resolved client IP (CF-Connecting-IP → X-Forwarded-For →
+    // remoteAddress) into the game: IP bans are enforced at connect there.
+    elyxionWss.emit('connection', ws, req, ip);
   });
 });
 

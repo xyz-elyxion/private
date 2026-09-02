@@ -1084,6 +1084,18 @@ function GameView({
         );
       } else if (ev.type === 'ranked-result') {
         setRankedResult(ev.result);
+      } else if (ev.type === 'kicked') {
+        // Moderated out — the socket is closed for good (NetClient stops
+        // reconnecting), so this overlay is the exit; no auto-retry.
+        setJoinError(
+          ev.banned
+            ? ev.reason
+              ? `You've been banned from this server: ${ev.reason}`
+              : 'You have been banned from this server.'
+            : ev.reason
+              ? `Kicked from the match: ${ev.reason}`
+              : 'You were kicked from the match.',
+        );
       }
     });
     applySettingsToGame(game, settings);
@@ -1349,6 +1361,8 @@ function SpectatorView({
       if (ev.type === 'spectate-ended') onExit();
       else if (ev.type === 'join-failed') {
         setError(ev.reason === 'full' ? 'That match is no longer available.' : 'That match no longer exists.');
+      } else if (ev.type === 'kicked') {
+        setError(ev.banned ? 'You were banned from the server.' : 'You were removed from the spectated match.');
       }
     });
     applySettingsToGame(game, settings);
@@ -4912,6 +4926,9 @@ function Lobby({
   const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
   const [lobbyStatus, setLobbyStatus] = useState<LobbyStatus>('connecting');
+  // Persist a moderator kick/ban message for the lobby (stops reconnecting via
+  // the socket's kicked flag; the banner explains why).
+  const [kickMsg, setKickMsg] = useState<string | null>(null);
   const [invite, setInvite] = useState<{ roomId: string; mapId: string } | null>(null);
   const [searching, setSearching] = useState(false); // quick-match in flight (#26e)
   const [rankedOpen, setRankedOpen] = useState(false);
@@ -4974,6 +4991,12 @@ function Lobby({
     lobbyRef.current = lobby;
     lobby.onRooms = setRooms;
     lobby.onStatus = setLobbyStatus;
+    lobby.onKicked = (info) =>
+      setKickMsg(
+        info.banned
+          ? `You've been banned${info.reason ? `: ${info.reason}` : ' from the server.'}`
+          : `You were kicked${info.reason ? `: ${info.reason}` : ' from the server.'}`,
+      );
     lobby.onResolved = (info) => {
       if (info.kind === 'matched') {
         startOnline(info.roomId, info.mapId);
@@ -5009,6 +5032,7 @@ function Lobby({
         clearTimeout(presenceDipTimer.current);
         presenceDipTimer.current = null;
       }
+      setKickMsg(null); // a fresh socket (e.g. new server URL) starts clean
     };
     // Reconnect (and re-bind onResolved → startOnline) when the Server URL
     // setting changes, so a custom URL isn't silently ignored until reload (#18).
@@ -5125,6 +5149,21 @@ function Lobby({
           </div>
         </header>
         <div className='h-px w-full shrink-0 bg-gradient-to-r from-cyan-400/50 via-white/10 to-transparent' />
+
+        {kickMsg && (
+          <div className='clip-deck-sm flex items-center justify-between gap-3 border border-rose-500/40 bg-rose-500/15 px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.12em] text-rose-200'>
+            <span className='flex items-center gap-2'>
+              <span className='deck-pulse h-1.5 w-1.5 rounded-full bg-rose-400' />
+              {kickMsg}
+            </span>
+            <button
+              onClick={() => setKickMsg(null)}
+              className='text-rose-200/60 transition hover:text-rose-100'
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* ── Main grid: actions (left) · live feed (right). Scrolls as one
             page on mobile; splits into two fixed columns on desktop. ─────── */}
@@ -5486,6 +5525,7 @@ function ServerStatusChip({ status }: { status: LobbyStatus }) {
     connecting: { dot: 'bg-amber-400', ring: 'border-amber-400/40 text-amber-200', t: 'Linking', title: 'Connecting to the match server…' },
     closed: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline', title: 'Match server unreachable — solo vs bots still works' },
     error: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline', title: 'Match server unreachable — solo vs bots still works' },
+    kicked: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Kicked', title: 'You were removed from the match server' },
   } as const;
   const s = map[status];
   return (

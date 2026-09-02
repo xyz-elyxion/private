@@ -61,6 +61,40 @@ export function setLiveCountsSource(fn: () => LiveCounts): void {
   liveSource = fn;
 }
 
+// Live moderation handles, injected by index.ts from the WS layer (the only
+// place live sockets + the ban table meet). Defaults are safe no-ops so the
+// routes are well-formed even before the socket attaches.
+export type BanListEntry = {
+  kind: 'name' | 'ip';
+  name: string; // display name ('', for direct IP bans)
+  ip?: string; // set for IP bans
+  reason: string;
+  bannedBy: string;
+  createdAt: number;
+};
+type ModerationActions = {
+  kick: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  // Name ban — auto-captures the online target's IP so a reconnecting guest
+  // can't dodge it by renumbering their "Guest N" name.
+  ban: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  // Direct IP ban — blocks every connection from that address, now + future.
+  banIp: (ip: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  unban: (name: string) => boolean;
+  unbanIp: (ip: string) => boolean;
+  list: () => BanListEntry[];
+};
+let moderation: ModerationActions = {
+  kick: () => ({ found: false, names: [] }),
+  ban: () => ({ found: false, names: [] }),
+  banIp: () => ({ found: false, names: [] }),
+  unban: () => false,
+  unbanIp: () => false,
+  list: () => [],
+};
+export function setModerationActions(m: ModerationActions): void {
+  moderation = m;
+}
+
 const API_TOKEN = process.env.ADMIN_API_TOKEN || '';
 export const adminApiTokenEnabled = API_TOKEN.length > 0;
 
@@ -204,6 +238,124 @@ adminRouter.post('/feedback/:id/status', (req, res) => {
     ip: req.ip,
   });
   res.json({ ok: true, id, status });
+});
+
+// ── Moderation: kick / ban / unban ─────────────────────────────────────────
+// All mutations — they boot live players and persist bans — so (like
+// verify/grant) they require a real admin session: a read-only API token may
+// never moderate. The ban list (GET) is read-only, so it stays token-readable.
+
+// Kick a player out of a live match / the lobby: disconnected immediately, no
+// ban, resume slot released. Unknown/offline name → 404 'not_online'.
+adminRouter.post('/kick', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const name = cleanUsername(body.name);
+  const reason = cleanUsername(body.reason).slice(0, 200);
+  if (!name) {
+    res.status(400).json({ error: 'bad_name' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  const r = moderation.kick(name, reason, admin.username);
+  logEvent({
+    event: 'admin.kick',
+    actorId: admin.id,
+    actorName: admin.username,
+    detail: { name, reason },
+    ip: req.ip,
+  });
+  if (!r.found) {
+    res.status(404).json({ error: 'not_online', name });
+    return;
+  }
+  res.json({ ok: true, names: r.names, reason });
+});
+
+// Ban a display name (case-insensitive, persisted) OR an IP address directly
+// ({ ip } body). A name ban kicks everyone live under that name and auto-
+// captures their IPs (a reconnecting guest can't dodge it by renumbering). An
+// IP ban blocks the address at the door and boots whoever is on it now.
+adminRouter.post('/ban', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const name = cleanUsername(body.name);
+  const ip = cleanUsername(body.ip);
+  const reason = cleanUsername(body.reason).slice(0, 200);
+  if (!name && !ip) {
+    res.status(400).json({ error: 'bad_target' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  if (ip) {
+    const r = moderation.banIp(ip, reason, admin.username);
+    logEvent({
+      event: 'admin.ban_ip',
+      actorId: admin.id,
+      actorName: admin.username,
+      detail: { ip, reason },
+      ip: req.ip,
+    });
+    res.json({ ok: true, ip, names: r.names, reason });
+    return;
+  }
+  const r = moderation.ban(name, reason, admin.username);
+  logEvent({
+    event: 'admin.ban',
+    actorId: admin.id,
+    actorName: admin.username,
+    detail: { name, reason },
+    ip: req.ip,
+  });
+  res.json({ ok: true, names: r.names, name, reason });
+});
+
+// Lift a ban — by name ({ name }, also lifts the IPs that ban captured) or by
+// IP ({ ip }). No-op (404) when nothing matched.
+adminRouter.post('/unban', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const name = cleanUsername(body.name);
+  const ip = cleanUsername(body.ip);
+  if (!name && !ip) {
+    res.status(400).json({ error: 'bad_target' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  if (ip) {
+    const ok = moderation.unbanIp(ip);
+    logEvent({
+      event: 'admin.unban_ip',
+      actorId: admin.id,
+      actorName: admin.username,
+      detail: { ip },
+      ip: req.ip,
+    });
+    if (!ok) {
+      res.status(404).json({ error: 'not_banned', ip });
+      return;
+    }
+    res.json({ ok: true, ip });
+    return;
+  }
+  const ok = moderation.unban(name);
+  logEvent({
+    event: 'admin.unban',
+    actorId: admin.id,
+    actorName: admin.username,
+    detail: { name },
+    ip: req.ip,
+  });
+  if (!ok) {
+    res.status(404).json({ error: 'not_banned', name });
+    return;
+  }
+  res.json({ ok: true, name });
+});
+
+// Current ban list, newest first (for review / the dashboard). Read-only.
+adminRouter.get('/bans', (_req, res) => {
+  res.json({ bans: moderation.list() });
 });
 
 // Recent audit events for moderation review / the future metrics dashboard.

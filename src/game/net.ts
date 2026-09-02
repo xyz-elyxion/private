@@ -206,6 +206,7 @@ type ServerMessage =
   | { type: 'join-failed'; reason: string }
   | { type: 'spectate-failed'; reason: string }
   | { type: 'spectate-ended' }
+  | { type: 'kicked'; reason: string; banned?: boolean } // moderator eject — stop reconnecting
   | { type: 'peer-joined'; clientId: string; name: string }
   | { type: 'peer-left'; clientId: string }
   | { type: 'pong'; ts: number; serverTime: number }
@@ -250,6 +251,10 @@ export type NetEvents = {
   onVoteUpdate?: (counts: Record<string, number>) => void;
   onVoteResult?: (r: { mapId: string; resumeAtClient: number; spawn?: Vec3 }) => void;
   onChat?: (m: ChatMessage) => void; // in-game (room) chat broadcast
+  // A moderator kicked (or banned) us — the socket is closing for good and must
+  // NOT reconnect. `banned` distinguishes a ban (persisted; rejoining is refused)
+  // from a transient kick (rejoin may be allowed later).
+  onKicked?: (info: { reason: string; banned: boolean }) => void;
   onBeam?: (b: {
     id: string;
     ox: number; oy: number; oz: number;
@@ -394,6 +399,10 @@ export class NetClient {
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  // A moderator ejected us (`kicked` message) — the socket closes for good and
+  // must never reconnect (the server would just kick us again, or we'd loop
+  // forever on a ban).
+  private kicked = false;
   // Resume token from the last welcome — kept across reconnects so we can reclaim
   // our in-match slot + score instead of re-joining fresh (zeroed).
   private resumeToken: string | null = null;
@@ -1060,10 +1069,30 @@ export class NetClient {
       });
       return;
     }
+    if (msg.type === 'kicked') {
+      // Moderator eject: surface the reason, then close the socket for good.
+      // onclose would normally schedule a reconnect; `kicked` suppresses it.
+      this.kicked = true;
+      this.events.onKicked?.({ reason: msg.reason || '', banned: msg.banned === true });
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.stopPing();
+      this.setStatus('closed');
+      if (this.ws) {
+        try {
+          this.ws.close();
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
   }
 
   private scheduleReconnect() {
-    if (this.disposed) return;
+    if (this.disposed || this.kicked) return;
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -1146,7 +1175,7 @@ export type LobbyRoom = {
   joinable: boolean;
 };
 
-export type LobbyStatus = 'connecting' | 'open' | 'closed' | 'error';
+export type LobbyStatus = 'connecting' | 'open' | 'closed' | 'error' | 'kicked';
 
 // Live menu presence + global chat (server-authoritative; see server/elyxion-game.ts).
 export type PresencePlayer = { name: string; admin: boolean; verified: boolean; inMatch: boolean };
@@ -1188,12 +1217,18 @@ export class LobbyClient {
   private url: string;
   private name: string;
   private disposed = false;
+  // A moderator kicked/banned this browser from the lobby — stop reconnecting
+  // altogether (a ban would loop the menu socket forever otherwise).
+  private kicked = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
   private uiStatus: LobbyStatus = 'connecting'; // last status surfaced to onStatus
   onRooms: (rooms: LobbyRoom[]) => void = () => {};
   onStatus: (s: LobbyStatus) => void = () => {};
+  // Moderator ejection (kick or ban). `banned` → reconnecting is refused server-
+  // side; a plain kick may rejoin later.
+  onKicked: (info: { reason: string; banned: boolean }) => void = () => {};
   onResolved: (info: { roomId: string; mapId: string; kind: 'created' | 'matched'; isPublic?: boolean }) => void =
     () => {};
   onPresence: (p: PresenceState) => void = () => {};
@@ -1220,7 +1255,7 @@ export class LobbyClient {
   }
 
   connect() {
-    if (this.disposed) return;
+    if (this.disposed || this.kicked) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     // Only show "connecting" on a cold start — during a brief reconnect we keep
     // the last "open" status (covered by the grace timer) so the chip doesn't
@@ -1314,6 +1349,31 @@ export class LobbyClient {
           this.onRankedRooms(Array.isArray(rr) ? rr : []);
           break;
         }
+        case 'kicked': {
+          // Moderator ejected this browser (kick or ban). Surface it and stop
+          // reconnecting — the server refuses anyway, and a ban would loop.
+          const k = msg as unknown as { reason?: string; banned?: boolean };
+          this.kicked = true;
+          this.onKicked({ reason: k.reason ?? '', banned: k.banned === true });
+          this.setStatus('kicked');
+          this.stopHeartbeat();
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
+          if (this.graceTimer) {
+            clearTimeout(this.graceTimer);
+            this.graceTimer = null;
+          }
+          if (this.ws) {
+            try {
+              this.ws.close();
+            } catch {
+              // ignore
+            }
+          }
+          break;
+        }
       }
     };
     this.ws.onclose = () => {
@@ -1397,7 +1457,7 @@ export class LobbyClient {
   }
 
   private scheduleReconnect() {
-    if (this.disposed || this.reconnectTimer) return;
+    if (this.disposed || this.kicked || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();

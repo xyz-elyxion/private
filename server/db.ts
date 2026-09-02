@@ -115,6 +115,29 @@ CREATE TABLE IF NOT EXISTS elyxion_sessions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON elyxion_sessions(user_id);
+
+-- Moderation: banned display names (case-insensitive). The display name is the
+-- server-authoritative identity for accounts (the moderated username) as well
+-- as guests ("Guest N", per-room) — the only handle a moderator ever sees.
+CREATE TABLE IF NOT EXISTS elyxion_bans (
+  name_lower  TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  reason      TEXT NOT NULL DEFAULT '',
+  banned_by   TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL
+);
+-- Moderation: banned IP addresses. Guests renumber ("Guest 3" → "Guest 4") on
+-- every reconnect, so a name ban alone can't stop a guest from slipping back in
+-- — the source IP is the stable part. Banning an ONLINE player auto-captures
+-- their IP here (banned_name ties it to the name ban so /unban <name> lifts it
+-- too); addresses can also be banned directly. Enforcement is at connect.
+CREATE TABLE IF NOT EXISTS elyxion_ip_bans (
+  ip           TEXT PRIMARY KEY,
+  reason       TEXT NOT NULL DEFAULT '',
+  banned_by    TEXT NOT NULL DEFAULT '',
+  banned_name  TEXT NOT NULL DEFAULT '', -- name_lower that captured this IP ('' = manual /banip)
+  created_at   INTEGER NOT NULL
+);
 `);
 
 // Additive progression columns. SQLite has no `ADD COLUMN IF NOT EXISTS`, and we
@@ -646,6 +669,152 @@ export function isAdminId(playerId: string): boolean {
   if (!playerId) return false;
   const r = adminCheckStmt.get(playerId) as { is_admin: number } | undefined;
   return !!r?.is_admin;
+}
+
+// ── Bans (moderation) ──────────────────────────────────────────────────────
+// Two identities: display NAME (case-insensitive; the stable handle for
+// accounts) and IP ADDRESS (captured when an online player is banned, or set
+// directly; the stable handle for guests). A banned player is refused at
+// join/resume/spectate (name) / at connect (IP) and — if they're online at ban
+// time — kicked immediately.
+export type BanRow = { name: string; reason: string; bannedBy: string; createdAt: number };
+export type IpBanRow = { ip: string; reason: string; bannedBy: string; createdAt: number };
+export type BanListItem =
+  | (BanRow & { kind: 'name'; ip?: undefined })
+  | { kind: 'ip'; name: string; ip: string; reason: string; bannedBy: string; createdAt: number };
+
+const banCheckStmt = sqlite.prepare(
+  `SELECT name, reason, banned_by, created_at FROM elyxion_bans WHERE name_lower = ?`,
+);
+const banInsertStmt = sqlite.prepare(
+  `INSERT OR REPLACE INTO elyxion_bans (name_lower, name, reason, banned_by, created_at)
+   VALUES (?, ?, ?, ?, ?)`,
+);
+const banDeleteStmt = sqlite.prepare(`DELETE FROM elyxion_bans WHERE name_lower = ?`);
+const banListStmt = sqlite.prepare(
+  `SELECT name, reason, banned_by, created_at FROM elyxion_bans ORDER BY created_at DESC`,
+);
+// IP rows: an unnamed row (banned_name = '') is a manual /banip or API ban;
+// a row tied to a name_lower was auto-captured from an online player and lifts
+// with the name ban it came from.
+const ipBanCheckStmt = sqlite.prepare(
+  `SELECT ip, reason, banned_by, banned_name, created_at FROM elyxion_ip_bans WHERE ip = ?`,
+);
+const ipBanInsertStmt = sqlite.prepare(
+  `INSERT OR REPLACE INTO elyxion_ip_bans (ip, reason, banned_by, banned_name, created_at)
+   VALUES (?, ?, ?, ?, ?)`,
+);
+const ipBanDeleteStmt = sqlite.prepare(`DELETE FROM elyxion_ip_bans WHERE ip = ?`);
+const ipBanDeleteByNameStmt = sqlite.prepare(`DELETE FROM elyxion_ip_bans WHERE banned_name = ?`);
+const ipBanListStmt = sqlite.prepare(
+  `SELECT ip, reason, banned_by, created_at FROM elyxion_ip_bans ORDER BY created_at DESC`,
+);
+
+const normIp = (ip: string): string => ip.trim();
+// 'unknown' is the debounced fallback when no forwarding header exists — never
+// meaningful as a ban target (it'd block every connection behind a missing
+// header), so treat it as "no IP".
+const usableIp = (ip: string): boolean => {
+  const n = normIp(ip);
+  return n.length > 0 && n !== 'unknown';
+};
+
+export function isBannedName(name: string): boolean {
+  if (!name) return false;
+  return !!banCheckStmt.get(name.trim().toLowerCase());
+}
+
+// Ban row for a name (undefined = not banned) — the reason rides along so the
+// kicked message can say why.
+export function getBanByName(name: string): BanRow | undefined {
+  if (!name) return undefined;
+  const r = banCheckStmt.get(name.trim().toLowerCase()) as
+    | { name: string; reason: string; banned_by: string; created_at: number }
+    | undefined;
+  if (!r) return undefined;
+  return { name: r.name, reason: r.reason, bannedBy: r.banned_by, createdAt: r.created_at };
+}
+
+export function isBannedIp(ip: string): boolean {
+  if (!usableIp(ip)) return false;
+  return !!ipBanCheckStmt.get(normIp(ip));
+}
+
+export function getBanByIp(ip: string): IpBanRow | undefined {
+  if (!usableIp(ip)) return undefined;
+  const r = ipBanCheckStmt.get(normIp(ip)) as
+    | { ip: string; reason: string; banned_by: string; created_at: number }
+    | undefined;
+  if (!r) return undefined;
+  return { ip: r.ip, reason: r.reason, bannedBy: r.banned_by, createdAt: r.created_at };
+}
+
+// Name ban; when the target is online their IP is auto-captured too (see
+// addIpBan), so a reconnecting guest can't dodge the ban by renumbering.
+// `capturedFrom` is the banned player's name_lower, tying the IP row to this ban.
+export function addBan(
+  name: string,
+  reason: string,
+  bannedBy: string,
+  ip?: string,
+  capturedFrom?: string,
+  now: number = Date.now(),
+): boolean {
+  const n = name.trim();
+  if (!n) return false;
+  banInsertStmt.run(n.toLowerCase(), n, reason || '', bannedBy || '', now);
+  if (usableIp(ip ?? '')) addIpBan(ip!, reason, bannedBy, capturedFrom ?? n.toLowerCase(), now);
+  return true;
+}
+
+export function addIpBan(
+  ip: string,
+  reason: string,
+  bannedBy: string,
+  capturedFrom: string = '',
+  now: number = Date.now(),
+): boolean {
+  if (!usableIp(ip)) return false;
+  ipBanInsertStmt.run(normIp(ip), reason || '', bannedBy || '', capturedFrom, now);
+  return true;
+}
+
+// Lifting a name ban also lifts the IPs it auto-captured (an unban must mean
+// "this player can come back"). Manual /banip rows (capturedFrom '') survive.
+export function removeBan(name: string): boolean {
+  const lower = name.trim().toLowerCase();
+  if (!lower) return false;
+  let removed = banDeleteStmt.run(lower).changes > 0;
+  removed = ipBanDeleteByNameStmt.run(lower).changes > 0 || removed;
+  return removed;
+}
+
+export function removeIpBan(ip: string): boolean {
+  if (!usableIp(ip)) return false;
+  return ipBanDeleteStmt.run(normIp(ip)).changes > 0;
+}
+
+export function listBans(): BanListItem[] {
+  const nameRows = banListStmt.all() as { name: string; reason: string; banned_by: string; created_at: number }[];
+  const ipRows = ipBanListStmt.all() as { ip: string; reason: string; banned_by: string; created_at: number }[];
+  const all: BanListItem[] = [
+    ...nameRows.map((r) => ({
+      kind: 'name' as const,
+      name: r.name,
+      reason: r.reason,
+      bannedBy: r.banned_by,
+      createdAt: r.created_at,
+    })),
+    ...ipRows.map((r) => ({
+      kind: 'ip' as const,
+      name: '',
+      ip: r.ip,
+      reason: r.reason,
+      bannedBy: r.banned_by,
+      createdAt: r.created_at,
+    })),
+  ];
+  return all.sort((a, b) => b.createdAt - a.createdAt);
 }
 
 // Owned set = the default freebies ∪ whatever the row has stored. Admins own
