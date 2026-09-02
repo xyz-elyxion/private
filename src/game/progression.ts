@@ -13,16 +13,16 @@
 // WS server (server/elyxion-game.ts) instead of the public POST. See ROADMAP
 // "Anti-cheat / integrity".
 
-export const MAX_LEVEL = 100;
+const MAX_LEVEL = 100;
 
 // XP needed to advance FROM level n TO n+1. A mild super-linear curve: early
 // levels are quick, later ones a slow burn (L1→2 = 100, L10→11 ≈ 3162).
-export function xpForLevel(n: number): number {
+function xpForLevel(n: number): number {
   return Math.floor(100 * Math.pow(n, 1.5));
 }
 
 // Cumulative XP required to REACH level n (reaching level 1 costs 0).
-export function totalXpForLevel(n: number): number {
+function totalXpForLevel(n: number): number {
   let sum = 0;
   for (let i = 1; i < n; i++) sum += xpForLevel(i);
   return sum;
@@ -61,16 +61,16 @@ export type MatchXpInput = {
   accuracy: number; // 0..100
 };
 
-export const XP_BASE = 25;
-export const XP_PER_KILL = 10;
-export const XP_PER_HEADSHOT = 6;
-export const XP_PER_STREAK = 4;
-export const XP_WIN_BONUS = 60;
-export const XP_ACCURACY_MAX = 40;
+const XP_BASE = 25;
+const XP_PER_KILL = 10;
+const XP_PER_HEADSHOT = 6;
+const XP_PER_STREAK = 4;
+const XP_WIN_BONUS = 60;
+const XP_ACCURACY_MAX = 40;
 export const XP_FIRST_WIN_BONUS = 150;
 export const OFFLINE_XP_SCALE = 0.5; // practice still rewards, but isn't the optimal farm
 export const PER_MATCH_XP_CAP = 1500; // backstop against pathological inputs
-export const CREDITS_PER_XP = 0.1; // credits ≈ xp / 10
+const CREDITS_PER_XP = 0.1; // credits ≈ xp / 10
 
 export function baseMatchXp(d: MatchXpInput): number {
   const acc = Math.max(0, Math.min(100, d.accuracy));

@@ -15,7 +15,7 @@
 
 import type { AnnouncerPackId, SoundClipName } from './audio';
 
-export type AnnouncerLineSet = Partial<Record<SoundClipName, string[]>>;
+type AnnouncerLineSet = Partial<Record<SoundClipName, string[]>>;
 
 export const ANNOUNCER_PACK_LINES: Record<AnnouncerPackId, AnnouncerLineSet> = {
   // Classic procedural announcer — no generated lines (uses SOUND_URLS + TTS).

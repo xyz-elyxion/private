@@ -128,7 +128,7 @@ type JoinedMessage = {
 };
 
 // Per-side rating change after a ranked match (mirrors server db.ts RankedResult).
-export type RankedSide = {
+type RankedSide = {
   id: string;
   userName: string;
   rating: number;
@@ -219,7 +219,7 @@ export type NetListener = (
   meta: { status: NetStatus; clientId: string | null; peers: number },
 ) => void;
 
-export type KillListener = (ev: KillEvent) => void;
+type KillListener = (ev: KillEvent) => void;
 
 // Room / match lifecycle events the Game subscribes to.
 export type NetEvents = {

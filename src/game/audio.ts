@@ -38,7 +38,7 @@ export const DEFAULT_ANNOUNCER_PACK: AnnouncerPackId = 'legacy';
 
 // User-supplied .ogg files override the procedural / TTS fallback when present.
 // Drop CC-licensed clips at these public/ paths. See plan §6.
-export const SOUND_URLS: Record<SoundClipName, string> = {
+const SOUND_URLS: Record<SoundClipName, string> = {
   'fire':          '/sounds/elyxion/rail-fire.ogg',
   'hit':           '/sounds/elyxion/hit.ogg',
   'kill':          '/sounds/elyxion/kill.ogg',

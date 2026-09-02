@@ -56,7 +56,7 @@ import {
   type KeybindAction,
 } from './constants';
 import { EffectsManager } from './effects';
-import { TrainingRange, type TrainingStats } from './training';
+import { TrainingRange } from './training';
 import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, mapById, rayAabb, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';

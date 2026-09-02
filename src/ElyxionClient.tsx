@@ -20,6 +20,7 @@ import {
   type RankedResult,
 } from './game/net';
 import { ONLINE_MAP_POOL } from './game/arena-data';
+import { startUpdateChecker, type UpdateInfo } from './update-checker';
 import {
   AIR_JUMPS,
   cm360,
@@ -126,7 +127,7 @@ import {
 } from './game/cosmetics';
 import { levelProgress } from './game/progression';
 
-export type CrosshairConfig = {
+type CrosshairConfig = {
   style: 'cross' | 'cross-dot' | 'dot' | 'circle';
   color: string; // hex
   size: number; // arm length px
@@ -815,6 +816,14 @@ export default function ElyxionClient() {
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
+  // Auto-update (update-checker.ts — no-ops in dev, HMR owns dev): a newer
+  // build's assets are prefetched in the background even mid-match, but the
+  // reload only fires at a safe boundary (back in the lobby), so gameplay is
+  // never interrupted.
+  const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null);
+  const viewRef = useRef<'lobby' | 'playing'>(view);
+  viewRef.current = view;
+  const reloadTimerRef = useRef<number | null>(null);
 
   // Load persisted settings once on mount + backfill window-dependent defaults.
   useEffect(() => {
@@ -856,6 +865,40 @@ export default function ElyxionClient() {
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  // Background updater: keep playing on the running bundle while a newer build
+  // is polled and prefetched; the reload is deferred until a safe moment — back
+  // in the lobby after the match ends, or after a short grace if idle there.
+  const scheduleReload = useCallback(() => {
+    if (reloadTimerRef.current != null) return;
+    reloadTimerRef.current = window.setTimeout(() => {
+      reloadTimerRef.current = null;
+      window.location.reload();
+    }, 2500);
+  }, []);
+
+  useEffect(() => {
+    const stop = startUpdateChecker({
+      intervalMs: 45_000,
+      onUpdate: (info) => {
+        setPendingUpdate(info);
+        // Mid-match: the new bundle is already in the background, keep playing
+        // on the old one; the lobby effect below applies it after the match.
+        if (viewRef.current === 'playing') return;
+        scheduleReload();
+      },
+    });
+    return () => {
+      stop();
+      if (reloadTimerRef.current != null) window.clearTimeout(reloadTimerRef.current);
+    };
+  }, [scheduleReload]);
+
+  // The match ended / player returned to the lobby with an update queued → now
+  // it's safe to switch to the freshly downloaded build.
+  useEffect(() => {
+    if (view === 'lobby' && pendingUpdate) scheduleReload();
+  }, [view, pendingUpdate, scheduleReload]);
 
   // Your in-game name is your identity: the account username when logged in,
   // or "Guest" otherwise. This is the source of truth (overrides any old local
@@ -921,6 +964,11 @@ export default function ElyxionClient() {
 
   return (
     <>
+      {view === 'lobby' && pendingUpdate && (
+        <div className='fixed inset-x-0 top-0 z-[80] bg-emerald-500/95 py-1.5 text-center text-sm font-semibold text-black'>
+          New version downloaded — reloading…
+        </div>
+      )}
       <Lobby
         settings={settings}
         onChangeSettings={setSettings}

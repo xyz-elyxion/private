@@ -12,7 +12,7 @@ export type Rarity = 'common' | 'rare' | 'epic';
 
 // A career-stat an achievement-earned cosmetic (titles) keys off. Evaluated
 // server-side against the player's clamped aggregate stats (see titleGrantsFrom).
-export type AchievementStat = 'kills' | 'headshots' | 'wins' | 'bestStreak' | 'games' | 'accuracy';
+type AchievementStat = 'kills' | 'headshots' | 'wins' | 'bestStreak' | 'games' | 'accuracy';
 
 // How a cosmetic is obtained. `default` = owned by everyone; `level` = unlocked
 // by reaching an account level (prestige, can't be bought); `credits` = bought
@@ -59,10 +59,6 @@ export const KILL_EFFECTS: readonly KillEffectCosmetic[] = [
   { id: 'gibstorm',    name: 'Gibstorm',    blurb: 'A violent, heavy shard explosion that rains down.',      rarity: 'epic',   source: { type: 'level', level: 12 } },
   { id: 'singularity', name: 'Singularity', blurb: 'Collapses inward to a point, then detonates white-hot.', rarity: 'epic',   source: { type: 'credits', price: 2500 } },
 ] as const;
-
-export function killEffectById(id: string): KillEffectCosmetic {
-  return KILL_EFFECTS.find((k) => k.id === id) ?? KILL_EFFECTS[0];
-}
 
 export function isKillEffectStyle(id: string): id is KillEffectStyle {
   return KILL_EFFECTS.some((k) => k.id === id);
@@ -307,7 +303,7 @@ export const DEFAULT_CARD = 'card.slate';
 // .pcard-anim-* classes in src/index.css); the static gradient stays the base so
 // the card is always legible, and the animation is suppressed under reduced
 // effects / prefers-reduced-motion. `undefined` = a plain static card.
-export type CardAnim = 'holo' | 'shimmer' | 'pulse' | 'aurora' | 'scan';
+type CardAnim = 'holo' | 'shimmer' | 'pulse' | 'aurora' | 'scan';
 
 export type CardCosmetic = {
   id: string;
@@ -459,14 +455,14 @@ export function titleGrantsFrom(stats: TitleStats): string[] {
 // they ride the same machinery as every other cosmetic: admins auto-own all of
 // them, and non-admins unlock by level (or credits). The default 'legacy' pack is
 // free; 'kuon' is level-gated. Cosmetic id = `announcer.<packId>`.
-export type AnnouncerPackCosmetic = {
+type AnnouncerPackCosmetic = {
   id: string;
   name: string;
   blurb: string;
   rarity: Rarity;
   source: CosmeticSource;
 };
-export const ANNOUNCER_PACK_COSMETICS: readonly AnnouncerPackCosmetic[] = [
+const ANNOUNCER_PACK_COSMETICS: readonly AnnouncerPackCosmetic[] = [
   { id: 'announcer.legacy', name: 'Classic',      blurb: 'The original deep-voice announcer.',                                  rarity: 'common', source: { type: 'default' } },
   { id: 'announcer.kuon',   name: 'Kuon (Anime)', blurb: 'A cheerful Japanese-anime announcer — hype, variety, encouragement.', rarity: 'epic',   source: { type: 'level', level: 5 } },
 ];

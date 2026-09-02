@@ -1,4 +1,4 @@
-export const TICK_HZ = 64;
+const TICK_HZ = 64;
 export const TICK_DT = 1 / TICK_HZ;
 
 export const PLAYER_RADIUS = 0.4;
@@ -91,7 +91,6 @@ export const RAIL_HELIX_TURN_LEN = 0.7; // metres of beam per full spiral turn
 export const RAIL_CORE_COLOR = 0xd6f4ff; // near-white cyan core
 export const RAIL_HELIX_COLOR = 0x37a6ff; // blue spiral
 
-export const MOUSE_SENS = 0.0022;
 export const PITCH_LIMIT = Math.PI / 2 - 0.01;
 export const FOV_DEG = 90;
 
@@ -195,7 +194,7 @@ export const WEEKLY_CHALLENGE_FRAG_LIMIT = 20; // first to this many frags ends 
 // all label a rating the same way. Ordered high→low; the first whose `min` you
 // meet is your tier. Base rating is 1000 (see server RANKED_BASE_RATING).
 export type RankedTier = { name: string; min: number; color: string };
-export const RANKED_TIERS: ReadonlyArray<RankedTier> = [
+const RANKED_TIERS: ReadonlyArray<RankedTier> = [
   { name: 'Grandmaster', min: 2000, color: '#f0abfc' },
   { name: 'Master', min: 1800, color: '#c4b5fd' },
   { name: 'Diamond', min: 1600, color: '#67e8f9' },

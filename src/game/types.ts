@@ -175,7 +175,7 @@ export type KillcamState = {
   dirAngle?: number;
 };
 
-export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
 // End-of-match map vote (multiplayer). While non-null the pointer is released
 // and the vote overlay is shown; the countdown self-ticks off `endsAtClient`

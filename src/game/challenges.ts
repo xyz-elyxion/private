@@ -6,11 +6,11 @@
 // (elyxion_challenges). Which challenges are "active" for a player in a given
 // period is derived deterministically from (player_id, period) — no scheduler.
 
-export type ChallengePeriod = 'daily' | 'weekly';
+type ChallengePeriod = 'daily' | 'weekly';
 export type ChallengeMetric = 'kills' | 'headshots' | 'wins' | 'streak' | 'games';
 // How a match's metric folds into progress: 'add' accumulates across matches,
 // 'max' keeps the best single match (e.g. a kill-streak).
-export type ChallengeTrack = 'add' | 'max';
+type ChallengeTrack = 'add' | 'max';
 
 export type ChallengeDef = {
   id: string; // 'daily:headshots'

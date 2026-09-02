@@ -12,8 +12,8 @@
 // `toView` adapts either into a DataView. This module imports nothing.
 
 const BIN_STATE_F32 = 1; // legacy server → client state snapshot
-export const BIN_POS = 2; // client → server: a position update
-export const BIN_STATE = 3; // quantized server → client state snapshot
+const BIN_POS = 2; // client → server: a position update
+const BIN_STATE = 3; // quantized server → client state snapshot
 
 export type BinStatePlayer = {
   id: string;

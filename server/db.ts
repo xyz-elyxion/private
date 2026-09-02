@@ -891,7 +891,7 @@ export type PublicStats = {
   bestAccuracy: number;
 };
 
-export const ZERO_STATS: PublicStats = {
+const ZERO_STATS: PublicStats = {
   totalKills: 0,
   totalDeaths: 0,
   totalGames: 0,
@@ -1089,7 +1089,7 @@ const ALL_COSMETIC_IDS: readonly string[] = ALL_COSMETICS.map((c) => c.id);
 
 // Is this account id an admin? Cheap point lookup; cached statement.
 const adminCheckStmt = sqlite.prepare(`SELECT is_admin FROM elyxion_users WHERE id = ?`);
-export function isAdminId(playerId: string): boolean {
+function isAdminId(playerId: string): boolean {
   if (!playerId) return false;
   const r = adminCheckStmt.get(playerId) as { is_admin: number } | undefined;
   return !!r?.is_admin;
@@ -1157,11 +1157,6 @@ export function getBanByName(name: string): BanRow | undefined {
     | undefined;
   if (!r) return undefined;
   return { name: r.name, reason: r.reason, bannedBy: r.banned_by, createdAt: r.created_at };
-}
-
-export function isBannedIp(ip: string): boolean {
-  if (!usableIp(ip)) return false;
-  return !!ipBanCheckStmt.get(normIp(ip));
 }
 
 export function getBanByIp(ip: string): IpBanRow | undefined {
@@ -1272,7 +1267,7 @@ function ymd(now: number): number {
   return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
 }
 
-export type Progression = {
+type Progression = {
   totalXp: number;
   level: number;
   credits: number;
@@ -1976,7 +1971,7 @@ const mWinActive = sqlite.prepare(
 const mWinNewAccounts = sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_users WHERE created_at >= ?`);
 const mWinLogins = sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_audit WHERE event = 'login' AND ts >= ?`);
 
-export type MetricsWindow = {
+type MetricsWindow = {
   matches: number;
   activePlayers: number;
   newAccounts: number;
@@ -2270,8 +2265,8 @@ CREATE TABLE IF NOT EXISTS elyxion_ranked (
 CREATE INDEX IF NOT EXISTS idx_ranked_rating ON elyxion_ranked(rating);
 `);
 
-export const RANKED_BASE_RATING = 1000;
-export const RANKED_PLACEMENT_GAMES = 5; // below this, rating shows as "provisional"
+const RANKED_BASE_RATING = 1000;
+const RANKED_PLACEMENT_GAMES = 5; // below this, rating shows as "provisional"
 
 // Classic Elo K-factor: volatile while provisional, calmer once established, and
 // smallest at the top so elite ratings don't swing on a single game.

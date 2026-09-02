@@ -108,7 +108,7 @@ export type RailTarget = {
   centerY: number;
 };
 
-export type RailHit = {
+type RailHit = {
   target: RailTarget;
   t: number;
   hitY: number;

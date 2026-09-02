@@ -17,7 +17,6 @@ import {
 // The pure data shapes live in replay-codec (so the server can import them too);
 // re-export here so existing call sites keep importing them from './replay'.
 export type {
-  ReplayActorKind,
   ReplayActorProfile,
   ReplayPose,
   ReplayFrame,

@@ -75,7 +75,7 @@ export function setLiveCountsSource(fn: () => LiveCounts): void {
 // Live moderation handles, injected by index.ts from the WS layer (the only
 // place live sockets + the ban table meet). Defaults are safe no-ops so the
 // routes are well-formed even before the socket attaches.
-export type BanListEntry = {
+type BanListEntry = {
   kind: 'name' | 'ip';
   name: string; // display name ('', for direct IP bans)
   ip?: string; // set for IP bans

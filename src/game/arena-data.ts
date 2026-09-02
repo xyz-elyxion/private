@@ -74,8 +74,8 @@ export function arenaNet(id: string): ArenaNetData {
 // mode. containeryard (26×22) and derrick (24×24) are tight 1v1 arenas — far too
 // small for free-for-all — so FFA/TDM (the main queue) use only the large maps,
 // and duel gets the small ones. The single-player training range is excluded.
-export const FFA_MAP_POOL = ['causeway', 'reactor', 'lounge', 'nuketown'] as const; // large — FFA + TDM
-export const DUEL_MAP_POOL = ['containeryard', 'derrick'] as const; // small — 1v1
+const FFA_MAP_POOL = ['causeway', 'reactor', 'lounge', 'nuketown'] as const; // large — FFA + TDM
+const DUEL_MAP_POOL = ['containeryard', 'derrick'] as const; // small — 1v1
 // Every online map (mode-agnostic uses: known-arena checks, etc.).
 export const ONLINE_MAP_POOL = [...FFA_MAP_POOL, ...DUEL_MAP_POOL] as const;
 

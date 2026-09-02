@@ -13,7 +13,7 @@
 
 import type { Vec3 } from './types';
 
-export type ReplayActorKind = 'local' | 'remote' | 'bot';
+type ReplayActorKind = 'local' | 'remote' | 'bot';
 
 export type ReplayActorProfile = {
   id: string;
