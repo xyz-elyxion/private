@@ -272,6 +272,9 @@ type Settings = {
   title: string; // equipped title flair (shown under the name + on the scoreboard/card)
   reducedEffects: boolean; // accessibility: suppress camera shake + kill flash + heavy bursts
   hideChat: boolean; // hide the in-game chat log + disable opening the composer
+  minimap: boolean; // corner minimap on/off
+  minimapCorner: 'br' | 'bl' | 'tr' | 'tl'; // which corner the minimap anchors to
+  minimapSize: 'sm' | 'md' | 'lg'; // minimap logical size in px
 };
 
 // Default the reduced-effects toggle to the OS "reduce motion" preference.
@@ -368,6 +371,9 @@ const DEFAULT_SETTINGS: Settings = {
   title: DEFAULT_TITLE,
   reducedEffects: prefersReducedMotion(),
   hideChat: false,
+  minimap: true,
+  minimapCorner: 'br',
+  minimapSize: 'md',
 };
 
 const SETTINGS_KEY = 'elyxion-settings-v2';
@@ -1452,7 +1458,7 @@ function SpectatorView({
       {hud.netStatus !== 'off' && (
         <NetStatusPill status={hud.netStatus} peers={hud.netPeers} rttMs={hud.netRttMs} />
       )}
-      <Minimap hud={hud} />
+      <Minimap hud={hud} settings={settings} />
 
       {/* Top banner: who you're watching + how to switch. */}
       <div className='pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center p-4'>
@@ -2908,7 +2914,7 @@ function HudOverlay({
           airJumpsLeft={hud.airJumpsLeft}
         />
       )}
-      <Minimap hud={hud} />
+      <Minimap hud={hud} settings={settings} />
       {settings.showFps && <FpsCounter fps={hud.fps} />}
       {hud.netStatus !== 'off' && (
         <NetStatusPill status={hud.netStatus} peers={hud.netPeers} rttMs={hud.netRttMs} />
@@ -3803,10 +3809,21 @@ function mmRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   ctx.closePath();
 }
 
-function Minimap({ hud }: { hud: HudState }) {
+// Corner anchors — offset clear of the HUD elements that own each corner
+// (leaderboard top-left, killfeed+toasts top-right, chat/speed bottom-left,
+// cooldown cluster bottom-right).
+const MM_CORNERS = {
+  tl: 'top-56 left-6',
+  tr: 'top-64 right-6',
+  bl: 'bottom-40 left-6',
+  br: 'bottom-32 right-6',
+} as const;
+const MM_SIZES = { sm: 132, md: 176, lg: 224 } as const;
+
+function Minimap({ hud, settings }: { hud: HudState; settings: Settings }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   // Logical size in px; the uiScale wrapper scales it with the rest of the HUD.
-  const SIZE = 176;
+  const SIZE = MM_SIZES[settings.minimapSize];
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
@@ -3903,15 +3920,17 @@ function Minimap({ hud }: { hud: HudState }) {
       ctx.stroke();
       dot(m.me.x, m.me.z, m.me.yaw, 4.5, MM_YOU);
     }
-    // mode/localTeam gate dot colors; minimap is rebuilt on every HUD emit, but
-    // list them so the redraw intent is explicit (and the linter is happy).
-  }, [hud.minimap, hud.mode, hud.localTeam]);
+    // mode/localTeam gate dot colors; SIZE is the minimap-size setting in px.
+    // minimap is rebuilt on every HUD emit, so the whole set is cheap to re-run.
+  }, [hud.minimap, hud.mode, hud.localTeam, SIZE]);
 
+  // Toggled off: don't render at all (no canvas, no layout cost).
+  if (!settings.minimap) return null;
   return (
     <canvas
       ref={ref}
       aria-hidden='true'
-      className='pointer-events-none absolute bottom-32 right-6'
+      className={`pointer-events-none absolute ${MM_CORNERS[settings.minimapCorner]}`}
       style={{ width: SIZE, height: SIZE }}
     />
   );
@@ -7166,6 +7185,47 @@ function SettingsModal({
                   and thins particle effects) if the game runs hot. UI scale resizes
                   the in-match HUD.
                 </div>
+              </Section>
+
+              <Section label='Minimap'>
+                <ToggleField
+                  label='Show minimap'
+                  value={settings.minimap}
+                  onChange={(v) => onChange({ ...settings, minimap: v })}
+                />
+                {settings.minimap && (
+                  <>
+                    <SelectField
+                      label='Corner'
+                      value={settings.minimapCorner}
+                      options={[
+                        { id: 'br', label: 'Bottom right' },
+                        { id: 'bl', label: 'Bottom left' },
+                        { id: 'tr', label: 'Top right' },
+                        { id: 'tl', label: 'Top left' },
+                      ]}
+                      onChange={(v) =>
+                        onChange({ ...settings, minimapCorner: v as Settings['minimapCorner'] })
+                      }
+                    />
+                    <SelectField
+                      label='Size'
+                      value={settings.minimapSize}
+                      options={[
+                        { id: 'sm', label: 'Small' },
+                        { id: 'md', label: 'Medium' },
+                        { id: 'lg', label: 'Large' },
+                      ]}
+                      onChange={(v) =>
+                        onChange({ ...settings, minimapSize: v as Settings['minimapSize'] })
+                      }
+                    />
+                    <div className='text-[10px] normal-case tracking-normal text-white/40'>
+                      Live top-down view of the arena: allies, enemies, and your
+                      position. Hides automatically during cinematics.
+                    </div>
+                  </>
+                )}
               </Section>
 
               <Section label='Weapon viewmodel'>

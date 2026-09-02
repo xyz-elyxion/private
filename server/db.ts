@@ -442,7 +442,431 @@ export function feedbackTypeCounts(): Record<string, number> {
   return out;
 }
 
-// Per-player challenge progress (Phase 2). Definitions live in code
+// ── Support tickets ──────────────────────────────────────────────────────────
+// Player-facing support requests (the /support page → POST /api/support/tickets).
+// Same spirit as feedback but with a real conversation: an admin can reply, and
+// the player (when logged in) sees the whole thread back on /support. Only
+// admins and the ticket's own account ever read a ticket; `ip`/`user_agent` are
+// spam-triage metadata.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_tickets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          INTEGER NOT NULL,
+  player_id   TEXT NOT NULL DEFAULT '',
+  player_name TEXT NOT NULL DEFAULT '',
+  category    TEXT NOT NULL DEFAULT 'help',
+  subject     TEXT NOT NULL DEFAULT '',
+  body        TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'open',
+  ip          TEXT NOT NULL DEFAULT '',
+  user_agent  TEXT NOT NULL DEFAULT '',
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_ts ON elyxion_tickets(ts);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON elyxion_tickets(status, id);
+CREATE INDEX IF NOT EXISTS idx_tickets_player ON elyxion_tickets(player_id, id);
+
+CREATE TABLE IF NOT EXISTS elyxion_ticket_replies (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL,
+  ts        INTEGER NOT NULL,
+  author    TEXT NOT NULL DEFAULT '',
+  body      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_replies_ticket ON elyxion_ticket_replies(ticket_id, id);
+`);
+
+export type TicketCategory = 'help' | 'report' | 'billing' | 'other';
+export type TicketStatus = 'open' | 'ack' | 'resolved' | 'closed';
+export const TICKET_CATEGORIES: readonly TicketCategory[] = ['help', 'report', 'billing', 'other'];
+export const TICKET_STATUSES: readonly TicketStatus[] = ['open', 'ack', 'resolved', 'closed'];
+
+export type TicketRow = {
+  id: number;
+  ts: number;
+  playerId: string;
+  playerName: string;
+  category: TicketCategory;
+  subject: string;
+  body: string;
+  status: TicketStatus;
+  ip: string;
+  userAgent: string;
+  updatedAt: number;
+  replyCount: number; // filled for list queries (subquery count)
+};
+
+export type TicketReplyRow = {
+  id: number;
+  ticketId: number;
+  ts: number;
+  author: string;
+  body: string;
+};
+
+type TicketDbRow = {
+  id: number;
+  ts: number;
+  player_id: string;
+  player_name: string;
+  category: string;
+  subject: string;
+  body: string;
+  status: string;
+  ip: string;
+  user_agent: string;
+  updated_at: number;
+  reply_count: number;
+};
+
+type TicketReplyDbRow = {
+  id: number;
+  ticket_id: number;
+  ts: number;
+  author: string;
+  body: string;
+};
+
+const insertTicketStmt = sqlite.prepare(`
+  INSERT INTO elyxion_tickets (ts, player_id, player_name, category, subject, body, status, ip, user_agent, updated_at)
+  VALUES (@ts, @playerId, @playerName, @category, @subject, @body, 'open', @ip, @userAgent, @ts)`);
+
+const insertTicketReplyStmt = sqlite.prepare(`
+  INSERT INTO elyxion_ticket_replies (ticket_id, ts, author, body)
+  VALUES (@ticketId, @ts, @author, @body)`);
+
+export type TicketInput = {
+  playerId?: string;
+  playerName?: string;
+  category: TicketCategory;
+  subject: string;
+  body: string;
+  ip?: string;
+  userAgent?: string;
+  now?: number;
+};
+
+// Global table-growth backstop (same reasoning as feedback: bounds a scripted
+// flood so the table can't grow without limit). At human ticket volumes 50k is
+// years of headroom; oldest rows (and their replies) fall off first.
+const TICKETS_MAX_ROWS = 50_000;
+const trimTicketsStmt = sqlite.prepare(
+  `DELETE FROM elyxion_tickets
+   WHERE id NOT IN (SELECT id FROM elyxion_tickets ORDER BY id DESC LIMIT ?)`,
+);
+
+// Store a support ticket. Returns the new row id (0 on failure — never throws
+// into the request path).
+export function submitTicket(t: TicketInput): number {
+  try {
+    const now = t.now ?? Date.now();
+    const r = insertTicketStmt.run({
+      ts: now,
+      playerId: (t.playerId ?? '').slice(0, 64),
+      playerName: (t.playerName ?? '').slice(0, 32) || 'Guest',
+      category: t.category,
+      subject: t.subject.slice(0, 200),
+      body: t.body.slice(0, 6000),
+      ip: (t.ip ?? '').slice(0, 64),
+      userAgent: (t.userAgent ?? '').slice(0, 256),
+    });
+    trimTicketsStmt.run(TICKETS_MAX_ROWS);
+    return Number(r.lastInsertRowid) || 0;
+  } catch (err) {
+    console.error('[support] submit failed', err);
+    return 0;
+  }
+}
+
+function mapTicketRow(r: TicketDbRow): TicketRow {
+  return {
+    id: r.id,
+    ts: r.ts,
+    playerId: r.player_id,
+    playerName: r.player_name || 'Guest',
+    category: r.category as TicketCategory,
+    subject: r.subject,
+    body: r.body,
+    status: r.status as TicketStatus,
+    ip: r.ip,
+    userAgent: r.user_agent,
+    updatedAt: r.updated_at,
+    replyCount: Number(r.reply_count) || 0,
+  };
+}
+
+const ticketBaseSelect = `
+  SELECT t.*, (SELECT COUNT(*) FROM elyxion_ticket_replies r WHERE r.ticket_id = t.id) AS reply_count
+  FROM elyxion_tickets t`;
+
+// The admin/own-ticket list is a small filter matrix (status? × before?), built
+// and cached like the feedback list — every variant is still a prepared,
+// fully parameterized statement.
+const ticketListStmts = new Map<string, ReturnType<typeof sqlite.prepare>>();
+function ticketListStmt(hasStatus: boolean, hasPlayer: boolean, hasBefore: boolean) {
+  const key = `${hasStatus}|${hasPlayer}|${hasBefore}`;
+  let stmt = ticketListStmts.get(key);
+  if (!stmt) {
+    const where: string[] = [];
+    if (hasStatus) where.push('t.status = @status');
+    if (hasPlayer) where.push('t.player_id = @playerId');
+    if (hasBefore) where.push('t.id < @before');
+    stmt = sqlite.prepare(
+      `${ticketBaseSelect}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY t.id DESC LIMIT @limit`,
+    );
+    ticketListStmts.set(key, stmt);
+  }
+  return stmt;
+}
+
+// Recent tickets, newest first, keyset-paginated by id. `playerId` narrows to
+// one account's own tickets (the /support "your tickets" list); omit for admin.
+export function listTickets(opts: {
+  limit?: number;
+  beforeId?: number;
+  status?: string;
+  playerId?: string;
+}): TicketRow[] {
+  const n = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+  const before = opts.beforeId && opts.beforeId > 0 ? opts.beforeId : 0;
+  const status = opts.status && opts.status !== 'all' ? opts.status : '';
+  const rows = ticketListStmt(!!status, !!opts.playerId, !!before).all({
+    ...(status ? { status } : {}),
+    ...(opts.playerId ? { playerId: opts.playerId } : {}),
+    ...(before ? { before } : {}),
+    limit: n,
+  });
+  return (rows as TicketDbRow[]).map(mapTicketRow);
+}
+
+export function getTicket(id: number): TicketRow | null {
+  const row = sqlite
+    .prepare(`${ticketBaseSelect} WHERE t.id = ?`)
+    .get(id) as TicketDbRow | undefined;
+  return row ? mapTicketRow(row) : null;
+}
+
+const mSetTicketStatus = sqlite.prepare(
+  `UPDATE elyxion_tickets SET status = @status, updated_at = @now WHERE id = @id`,
+);
+// Update a ticket's status. Returns true if a row changed.
+export function setTicketStatus(id: number, status: TicketStatus, now?: number): boolean {
+  return mSetTicketStatus.run({ id, status, now: now ?? Date.now() }).changes > 0;
+}
+
+// Append an admin reply to a ticket (bumps updated_at so the thread sorts by
+// latest activity). If the ticket is still 'open' a reply implicitly acks it.
+// Returns the new reply id (0 on failure / missing ticket).
+export function addTicketReply(ticketId: number, author: string, body: string, now?: number): number {
+  try {
+    const t = now ?? Date.now();
+    const ticket = getTicket(ticketId);
+    if (!ticket) return 0;
+    const r = insertTicketReplyStmt.run({
+      ticketId,
+      ts: t,
+      author: (author || 'Admin').slice(0, 32),
+      body: body.slice(0, 4000),
+    });
+    const nextStatus = ticket.status === 'open' ? 'ack' : ticket.status;
+    mSetTicketStatus.run({ id: ticketId, status: nextStatus, now: t });
+    return Number(r.lastInsertRowid) || 0;
+  } catch (err) {
+    console.error('[support] reply failed', err);
+    return 0;
+  }
+}
+
+const listRepliesStmt = sqlite.prepare(
+  `SELECT * FROM elyxion_ticket_replies WHERE ticket_id = ? ORDER BY id ASC LIMIT 200`,
+);
+export function listReplies(ticketId: number): TicketReplyRow[] {
+  const rows = listRepliesStmt.all(ticketId) as TicketReplyDbRow[];
+  return rows.map((r) => ({
+    id: r.id,
+    ticketId: r.ticket_id,
+    ts: r.ts,
+    author: r.author || 'Admin',
+    body: r.body,
+  }));
+}
+
+// Ticket row counts by status — for the admin tab badge + filter chips.
+const mTicketCounts = sqlite.prepare(
+  `SELECT status, COUNT(*) AS n FROM elyxion_tickets GROUP BY status`,
+);
+export function ticketCounts(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of mTicketCounts.all() as { status: string; n: number }[]) out[r.status] = r.n;
+  return out;
+}
+
+// ── Community chat (Discord-style social hub) ───────────────────────────────
+// Persistent multi-channel chat for the /community page. Unlike match/lobby chat
+// (transient, in-memory socket state) these rows survive restarts so players can
+// scroll back. Content is length-capped + profanity-filtered at the route; a
+// `deleted` flag hides a message after admin moderation (rows are kept so the
+// audit trail + id sequence stay stable). Guests post as "Guest"; logged-in
+// accounts post as their username with an admin/verified snapshot at post time.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_community_messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel     TEXT NOT NULL,
+  ts          INTEGER NOT NULL,
+  player_id   TEXT NOT NULL DEFAULT '',
+  player_name TEXT NOT NULL DEFAULT '',
+  text        TEXT NOT NULL DEFAULT '',
+  deleted     INTEGER NOT NULL DEFAULT 0,
+  admin       INTEGER NOT NULL DEFAULT 0,
+  verified    INTEGER NOT NULL DEFAULT 0,
+  ip          TEXT NOT NULL DEFAULT '',
+  user_agent  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_community_channel_id ON elyxion_community_messages(channel, id);
+`);
+
+export const COMMUNITY_CHANNELS = ['general', 'looking-for-match', 'off-topic'] as const;
+export type CommunityChannel = (typeof COMMUNITY_CHANNELS)[number];
+
+export type CommunityMessageRow = {
+  id: number;
+  channel: CommunityChannel;
+  ts: number;
+  playerId: string;
+  playerName: string;
+  text: string;
+  deleted: boolean;
+  admin: boolean;
+  verified: boolean;
+  ip: string;
+  userAgent: string;
+};
+
+type CommunityMessageDbRow = {
+  id: number;
+  channel: string;
+  ts: number;
+  player_id: string;
+  player_name: string;
+  text: string;
+  deleted: number;
+  admin: number;
+  verified: number;
+  ip: string;
+  user_agent: string;
+};
+
+const insertCommunityMessageStmt = sqlite.prepare(`
+  INSERT INTO elyxion_community_messages (channel, ts, player_id, player_name, text, deleted, admin, verified, ip, user_agent)
+  VALUES (@channel, @ts, @playerId, @playerName, @text, 0, @admin, @verified, @ip, @userAgent)`);
+
+export type CommunityMessageInput = {
+  channel: CommunityChannel;
+  playerId?: string;
+  playerName?: string;
+  text: string;
+  admin?: boolean;
+  verified?: boolean;
+  ip?: string;
+  userAgent?: string;
+  now?: number;
+};
+
+// Global table-growth backstop (same reasoning as feedback/tickets: bounds a
+// scripted flood). Chat is higher volume than tickets, so the cap is larger but
+// still finite; oldest rows fall off first.
+const COMMUNITY_MAX_ROWS = 50_000;
+const trimCommunityStmt = sqlite.prepare(
+  `DELETE FROM elyxion_community_messages
+   WHERE id NOT IN (SELECT id FROM elyxion_community_messages ORDER BY id DESC LIMIT ?)`,
+);
+
+// Store a community chat message. Returns the new row id (0 on failure — never
+// throws into the request path).
+export function postCommunityMessage(m: CommunityMessageInput): number {
+  try {
+    const now = m.now ?? Date.now();
+    const r = insertCommunityMessageStmt.run({
+      channel: m.channel,
+      ts: now,
+      playerId: (m.playerId ?? '').slice(0, 64),
+      playerName: (m.playerName ?? '').slice(0, 32) || 'Guest',
+      text: m.text.slice(0, 600),
+      admin: m.admin ? 1 : 0,
+      verified: m.verified ? 1 : 0,
+      ip: (m.ip ?? '').slice(0, 64),
+      userAgent: (m.userAgent ?? '').slice(0, 256),
+    });
+    trimCommunityStmt.run(COMMUNITY_MAX_ROWS);
+    return Number(r.lastInsertRowid) || 0;
+  } catch (err) {
+    console.error('[community] post failed', err);
+    return 0;
+  }
+}
+
+function mapCommunityRow(r: CommunityMessageDbRow): CommunityMessageRow {
+  return {
+    id: r.id,
+    channel: r.channel as CommunityChannel,
+    ts: r.ts,
+    playerId: r.player_id,
+    playerName: r.player_name || 'Guest',
+    text: r.text,
+    deleted: r.deleted === 1,
+    admin: r.admin === 1,
+    verified: r.verified === 1,
+    ip: r.ip,
+    userAgent: r.user_agent,
+  };
+}
+
+// Recent messages in one channel, newest first, keyset-paginated by id. Pass
+// `beforeId` to page back; the client reverses to render oldest→newest.
+export function listCommunityMessages(opts: {
+  channel: CommunityChannel;
+  limit?: number;
+  beforeId?: number;
+}): CommunityMessageRow[] {
+  const n = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+  const before = opts.beforeId && opts.beforeId > 0 ? opts.beforeId : 0;
+  const stmt = before
+    ? sqlite.prepare(
+        `SELECT * FROM elyxion_community_messages
+         WHERE channel = @channel AND id < @before ORDER BY id DESC LIMIT @limit`,
+      )
+    : sqlite.prepare(
+        `SELECT * FROM elyxion_community_messages
+         WHERE channel = @channel ORDER BY id DESC LIMIT @limit`,
+      );
+  const rows = stmt.all(before ? { channel: opts.channel, before, limit: n } : { channel: opts.channel, limit: n }) as CommunityMessageDbRow[];
+  return rows.map(mapCommunityRow);
+}
+
+// Recent messages across ALL channels, newest first — the admin moderation view.
+export function listAllCommunityMessages(opts: { limit?: number; beforeId?: number }): CommunityMessageRow[] {
+  const n = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+  const before = opts.beforeId && opts.beforeId > 0 ? opts.beforeId : 0;
+  const stmt = before
+    ? sqlite.prepare(
+        `SELECT * FROM elyxion_community_messages WHERE id < @before ORDER BY id DESC LIMIT @limit`,
+      )
+    : sqlite.prepare(
+        `SELECT * FROM elyxion_community_messages ORDER BY id DESC LIMIT @limit`,
+      );
+  const rows = stmt.all(before ? { before, limit: n } : { limit: n }) as CommunityMessageDbRow[];
+  return rows.map(mapCommunityRow);
+}
+
+// Mark a message deleted (soft delete — kept for audit). Returns true if a row
+// changed.
+export function deleteCommunityMessage(id: number): boolean {
+  return sqlite
+    .prepare(`UPDATE elyxion_community_messages SET deleted = 1 WHERE id = ? AND deleted = 0`)
+    .run(id).changes > 0;
+}
+
+// ── Per-player challenge progress (Phase 2). Definitions live in code
 // (src/game/challenges.ts); this only stores progress + claim state, keyed by
 // (player, challenge, period) so each daily/weekly instance is independent.
 sqlite.exec(`

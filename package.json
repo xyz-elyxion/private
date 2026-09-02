@@ -3,15 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Elyxion — browser-based, server-authoritative Quake-style instagib FPS. Three.js client + Node WebSocket game server.",
+  "description": "Elyxion \u2014 browser-based, server-authoritative Quake-style instagib FPS. Three.js client + Node WebSocket game server.",
   "engines": {
     "node": ">=20.19.0"
   },
   "scripts": {
     "predev": "node scripts/ensure-native.mjs",
-    "dev": "concurrently -k -n web,server -c cyan,magenta \"vite\" \"tsx watch server/index.ts\"",
+    "dev": "vite",
     "predev:lan": "node scripts/ensure-native.mjs && node scripts/lan-url.mjs",
-    "dev:lan": "concurrently -k -n web,server -c cyan,magenta \"vite --host\" \"tsx watch server/index.ts\"",
+    "dev:lan": "vite --host",
     "predev:server": "node scripts/ensure-native.mjs",
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",

@@ -100,16 +100,15 @@ npm install
 npm run dev
 ```
 
-`npm run dev` runs two processes together (via `concurrently`):
+`npm run dev` is a single Vite process on a **single port** (<http://localhost:8787>):
+`server/vite-plugin.ts` mounts the Express app (all `/api` routes) and the
+`/ws/elyxion` game WebSocket directly inside the Vite dev server, so the client,
+the API, the game socket, and HMR all live on the same origin — exactly like
+production, no proxy, no second terminal. Open <http://localhost:8787> and hit
+**Enter the arena**.
 
-- **Vite** dev server on <http://localhost:5173> — the client, with HMR.
-- **Game server** on `:8787` — the WebSocket game + APIs.
-
-Vite proxies `/api` and `/ws/elyxion` to the game server, so the browser always
-talks to a **single origin** — exactly like production. Open
-<http://localhost:5173> and hit **Enter the arena**.
-
-You can also run them separately: `npm run dev:web` and `npm run dev:server`.
+For scripts / load tests that don't need a browser, `npm run dev:server` still
+runs the game server standalone (API + socket only, no client).
 
 ### Production
 
@@ -263,8 +262,8 @@ override any sound; missing announcer lines fall back to speech synthesis.
 
 | Script             | What it does                                              |
 | ------------------ | -------------------------------------------------------- |
-| `npm run dev`      | Vite client + game server together (dev).                |
-| `npm run dev:web` / `dev:server` | Each on its own.                            |
+| `npm run dev`      | Single-port dev: client + APIs + game socket + HMR in one Vite process (default :8787). |
+| `npm run dev:server` | Standalone game server (APIs + socket only — scripts / load tests).         |
 | `npm run build`    | Production client build to `dist/`.                      |
 | `npm start`        | Run the production server (expects `dist/`).             |
 | `npm run serve`    | `build` then `start`.                                    |

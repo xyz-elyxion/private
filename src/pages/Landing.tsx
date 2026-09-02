@@ -28,7 +28,7 @@ const MODES: Array<[string, string]> = [
 
 // The brand mark — same crosshair as the favicon, so the launcher, the tab
 // icon, and the in-game reticle read as one identity.
-function CrosshairMark({ size = 22 }: { size?: number }) {
+export function CrosshairMark({ size = 22 }: { size?: number }) {
   return (
     <svg
       viewBox="0 0 32 32"
@@ -109,6 +109,12 @@ export default function Landing() {
             <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
               Source ↗
             </a>
+            <Link to="/community" className="transition hover:text-white/90">
+              Community
+            </Link>
+            <Link to="/support" className="transition hover:text-white/90">
+              Support
+            </Link>
             <button type="button" onClick={() => setShowFeedback(true)} className="uppercase tracking-[0.18em] transition hover:text-white/90">
               Feedback
             </button>

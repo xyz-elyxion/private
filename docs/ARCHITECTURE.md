@@ -26,10 +26,14 @@ see [`elyxion-plan.md`](elyxion-plan.md).
                     └────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Dev:** Vite serves the client on `:5173` and proxies `/api` + `/ws` to the
-  Node server on `:8787`. One origin in the browser.
-- **Prod:** the Node server serves the built client *and* both endpoints from a
-  single port. Same origin.
+- **Dev:** one Vite process, one port (`:8787`): `server/vite-plugin.ts` mounts
+  the Express app (all `/api` routes) and the `/ws/elyxion` game socket inside
+  the Vite dev server, so client + API + game socket + HMR share an origin.
+- **Prod / `npm run dev:server`:** the standalone Node entry (`server/index.ts`)
+  serves the built client *and* both endpoints from a single port. Same origin.
+- Both modes consume the shared core in `server/app.ts` (app + socket upgrade
+  handler); the standalone entry owns its `http.Server`, the Vite plugin reuses
+  Vite's.
 
 The browser only ever sees one origin, so the client derives its WebSocket URL
 straight from `window.location` (`ws[s]://<host>/ws/elyxion`) — no env config.

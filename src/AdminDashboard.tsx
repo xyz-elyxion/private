@@ -268,7 +268,7 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat' | 'support' | 'community';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
@@ -277,6 +277,8 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'players', label: 'Players' },
   { id: 'feedback', label: 'Feedback' },
   { id: 'anticheat', label: 'Anticheat' },
+  { id: 'support', label: 'Support' },
+  { id: 'community', label: 'Community' },
 ];
 
 // ── Tab: Overview ────────────────────────────────────────────────────────────
@@ -1046,6 +1048,366 @@ function FeedbackTab() {
 // shot-origin / aimbot), kicks (afk / flood), blocks (banned at the door /
 // profanity), chat timeouts, and bans applied or lifted. Pulls /api/admin/
 // anticheat on a 5s poll so a live action shows up within moments.
+// ── Tab: Support tickets ───────────────────────────────────────────────────
+// Player-facing tickets from the /support page. Status changes + replies mutate
+// (need an admin session — token auth is read-only); the list itself is
+// token-readable. Replies are appended to the thread the player sees.
+type TicketRow = {
+  id: number;
+  ts: number;
+  playerId: string;
+  playerName: string;
+  category: 'help' | 'report' | 'billing' | 'other';
+  subject: string;
+  body: string;
+  status: 'open' | 'ack' | 'resolved' | 'closed';
+  ip: string;
+  userAgent: string;
+  updatedAt: number;
+  replies: { id: number; ts: number; author: string; body: string }[];
+};
+const TK_STATUSES = ['open', 'ack', 'resolved', 'closed'] as const;
+const TK_STATUS_LABEL: Record<string, string> = { open: 'Open', ack: 'Ack', resolved: 'Resolved', closed: 'Closed' };
+const TK_STATUS_COLOR: Record<string, string> = {
+  open: 'text-amber-300',
+  ack: 'text-cyan-300',
+  resolved: 'text-emerald-300',
+  closed: 'text-white/35',
+};
+const TK_CATEGORY_LABEL: Record<string, string> = { help: 'Help', report: 'Report', billing: 'Billing', other: 'Other' };
+const TK_CATEGORY_COLOR: Record<string, string> = {
+  help: 'text-cyan-300',
+  report: 'text-rose-300',
+  billing: 'text-amber-300',
+  other: 'text-white/55',
+};
+
+function TicketCard({
+  t,
+  onStatus,
+  onReplied,
+}: {
+  t: TicketRow;
+  onStatus: (id: number, status: TicketRow['status']) => void;
+  onReplied: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const send = async () => {
+    if (busy || draft.trim().length === 0) return;
+    setBusy(true);
+    setErr(null);
+    const ok = await postJSON<{ ok: boolean }>(`/api/admin/support/tickets/${t.id}/reply`, {
+      text: draft.trim(),
+    });
+    if (!ok) setErr('Reply failed — moderation needs an admin session login.');
+    else {
+      setDraft('');
+      onReplied();
+    }
+    setBusy(false);
+  };
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-baseline gap-2 text-[12px]">
+          <span className="font-mono text-[10px] tabular-nums text-white/30">#{t.id}</span>
+          <span
+            className={`font-bold uppercase tracking-[0.12em] ${TK_CATEGORY_COLOR[t.category] ?? 'text-white/55'}`}
+          >
+            {TK_CATEGORY_LABEL[t.category] ?? t.category}
+          </span>
+          <span className="font-medium text-white/85">{t.subject}</span>
+        </div>
+        <select
+          value={t.status}
+          onChange={(e) => onStatus(t.id, e.target.value as TicketRow['status'])}
+          className={`rounded-md border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] outline-none focus:border-cyan-400/60 ${TK_STATUS_COLOR[t.status] ?? 'text-white/70'}`}
+        >
+          {TK_STATUSES.map((s) => (
+            <option key={s} value={s} className="bg-zinc-900 text-white">
+              {TK_STATUS_LABEL[s]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/70">{t.body}</p>
+      {t.replies.length > 0 && (
+        <div className="mt-2 flex flex-col gap-1.5 border-t border-white/10 pt-2">
+          {t.replies.map((r) => (
+            <div key={r.id} className="rounded-md bg-cyan-400/5 px-2.5 py-1.5">
+              <div className="flex items-baseline justify-between gap-2 font-mono text-[10px]">
+                <span className="font-bold uppercase tracking-[0.14em] text-cyan-300/80">{r.author}</span>
+                <span className="text-white/30">{ago(r.ts)}</span>
+              </div>
+              <p className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/80">
+                {r.body}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-2 flex gap-2 border-t border-white/10 pt-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && send()}
+          maxLength={2000}
+          placeholder="Reply to the player…"
+          className="flex-1 rounded-md border border-white/15 bg-black/40 px-2.5 py-1.5 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60"
+        />
+        <button
+          onClick={send}
+          disabled={busy || draft.trim().length === 0}
+          className="rounded-md bg-cyan-400 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-950 transition hover:bg-cyan-300 disabled:opacity-40"
+        >
+          {busy ? '…' : 'Reply'}
+        </button>
+      </div>
+      {err && <div className="mt-1.5 text-[10px] text-rose-300">{err}</div>}
+      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-white/35">
+        <span className="text-white/55">{t.playerName}</span>
+        <span>{ago(t.ts)}</span>
+        {t.ip && <span>{t.ip}</span>}
+        {t.replies.length > 0 && (
+          <span>
+            {t.replies.length} reply{t.replies.length > 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SupportTab() {
+  const [rows, setRows] = useState<TicketRow[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [filter, setFilter] = useState<string>('all');
+  const [loading, setLoading] = useState(true);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (status: string, before?: number) => {
+    setLoading(true);
+    const qs =
+      `limit=50${status !== 'all' ? `&status=${status}` : ''}${before ? `&before=${before}` : ''}`;
+    const d = await getJSON<{
+      tickets: TicketRow[];
+      counts: Record<string, number>;
+    }>(`/api/admin/support/tickets?${qs}`);
+    const list = d?.tickets ?? [];
+    setRows((prev) => (before ? [...prev, ...list] : list));
+    if (d?.counts) setCounts(d.counts);
+    setDone(list.length < 50);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void load(filter);
+  }, [filter, load]);
+
+  const updateStatus = useCallback(
+    async (id: number, status: TicketRow['status']) => {
+      const ok = await postJSON<{ ok: boolean }>(`/api/admin/support/tickets/${id}/status`, {
+        status,
+      });
+      if (!ok) {
+        setError('Status update failed — moderation needs an admin session login.');
+        window.setTimeout(() => setError(null), 5000);
+        return;
+      }
+      setRows((prev) =>
+        prev
+          .map((r) => (r.id === id ? { ...r, status } : r))
+          .filter((r) => filter === 'all' || r.status === filter),
+      );
+      // Keep the filter chips live (cheap, limit=1).
+      void getJSON<{ counts: Record<string, number> }>(
+        '/api/admin/support/tickets?limit=1',
+      ).then((d) => d?.counts && setCounts(d.counts));
+    },
+    [filter],
+  );
+
+  // A reply changes the thread a player sees — refetch the visible list so
+  // cards show the new reply + the auto-ack status.
+  const refresh = useCallback(() => {
+    void load(filter);
+  }, [filter, load]);
+
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const chips = (
+    <div className="flex flex-wrap justify-end gap-1">
+      {(['all', ...TK_STATUSES] as const).map((s) => {
+        const n = s === 'all' ? total : counts[s] ?? 0;
+        return (
+          <button
+            key={s}
+            onClick={() => setFilter(s)}
+            className={`rounded px-2 py-1 text-[10px] uppercase tracking-[0.14em] transition ${
+              filter === s ? 'bg-cyan-400/15 text-cyan-300' : 'text-white/40 hover:text-white/70'
+            }`}
+          >
+            {s === 'all' ? 'All' : TK_STATUS_LABEL[s]}
+            {n > 0 && <span className="ml-1 tabular-nums opacity-70">{n}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <Panel title="Support tickets" right={chips}>
+      {error && (
+        <div className="mb-2 rounded-md border border-rose-400/40 bg-rose-400/10 px-3 py-2 text-[11px] text-rose-200">
+          {error}
+        </div>
+      )}
+      {rows.length === 0 && !loading ? (
+        <Empty label="No tickets yet." />
+      ) : rows.length === 0 ? (
+        <Loading />
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map((t) => (
+            <TicketCard key={t.id} t={t} onStatus={updateStatus} onReplied={refresh} />
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex justify-center">
+        {!done && rows.length > 0 && (
+          <button
+            onClick={() => load(filter, rows[rows.length - 1]?.id)}
+            disabled={loading}
+            className="rounded-md border border-white/15 px-4 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-40"
+          >
+            {loading ? 'Loading…' : 'Load more'}
+          </button>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// ── Tab: Community chat (moderation) ───────────────────────────────────────
+// Discord-style web chat messages across all channels, newest first. Deletes
+// are soft (hidden everywhere, kept for audit) and need an admin session — the
+// list itself is token-readable.
+type CommunityMsg = {
+  id: number;
+  channel: string;
+  ts: number;
+  playerName: string;
+  text: string;
+  deleted: boolean;
+  admin: boolean;
+  verified: boolean;
+  ip: string;
+};
+const CM_CHANNEL_LABEL: Record<string, string> = {
+  general: '#general',
+  'looking-for-match': '#looking-for-match',
+  'off-topic': '#off-topic',
+};
+
+function CommunityTab() {
+  const [rows, setRows] = useState<CommunityMsg[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (before?: number) => {
+    setLoading(true);
+    const qs = `limit=50${before ? `&before=${before}` : ''}`;
+    const d = await getJSON<{ messages: CommunityMsg[] }>(`/api/admin/community/messages?${qs}`);
+    const list = d?.messages ?? [];
+    setRows((prev) => (before ? [...prev, ...list] : list));
+    setDone(list.length < 50);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const remove = useCallback(
+    async (id: number) => {
+      const ok = await postJSON<{ ok: boolean }>(`/api/admin/community/messages/${id}/delete`, {});
+      if (!ok) {
+        setError('Delete failed — moderation needs an admin session login.');
+        window.setTimeout(() => setError(null), 5000);
+        return;
+      }
+      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, deleted: true } : r)));
+    },
+    [],
+  );
+
+  return (
+    <Panel title="Community chat" right={
+      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/35">
+        web chat · soft delete
+      </span>
+    }>
+      {error && (
+        <div className="mb-2 rounded-md border border-rose-400/40 bg-rose-400/10 px-3 py-2 text-[11px] text-rose-200">
+          {error}
+        </div>
+      )}
+      {rows.length === 0 && !loading ? (
+        <Empty label="No community messages yet." />
+      ) : rows.length === 0 ? (
+        <Loading />
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map((m) => (
+            <div key={m.id} className="rounded-lg border border-white/10 bg-black/30 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-baseline gap-2 font-mono text-[11px]">
+                  <span className="text-cyan-300/70">{CM_CHANNEL_LABEL[m.channel] ?? `#${m.channel}`}</span>
+                  <span className={m.admin ? 'font-bold text-amber-300' : m.verified ? 'text-cyan-300' : 'text-white/85'}>
+                    {m.playerName}
+                  </span>
+                  {m.admin && <span className="text-amber-300/80">●</span>}
+                  <span className="text-white/30">{ago(m.ts)}</span>
+                </div>
+                {!m.deleted ? (
+                  <button
+                    onClick={() => void remove(m.id)}
+                    className="rounded-md border border-rose-400/30 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-rose-300 transition hover:bg-rose-400/10"
+                  >
+                    Delete
+                  </button>
+                ) : (
+                  <span className="font-mono text-[10px] italic text-white/30">removed</span>
+                )}
+              </div>
+              <p className="mt-1.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/75">
+                {m.deleted ? <span className="italic text-white/30">[removed by staff]</span> : m.text}
+              </p>
+              {m.ip && !m.deleted && (
+                <div className="mt-1 font-mono text-[10px] text-white/25">{m.ip}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex justify-center">
+        {!done && rows.length > 0 && (
+          <button
+            onClick={() => load(rows[rows.length - 1]?.id)}
+            disabled={loading}
+            className="rounded-md border border-white/15 px-4 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-40"
+          >
+            {loading ? 'Loading…' : 'Load more'}
+          </button>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 type AcEvent = {
   id: number;
   ts: number;
@@ -1266,6 +1628,8 @@ export default function AdminDashboard() {
         {tab === 'players' && <PlayersTab />}
         {tab === 'feedback' && <FeedbackTab />}
         {tab === 'anticheat' && <AnticheatTab />}
+        {tab === 'support' && <SupportTab />}
+        {tab === 'community' && <CommunityTab />}
       </div>
     </div>
   );

@@ -26,13 +26,23 @@ import {
   getRecentMatches,
   getRetention,
   getWeeklyChallengeStats,
+  listAllCommunityMessages,
   listFeedback,
+  listReplies,
+  listTickets,
   logEvent,
+  deleteCommunityMessage,
   setAdmin,
   setFeedbackStatus,
+  setTicketStatus,
   setVerified,
+  ticketCounts,
+  TICKET_STATUSES,
+  addTicketReply,
+  getTicket,
   type AccountInfo,
   type FeedbackStatus,
+  type TicketStatus,
 } from './db';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 
@@ -239,6 +249,129 @@ adminRouter.post('/feedback/:id/status', (req, res) => {
     ip: req.ip,
   });
   res.json({ ok: true, id, status });
+});
+
+// ── Support tickets (admin side) ──────────────────────────────────────────
+// The list is read-only → token-readable (like the ban list); status changes and
+// replies mutate → session-only (denyToken). Everything is audit-logged.
+
+// All tickets, newest first, keyset-paginated by id, optional status filter.
+// Includes each ticket's reply thread so the admin UI renders full conversations.
+adminRouter.get('/support/tickets', (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : '';
+  const before = parseInt(String(req.query.before ?? ''), 10);
+  const limit = parseInt(String(req.query.limit ?? ''), 10);
+  const tickets = listTickets({
+    limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
+    beforeId: Number.isFinite(before) && before > 0 ? before : 0,
+    status,
+  }).map((t) => ({ ...t, replies: listReplies(t.id) }));
+  res.json({ tickets, counts: ticketCounts() });
+});
+
+// Update a ticket's moderation status (open → ack → resolved → closed).
+// Session-only + audit-logged, mirroring the feedback status route.
+adminRouter.post('/support/tickets/:id/status', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const status = typeof body.status === 'string' ? body.status : '';
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  if (!(TICKET_STATUSES as readonly string[]).includes(status)) {
+    res.status(400).json({ error: 'bad_status' });
+    return;
+  }
+  if (!setTicketStatus(id, status as TicketStatus)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: 'admin.support_status',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: String(id),
+    detail: { status },
+    ip: req.ip,
+  });
+  res.json({ ok: true, id, status });
+});
+
+// Reply to a ticket (the player sees it on /support). An 'open' ticket is
+// implicitly acked by the first reply. Session-only + audit-logged.
+adminRouter.post('/support/tickets/:id/reply', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  const body = typeof (req.body ?? {}).text === 'string' ? (req.body as { text: string }).text.trim() : '';
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  if (body.length < 1 || body.length > 2000) {
+    res.status(400).json({ error: 'bad_body' });
+    return;
+  }
+  const ticket = getTicket(id);
+  if (!ticket) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  const replyId = addTicketReply(id, admin.username, body);
+  if (!replyId) {
+    res.status(500).json({ error: 'server_error' });
+    return;
+  }
+  logEvent({
+    event: 'admin.support_reply',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: String(id),
+    detail: { subject: ticket.subject },
+    ip: req.ip,
+  });
+  res.json({ ok: true, id, replyId });
+});
+
+// ── Community chat (admin side) ────────────────────────────────────────────
+// Recent messages across all channels, newest first, keyset-paginated — plus
+// soft-delete. The list is read-only → token-readable; deletes mutate →
+// session-only (denyToken) + audit-logged.
+adminRouter.get('/community/messages', (req, res) => {
+  const before = parseInt(String(req.query.before ?? ''), 10);
+  const limit = parseInt(String(req.query.limit ?? ''), 10);
+  const messages = listAllCommunityMessages({
+    limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
+    beforeId: Number.isFinite(before) && before > 0 ? before : 0,
+  });
+  res.json({ messages });
+});
+
+// Soft-delete a community message (hidden everywhere; kept for audit).
+// Session-only + audit-logged, mirroring the other moderation mutations.
+adminRouter.post('/community/messages/:id/delete', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  if (!deleteCommunityMessage(id)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: 'admin.chat_delete',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: String(id),
+    ip: req.ip,
+  });
+  res.json({ ok: true, id });
 });
 
 // ── Moderation: kick / ban / unban ─────────────────────────────────────────

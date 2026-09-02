@@ -1,21 +1,23 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { elyxionEmbedded } from './server/vite-plugin';
 
-// In dev, the Vite dev server hosts the client (port 5173) and proxies the API
-// and the game WebSocket (/ws/elyxion) to the standalone Node server (port
-// 8787) so the browser talks to a single origin — exactly like production,
-// where the Node server serves the built client AND the socket from one port.
-const SERVER_PORT = process.env.SERVER_PORT || process.env.PORT || '8787';
+// `npm run dev` is ONE process on ONE PORT: the elyxionEmbedded plugin mounts
+// the Express API + the /ws/elyxion game socket inside the Vite dev server, so
+// the client, the API, the game socket, and HMR all live on this single port —
+// exactly like production, no proxy, no second terminal. (dev:server still runs
+// the fork: a standalone API+WS process with no client, for scripts + load tests
+// that don't need a browser.)
+const PORT = Number(process.env.PORT || '8787');
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), elyxionEmbedded()],
   server: {
-    port: 5173,
-    proxy: {
-      '/api': { target: `http://localhost:${SERVER_PORT}`, changeOrigin: true },
-      '/ws': { target: `ws://localhost:${SERVER_PORT}`, ws: true },
-    },
+    port: PORT,
+    strictPort: true,
+    // The game socket + API are embedded (see /server/vite-plugin.ts), so there
+    // is no proxy to the standalone server — the browser is always same-origin.
   },
   build: {
     outDir: 'dist',
