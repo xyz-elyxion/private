@@ -81,6 +81,7 @@ import type {
   KillfeedEntry,
   MapVoteState,
   MedalTier,
+  MinimapState,
   PlayerScore,
   PomState,
   ToastEntry,
@@ -744,6 +745,16 @@ function applyMatchConfig(game: Game, config: MatchConfig) {
   }
 }
 
+// Empty minimap used before the engine delivers its first HUD frame (and as a
+// mount-time guard for the bbox math in Minimap).
+const EMPTY_MINIMAP: MinimapState = {
+  bounds: { min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 0, z: 1 } },
+  boxes: [],
+  me: null,
+  watchedId: null,
+  players: [],
+};
+
 const INITIAL_HUD: HudState = {
   frags: 0,
   railCooldown: 0,
@@ -780,6 +791,7 @@ const INITIAL_HUD: HudState = {
   chat: { open: false, lines: [] },
   netDebug: null,
   spectator: null,
+  minimap: EMPTY_MINIMAP,
 };
 
 export default function ElyxionClient() {
@@ -1440,6 +1452,7 @@ function SpectatorView({
       {hud.netStatus !== 'off' && (
         <NetStatusPill status={hud.netStatus} peers={hud.netPeers} rttMs={hud.netRttMs} />
       )}
+      <Minimap hud={hud} />
 
       {/* Top banner: who you're watching + how to switch. */}
       <div className='pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center p-4'>
@@ -2895,6 +2908,7 @@ function HudOverlay({
           airJumpsLeft={hud.airJumpsLeft}
         />
       )}
+      <Minimap hud={hud} />
       {settings.showFps && <FpsCounter fps={hud.fps} />}
       {hud.netStatus !== 'off' && (
         <NetStatusPill status={hud.netStatus} peers={hud.netPeers} rttMs={hud.netRttMs} />
@@ -3766,6 +3780,140 @@ function AirJumpPip({ left, max }: { left: number; max: number }) {
       </div>
       <div className='text-[10px] uppercase tracking-[0.16em] text-white/55'>Air</div>
     </div>
+  );
+}
+
+/* ───────────────────────── Minimap (bottom-right, tactical) ───────────────────────── */
+
+// Team colors mirrored from constants.ts so the map reads like the nameplates:
+// team 0 red / team 1 blue, allies green in TDM, "you" a bright emerald, and
+// every non-ally (FFA/Duel targets) a soft rose.
+const MM_TEAM_COLORS = ['#ff5a5a', '#5a9bff'] as const;
+const MM_FRIEND = '#43d17a';
+const MM_YOU = '#a7f3d0';
+const MM_HOSTILE = '#fda4af';
+
+function mmRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function Minimap({ hud }: { hud: HudState }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  // Logical size in px; the uiScale wrapper scales it with the rest of the HUD.
+  const SIZE = 176;
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const m = hud.minimap;
+
+    // Buffer at devicePixelRatio (capped) so the map stays crisp on hi-DPI.
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const px = Math.round(SIZE * dpr);
+    if (canvas.width !== px || canvas.height !== px) {
+      canvas.width = px;
+      canvas.height = px;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, SIZE, SIZE);
+
+    // Letterboxed world→canvas mapping. World +z maps DOWN (so -z = north =
+    // up); the heading math below uses the same (sin/cos) yaw convention.
+    const pad = 14;
+    const inner = SIZE - pad * 2;
+    const b = m.bounds;
+    const spanX = Math.max(1, b.max.x - b.min.x);
+    const spanZ = Math.max(1, b.max.z - b.min.z);
+    const scale = inner / Math.max(spanX, spanZ);
+    const offX = pad + (inner - spanX * scale) / 2;
+    const offY = pad + (inner - spanZ * scale) / 2;
+    const X = (x: number) => offX + (x - b.min.x) * scale;
+    const Y = (z: number) => offY + (z - b.min.z) * scale;
+
+    // Panel chrome, same family as the other HUD panels.
+    mmRoundRect(ctx, 0.5, 0.5, SIZE - 1, SIZE - 1, 10);
+    ctx.fillStyle = 'rgba(8,10,14,0.58)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Static cover geometry — the boxes make the arena layout legible.
+    ctx.fillStyle = 'rgba(255,255,255,0.09)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    for (const box of m.boxes) {
+      const bx = X(box.min.x);
+      const by = Y(box.min.z);
+      const bw = Math.max(0.5, (box.max.x - box.min.x) * scale);
+      const bh = Math.max(0.5, (box.max.z - box.min.z) * scale);
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    }
+
+    // A heading wedge: a triangle pointing along the entity's facing. World
+    // forward = (-sin yaw, -cos yaw) → canvas angle = atan2(fz, fx).
+    const heading = (yaw: number) => Math.atan2(-Math.cos(yaw), -Math.sin(yaw));
+    const dot = (x: number, z: number, yaw: number, r: number, fill: string) => {
+      ctx.save();
+      ctx.translate(X(x), Y(z));
+      ctx.rotate(heading(yaw));
+      ctx.beginPath();
+      ctx.moveTo(r + 2.5, 0);
+      ctx.lineTo(-r, -r * 0.85);
+      ctx.lineTo(-r, r * 0.85);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.restore();
+    };
+
+    const inTdm = hud.mode === 'tdm';
+    for (const p of m.players) {
+      // Spectator POV target gets a cyan ring so you always know whose view
+      // you're riding.
+      if (p.id === m.watchedId) {
+        ctx.beginPath();
+        ctx.arc(X(p.x), Y(p.z), 9, 0, Math.PI * 2);
+        ctx.strokeStyle = '#67e8f9';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      const ally = inTdm && p.team != null && p.team === hud.localTeam;
+      const fill = ally
+        ? MM_FRIEND
+        : inTdm && p.team != null
+          ? MM_TEAM_COLORS[p.team] ?? MM_HOSTILE
+          : MM_HOSTILE;
+      dot(p.x, p.z, p.yaw, p.kind === 'bot' ? 3 : 4, fill);
+    }
+
+    // "You" last so your dot sits on top.
+    if (m.me) {
+      ctx.beginPath();
+      ctx.arc(X(m.me.x), Y(m.me.z), 7.5, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      dot(m.me.x, m.me.z, m.me.yaw, 4.5, MM_YOU);
+    }
+    // mode/localTeam gate dot colors; minimap is rebuilt on every HUD emit, but
+    // list them so the redraw intent is explicit (and the linter is happy).
+  }, [hud.minimap, hud.mode, hud.localTeam]);
+
+  return (
+    <canvas
+      ref={ref}
+      aria-hidden='true'
+      className='pointer-events-none absolute bottom-32 right-6'
+      style={{ width: SIZE, height: SIZE }}
+    />
   );
 }
 

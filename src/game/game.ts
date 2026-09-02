@@ -126,6 +126,7 @@ import type {
   KillfeedEntry,
   MapVoteState,
   Medal,
+  MinimapState,
   PlayerScore,
   PomState,
   SpectatorHud,
@@ -2890,6 +2891,48 @@ export class Game {
       };
     }
 
+    // ── Corner minimap: the map layout + every visible entity, at HUD rate.
+    // Positions mirror what the 3D view renders (interpolated remotes, sim bots)
+    // so the dots line up with what you see — nothing is extrapolated here.
+    const minimapPlayers: MinimapState['players'] = [];
+    if (this.net) {
+      for (const [id, snap] of this.net.remotes) {
+        minimapPlayers.push({
+          id,
+          x: snap.pos.x,
+          z: snap.pos.z,
+          yaw: snap.yaw,
+          team: snap.team,
+          kind: 'remote',
+        });
+      }
+    }
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        if (!b.state.alive) continue; // corpses don't get a dot
+        minimapPlayers.push({
+          id: b.state.id,
+          x: b.state.pos.x,
+          z: b.state.pos.z,
+          // Convert the bot's facing (+π model offset) to the player/remote yaw
+          // convention so one heading formula draws every arrow correctly.
+          yaw: b.getFacing() + Math.PI,
+          team: b.getTeam(),
+          kind: 'bot',
+        });
+      }
+    }
+    const minimap: MinimapState = {
+      bounds: this.map.bounds,
+      // Copy the box list so the HUD's canvas can never mutate our geometry.
+      boxes: this.map.boxes.map((b) => ({ ...b })),
+      me: this.spectator
+        ? null
+        : { x: this.player.pos.x, z: this.player.pos.z, yaw: this.player.yaw },
+      watchedId: this.spectator ? this.spectatedId : null,
+      players: minimapPlayers,
+    };
+
     this.onHud({
       frags: this.playerFrags,
       railCooldown: this.weapon.cooldown,
@@ -2930,6 +2973,7 @@ export class Game {
       chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },
       netDebug: this.netDebugOn && this.net ? this.net.getDebugStats() : null,
       spectator: spectatorHud,
+      minimap,
     });
   }
 

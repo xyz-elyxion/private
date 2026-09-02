@@ -265,6 +265,9 @@ export type HudState = {
   // Spectator HUD: who you're watching + the roster you can cycle through, and
   // the watched player's crosshair (share-code). null when not spectating.
   spectator: SpectatorHud | null;
+  // Corner minimap data (map layout + every visible entity). Always present;
+  // the React HUD draws it bottom-right above the cooldown cluster.
+  minimap: MinimapState;
 };
 
 export type SpectatorHud = {
@@ -274,6 +277,29 @@ export type SpectatorHud = {
   count: number; // number of watchable players
   players: { id: string; name: string }[]; // ordered switch list
   crosshairCode: string; // watched player's crosshair share-code ('' = default)
+};
+
+// Live top-down tactical map data, assembled by the engine at HUD rate (~20Hz)
+// from the sim + network snapshots. The React HUD renders the layout + entity
+// dots on a 2D canvas; nothing here is authoritative (positions come from the
+// same interpolated views the 3D render uses).
+export type MinimapState = {
+  bounds: AABB; // play-space in world x/z (drawn + letterboxed)
+  boxes: AABB[]; // static cover geometry, outlined so the layout reads
+  // Local player (null while spectating — you have no body in the match).
+  me: { x: number; z: number; yaw: number } | null;
+  // Spectator POV target — highlighted with a ring; null outside spectator mode.
+  watchedId: string | null;
+  // Every visible entity + facing. Yaws all use the player/remote convention
+  // (bots are converted +π at the source, mirroring the replay sampler).
+  players: {
+    id: string;
+    x: number;
+    z: number;
+    yaw: number;
+    team: number | null; // TDM team (0/1); null in FFA/Duel
+    kind: 'remote' | 'bot';
+  }[];
 };
 
 export type TrainingHud = {
