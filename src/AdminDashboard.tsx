@@ -46,16 +46,39 @@ type MatchRow = {
 };
 // Moderation ban list entries (mirror server/db.ts): kind 'name' is a display-
 // name ban, kind 'ip' an address ban (auto-captured from an online player, or
-// set directly via /banip).
+// set directly via /banip), kind 'guest' a guest-uuid ban (the anonymous igpid
+// identity guests get — see server/auth.ts).
 type BanEntry = {
-  kind: 'name' | 'ip';
+  kind: 'name' | 'ip' | 'guest';
   name: string;
   ip?: string;
+  guestId?: string;
   reason: string;
   bannedBy: string;
   createdAt: number;
   bannedUntil: number; // epoch ms the ban lifts; 0 = permanent
 };
+// One live connection as the server's moderation layer sees it (/api/admin/
+// online) — mirrors server/elyxion-game.ts OnlinePlayer.
+type OnlinePlayer = {
+  id: string;
+  name: string;
+  kind: 'account' | 'guest';
+  playerId?: string;
+  guestId?: string;
+  admin: boolean;
+  verified: boolean;
+  ip: string;
+  connectedAt: number;
+  location: 'lobby' | 'in-match' | 'spectating';
+  room?: { id: string; name: string; mode: string; mapId: string; members: number };
+};
+// Guest identities are RFC 4122 uuids (lowercase hex + dashes) — account ids
+// are 24-char hex with no dashes, so a dash test cleanly separates them. Used
+// to spot guest-attributed rows (community/feedback/support) and shorten ids.
+const GUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const isGuestId = (v: string): boolean => GUEST_ID_RE.test(v.toLowerCase());
+const shortGuest = (id: string | undefined): string => (id ? `${id.slice(0, 8)}…` : '');
 type PlayerRow = {
   id: string;
   userName: string;
@@ -636,51 +659,189 @@ const msLabel = (ms: number): string => {
   if (days < 7) return `${Math.round(days)}d`;
   return `${Math.round((days / 7) * 10) / 10}w`;
 };
-// Moderation actions on the players table (kick / ban / unban). Bans persist
-// server-side; kick disconnects a live player (must be online to hit). Both are
-// session-only routes — the token/read-only path can't mutate.
+// ── Ban-by-guest (shared by the content tabs) ───────────────────────────────
+// Guest-authored content rows (community messages / feedback / support tickets)
+// carry the author's anonymous igpid uuid as playerId once the identity cookie
+// is in place (see server/auth.ts). An admin can ban that identity straight
+// from the row: the ban persists against the uuid — refused at the guest's next
+// connect, even with a fresh name or IP — and boots them now if they're online.
+function useGuestBan() {
+  const [target, setTarget] = useState<{ id: string; name: string } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(null), 6000);
+    return () => clearTimeout(t);
+  }, [msg]);
+  return {
+    target,
+    msg,
+    open: (id: string, name: string) => setTarget({ id, name }),
+    close: () => setTarget(null),
+    report: (m: string) => setMsg(m),
+  };
+}
+
+function BanGuestModal({
+  guest,
+  onClose,
+  onResult,
+}: {
+  guest: { id: string; name: string };
+  onClose: () => void;
+  onResult: (msg: string) => void;
+}) {
+  const [reason, setReason] = useState('');
+  const [durationMs, setDurationMs] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const confirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    const d = await postJSON<{ ok: boolean }>('/api/admin/ban', {
+      guest: guest.id,
+      reason: reason.trim().slice(0, 200),
+      durationMs,
+    });
+    setBusy(false);
+    if (d?.ok) {
+      onResult(
+        durationMs > 0
+          ? `Banned guest ${shortGuest(guest.id)} for ${msLabel(durationMs)}.`
+          : `Banned guest ${shortGuest(guest.id)} permanently.`,
+      );
+    } else {
+      onResult(`Couldn't ban guest ${shortGuest(guest.id)} — moderation needs an admin session login.`);
+    }
+    onClose();
+  };
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-lg border border-rose-400/30 bg-zinc-950 p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className='mb-1 font-mono text-[13px] font-semibold text-rose-200'>
+          Ban guest {shortGuest(guest.id)}
+        </h3>
+        <p className='mb-3 font-mono text-[10px] leading-relaxed text-rose-200/60'>
+          Author: {guest.name || 'Guest'} · {guest.id}. The ban follows this
+          browser's anonymous id across reconnects.
+        </p>
+        <input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && confirm()}
+          placeholder='Reason (optional)'
+          autoFocus
+          className='mb-2 w-full rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[12px] text-white outline-none focus:border-rose-400/60'
+        />
+        <select
+          value={durationMs}
+          onChange={(e) => setDurationMs(Number(e.target.value))}
+          className='w-full rounded-md border border-white/15 bg-black/40 px-2 py-1.5 font-mono text-[12px] text-white/80 outline-none focus:border-rose-400/60'
+        >
+          {BAN_DURATIONS.map((d) => (
+            <option key={d.ms} value={d.ms} className='bg-zinc-900'>
+              {d.label}
+            </option>
+          ))}
+        </select>
+        <div className='mt-4 flex items-center justify-end gap-2'>
+          <button
+            onClick={onClose}
+            className='rounded border border-white/15 px-3 py-1 font-mono text-[11px] uppercase tracking-wider text-white/60 transition hover:text-white/90'
+          >
+            Cancel
+          </button>
+          <button
+            onClick={confirm}
+            disabled={busy}
+            className='rounded border border-rose-500/40 px-3 py-1 font-mono text-[11px] uppercase tracking-wider text-rose-200 transition hover:border-rose-400/70 hover:text-rose-100 disabled:opacity-40'
+          >
+            Ban
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Moderation actions on the players table + the live online list (accounts AND
+// guests). Bans persist server-side; kick disconnects a live player (must be
+// online to hit). Both are session-only routes — the token/read-only path can't
+// mutate. Guests are moderated by their anonymous uuid (the igpid cookie): a
+// guest ban follows the browser across reconnects even when their per-room
+// "Guest N" name renumbers or the IP changes.
+type BanTarget = { kind: 'name' | 'guest'; id: string };
 function PlayersTab() {
   const [players, setPlayers] = useState<PlayerRow[] | null>(null);
   const [sort, setSort] = useState('recent');
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [bans, setBans] = useState<BanEntry[]>([]);
+  const [online, setOnline] = useState<OnlinePlayer[] | null>(null);
   const [modBusy, setModBusy] = useState<string | null>(null);
   const [modMsg, setModMsg] = useState<string | null>(null);
-  const [banTarget, setBanTarget] = useState<string | null>(null);
+  const [banTarget, setBanTarget] = useState<BanTarget | null>(null);
   const [banReason, setBanReason] = useState('');
   const [banDurationMs, setBanDurationMs] = useState(0);
-  // Bans: NAME rows flag the players table (banned chip + Unban toggle); IP rows
-  // render as removable chips below. Re-fetched after every action because a
-  // name unban also lifts the IPs that ban captured (server-side).
+  // Bans: NAME rows flag the players table (banned chip + Unban toggle); IP and
+  // GUEST rows render as removable chips below. Re-fetched after every action
+  // because a name unban also lifts the IPs + guest uuids that ban captured
+  // (server-side).
   const reloadBans = useCallback(() => {
     void getJSON<{ bans: BanEntry[] }>('/api/admin/bans').then((d) => {
       if (d) setBans(d.bans ?? []);
     });
   }, []);
+  // Live sockets right now — incl. each guest individually (uuid + IP). Polled
+  // so joins/leaves and live bans show up without a manual refresh.
+  const loadOnline = useCallback(() => {
+    void getJSON<{ online: OnlinePlayer[] }>('/api/admin/online').then((d) => {
+      setOnline(d?.online ?? null);
+    });
+  }, []);
   useEffect(() => {
     reloadBans();
-  }, [reloadBans]);
+    loadOnline();
+    const t = setInterval(loadOnline, 10_000);
+    return () => clearInterval(t);
+  }, [reloadBans, loadOnline]);
   const nameBanMap = useMemo(
     () => new Map(bans.filter((b) => b.kind === 'name').map((b) => [b.name.toLowerCase(), b])),
     [bans],
   );
   const nameBanSet = useMemo(() => new Set(nameBanMap.keys()), [nameBanMap]);
   const ipBans = useMemo(() => bans.filter((b) => b.kind === 'ip'), [bans]);
+  const guestBans = useMemo(() => bans.filter((b) => b.kind === 'guest'), [bans]);
+  const guestBanSet = useMemo(
+    () => new Set(guestBans.map((b) => (b.guestId ?? '').toLowerCase())),
+    [guestBans],
+  );
   // Auto-dismiss the action result line.
   useEffect(() => {
     if (!modMsg) return;
     const t = setTimeout(() => setModMsg(null), 5000);
     return () => clearTimeout(t);
   }, [modMsg]);
+  const banLabel = (t: BanTarget): string =>
+    t.kind === 'guest' ? `guest ${shortGuest(t.id)}` : `“${t.id}”`;
+  // Open the duration/reason dialog instead of a prompt — bans are no longer
+  // always permanent.
+  const openBan = (t: BanTarget) => {
+    if (modBusy) return;
+    setBanReason('');
+    setBanDurationMs(0);
+    setBanTarget(t);
+  };
+  // Moderate an ACCOUNT by display name (kick / ban / unban).
   const moderate = (name: string, verb: 'kick' | 'ban' | 'unban') => {
     if (modBusy) return;
     if (verb === 'ban') {
-      // Open the duration/reason dialog instead of a prompt — bans are no
-      // longer always permanent.
-      setBanReason('');
-      setBanDurationMs(0);
-      setBanTarget(name);
+      openBan({ kind: 'name', id: name });
       return;
     }
     setModBusy(name);
@@ -698,14 +859,39 @@ function PlayersTab() {
       }
     });
   };
-  // Confirm the ban dialog: timed when a non-zero duration is picked.
+  // Moderate a GUEST by their uuid (kick / ban / unban).
+  const moderateGuest = (guestId: string, verb: 'kick' | 'ban' | 'unban') => {
+    if (modBusy) return;
+    if (verb === 'ban') {
+      openBan({ kind: 'guest', id: guestId });
+      return;
+    }
+    const short = shortGuest(guestId);
+    setModBusy(guestId);
+    void postJSON<{ ok: boolean }>(`/api/admin/${verb}`, { guest: guestId }).then((d) => {
+      setModBusy(null);
+      if (d?.ok) {
+        setModMsg(verb === 'kick' ? `Kicked guest ${short}.` : `Unbanned guest ${short}.`);
+        if (verb === 'unban') reloadBans();
+      } else {
+        setModMsg(
+          verb === 'unban'
+            ? `Guest ${short} wasn't banned.`
+            : `Guest ${short} isn't online right now (kick needs a live connection).`,
+        );
+      }
+    });
+  };
+  // Confirm the ban dialog — target a display name or a guest uuid; timed when
+  // a non-zero duration is picked.
   const confirmBan = () => {
     if (!banTarget || modBusy) return;
     const target = banTarget;
     const durationMs = banDurationMs;
-    setModBusy(target);
+    const label = banLabel(target);
+    setModBusy(target.id);
     void postJSON<{ ok: boolean }>('/api/admin/ban', {
-      name: target,
+      ...(target.kind === 'guest' ? { guest: target.id } : { name: target.id }),
       reason: banReason.trim().slice(0, 200),
       durationMs,
     }).then((d) => {
@@ -714,12 +900,13 @@ function PlayersTab() {
       if (d?.ok) {
         setModMsg(
           durationMs > 0
-            ? `Banned ${target} for ${msLabel(durationMs)} (their IP too).`
-            : `Banned ${target} permanently (their IP too).`,
+            ? `Banned ${label} for ${msLabel(durationMs)} (their IP too).`
+            : `Banned ${label} permanently (their IP too).`,
         );
         reloadBans();
+        loadOnline();
       } else {
-        setModMsg(`Couldn't ban “${target}”.`);
+        setModMsg(`Couldn't ban ${label}.`);
       }
     });
   };
@@ -734,6 +921,21 @@ function PlayersTab() {
         reloadBans();
       } else {
         setModMsg(`IP ${ip} wasn't banned.`);
+      }
+    });
+  };
+  // Lift a guest-uuid ban from the strip below (also lifts the IP it captured).
+  const unbanGuestBan = (guestId: string) => {
+    if (modBusy) return;
+    setModBusy(guestId);
+    void postJSON<{ ok: boolean }>('/api/admin/unban', { guest: guestId }).then((d) => {
+      setModBusy(null);
+      if (d?.ok) {
+        setModMsg(`Unbanned guest ${shortGuest(guestId)}.`);
+        reloadBans();
+        loadOnline();
+      } else {
+        setModMsg(`Guest ${shortGuest(guestId)} wasn't banned.`);
       }
     });
   };
@@ -786,8 +988,14 @@ function PlayersTab() {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className='mb-3 font-mono text-[13px] font-semibold text-rose-200'>
-              Ban “{banTarget}”
+              Ban {banLabel(banTarget)}
             </h3>
+            {banTarget.kind === 'guest' && (
+              <p className='mb-2 font-mono text-[10px] leading-relaxed text-rose-200/60'>
+                {banTarget.id} — a guest ban follows this browser's anonymous id
+                across reconnects, even as their “Guest N” name renumbers.
+              </p>
+            )}
             <input
               value={banReason}
               onChange={(e) => setBanReason(e.target.value)}
@@ -853,6 +1061,148 @@ function PlayersTab() {
           ))}
         </div>
       )}
+      {guestBans.length > 0 && (
+        <div className='mb-3 flex flex-wrap items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-500/10 px-3 py-2'>
+          <span className='mr-1 font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/80'>Guest bans</span>
+          {guestBans.map((b) => (
+            <span
+              key={b.guestId}
+              title={b.guestId}
+              className='inline-flex items-center gap-1.5 rounded border border-amber-400/30 bg-amber-950/40 px-2 py-0.5 font-mono text-[11px] text-amber-100'
+            >
+              {shortGuest(b.guestId)}
+              {b.bannedUntil > 0 && (
+                <span className='text-amber-200/50' title={new Date(b.bannedUntil).toLocaleString()}>
+                  · {msLabel(b.bannedUntil - Date.now())} left
+                </span>
+              )}
+              {b.reason && <span className='text-amber-200/60'>— {b.reason}</span>}
+              <button
+                onClick={() => unbanGuestBan(b.guestId ?? '')}
+                disabled={modBusy !== null}
+                title='Lift this guest ban (also lifts the IP it captured)'
+                className='text-amber-200/70 underline decoration-dotted transition hover:text-amber-100 disabled:opacity-40'
+              >
+                unban
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {/* Live sockets right now — accounts AND guests. Guests only appear here
+          (and by uuid on guest-authored content); the lobby's own presence list
+          deliberately shows them as a bare count. */}
+      <div className='mb-4 rounded-lg border border-white/10 bg-black/25 p-3'>
+        <div className='mb-2 flex items-baseline justify-between gap-2'>
+          <h3 className='font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-white/50'>
+            Online now
+          </h3>
+          <span className='font-mono text-[10px] tabular-nums text-white/35'>
+            {online === null
+              ? '…'
+              : `${online.length} ${online.length === 1 ? 'player' : 'players'} · ${online.filter((o) => o.kind === 'guest').length} guest`}
+          </span>
+        </div>
+        {online === null ? (
+          <Loading />
+        ) : online.length === 0 ? (
+          <div className='py-2 font-mono text-[11px] text-white/35'>Nobody online right now.</div>
+        ) : (
+          <div className='overflow-x-auto'>
+            <table className='w-full text-left font-mono text-[11px]'>
+              <thead>
+                <tr className='text-[9px] uppercase tracking-[0.16em] text-white/35'>
+                  <th className='py-1 pr-3 font-medium'>Player</th>
+                  <th className='py-1 pr-3 font-medium'>Where</th>
+                  <th className='py-1 pr-3 font-medium'>IP</th>
+                  <th className='py-1 pr-3 font-medium'>Since</th>
+                  <th className='py-1 pr-3 font-medium'>Moderation</th>
+                </tr>
+              </thead>
+              <tbody className='text-white/70'>
+                {online.map((o) => {
+                  const banned = o.kind === 'guest' ? guestBanSet.has((o.guestId ?? '').toLowerCase()) : nameBanSet.has((o.name ?? '').toLowerCase());
+                  return (
+                    <tr key={o.id} className='border-t border-white/5 align-top'>
+                      <td className='py-1.5 pr-3'>
+                        <span className='flex flex-wrap items-center gap-1.5'>
+                          <span className='text-white/90'>{o.name}</span>
+                          {o.kind === 'guest' ? (
+                            <span title={o.guestId} className='text-[9px] uppercase tracking-wide text-fuchsia-300/80'>
+                              guest {shortGuest(o.guestId)}
+                            </span>
+                          ) : (
+                            <span className='text-[9px] uppercase tracking-wide text-cyan-300/70'>account</span>
+                          )}
+                          {o.admin && <span className='text-[9px] uppercase tracking-wide text-amber-300'>staff</span>}
+                          {o.verified && <span className='text-cyan-300'>✓</span>}
+                          {banned && <span className='text-[9px] uppercase tracking-wide text-rose-300'>banned</span>}
+                        </span>
+                      </td>
+                      <td className='py-1.5 pr-3 text-white/50'>
+                        {o.location === 'in-match'
+                          ? `match${o.room ? ` · ${o.room.name}` : ''}`
+                          : o.location === 'spectating'
+                            ? `watching${o.room ? ` · ${o.room.name}` : ''}`
+                            : 'lobby'}
+                      </td>
+                      <td className='py-1.5 pr-3 text-white/40'>{o.ip}</td>
+                      <td className='py-1.5 pr-3 text-white/40'>{ago(o.connectedAt)}</td>
+                      <td className='py-1.5'>
+                        <span className='flex items-center gap-1.5'>
+                          <button
+                            onClick={() =>
+                              o.kind === 'guest'
+                                ? moderateGuest(o.guestId ?? '', 'kick')
+                                : moderate(o.name, 'kick')
+                            }
+                            disabled={modBusy !== null}
+                            title='Disconnect now (must be live)'
+                            className='rounded border border-white/15 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-white/70 transition hover:border-amber-300/60 hover:text-amber-200 disabled:opacity-40'
+                          >
+                            Kick
+                          </button>
+                          {banned ? (
+                            <button
+                              onClick={() =>
+                                o.kind === 'guest'
+                                  ? unbanGuestBan(o.guestId ?? '')
+                                  : moderate(o.name, 'unban')
+                              }
+                              disabled={modBusy !== null}
+                              title='Lift this ban'
+                              className='rounded border border-amber-400/40 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100 disabled:opacity-40'
+                            >
+                              Unban
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() =>
+                                o.kind === 'guest'
+                                  ? moderateGuest(o.guestId ?? '', 'ban')
+                                  : moderate(o.name, 'ban')
+                              }
+                              disabled={modBusy !== null}
+                              title={
+                                o.kind === 'guest'
+                                  ? 'Ban this guest by uuid — pick a duration (persisted; kicks them if online)'
+                                  : 'Ban this name — pick a duration (persisted; kicks them if online)'
+                              }
+                              className='rounded border border-rose-500/40 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-rose-300 transition hover:border-rose-400/70 hover:text-rose-200 disabled:opacity-40'
+                            >
+                              Ban
+                            </button>
+                          )}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
       {!players ? (
         <Loading />
       ) : players.length === 0 ? (
@@ -997,10 +1347,13 @@ async function delJSON<T>(url: string): Promise<T | null> {
 function FeedbackCard({
   f,
   onStatus,
+  onBan,
 }: {
   f: FeedbackRow;
   onStatus: (id: number, status: FeedbackRow['status']) => void;
+  onBan?: (guestId: string, playerName: string) => void;
 }) {
+  const guest = isGuestId(f.playerId);
   return (
     <div className="rounded-lg border border-white/10 bg-black/30 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1023,10 +1376,22 @@ function FeedbackCard({
         </select>
       </div>
       <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/70">{f.body}</p>
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-white/35">
-        <span className="text-white/55">{f.playerName}{f.playerId ? '' : ' · guest'}</span>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] text-white/35">
+        <span className="text-white/55">
+          {f.playerName}
+          {(guest || !f.playerId) && <span className='text-white/30'> · guest</span>}
+        </span>
         <span>{ago(f.ts)}</span>
         {f.ip && <span>{f.ip}</span>}
+        {guest && onBan && (
+          <button
+            onClick={() => onBan(f.playerId, f.playerName)}
+            title='Ban this guest by their anonymous uuid'
+            className='ml-auto rounded border border-rose-500/40 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-rose-300 transition hover:border-rose-400/70 hover:text-rose-200'
+          >
+            Ban guest
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1041,6 +1406,7 @@ function FeedbackTab() {
   const [loading, setLoading] = useState(true);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const ban = useGuestBan();
 
   const load = useCallback(async (status: string, type: string, before?: number) => {
     setLoading(true);
@@ -1135,6 +1501,12 @@ function FeedbackTab() {
           {error}
         </div>
       )}
+      {ban.msg && (
+        <div className="mb-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200">
+          {ban.msg}
+        </div>
+      )}
+      {ban.target && <BanGuestModal guest={ban.target} onClose={ban.close} onResult={ban.report} />}
       {rows.length === 0 && !loading ? (
         <Empty label="No feedback yet." />
       ) : rows.length === 0 ? (
@@ -1142,7 +1514,7 @@ function FeedbackTab() {
       ) : (
         <div className="flex flex-col gap-2">
           {rows.map((f) => (
-            <FeedbackCard key={f.id} f={f} onStatus={updateStatus} />
+            <FeedbackCard key={f.id} f={f} onStatus={updateStatus} onBan={ban.open} />
           ))}
         </div>
       )}
@@ -1204,11 +1576,14 @@ function TicketCard({
   t,
   onStatus,
   onReplied,
+  onBan,
 }: {
   t: TicketRow;
   onStatus: (id: number, status: TicketRow['status']) => void;
   onReplied: () => void;
+  onBan?: (guestId: string, playerName: string) => void;
 }) {
+  const guest = isGuestId(t.playerId);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1238,17 +1613,28 @@ function TicketCard({
           </span>
           <span className="font-medium text-white/85">{t.subject}</span>
         </div>
-        <select
-          value={t.status}
-          onChange={(e) => onStatus(t.id, e.target.value as TicketRow['status'])}
-          className={`rounded-md border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] outline-none focus:border-cyan-400/60 ${TK_STATUS_COLOR[t.status] ?? 'text-white/70'}`}
-        >
-          {TK_STATUSES.map((s) => (
-            <option key={s} value={s} className="bg-zinc-900 text-white">
-              {TK_STATUS_LABEL[s]}
-            </option>
-          ))}
-        </select>
+        <span className="flex items-center gap-2">
+          {guest && onBan && (
+            <button
+              onClick={() => onBan(t.playerId, t.playerName)}
+              title='Ban this guest by their anonymous uuid'
+              className='rounded border border-rose-500/40 px-1.5 py-1 text-[9px] uppercase tracking-wider text-rose-300 transition hover:border-rose-400/70 hover:text-rose-200'
+            >
+              Ban guest
+            </button>
+          )}
+          <select
+            value={t.status}
+            onChange={(e) => onStatus(t.id, e.target.value as TicketRow['status'])}
+            className={`rounded-md border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] outline-none focus:border-cyan-400/60 ${TK_STATUS_COLOR[t.status] ?? 'text-white/70'}`}
+          >
+            {TK_STATUSES.map((s) => (
+              <option key={s} value={s} className="bg-zinc-900 text-white">
+                {TK_STATUS_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        </span>
       </div>
       <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/70">{t.body}</p>
       {t.replies.length > 0 && (
@@ -1305,6 +1691,7 @@ function SupportTab() {
   const [loading, setLoading] = useState(true);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const ban = useGuestBan();
 
   const load = useCallback(async (status: string, before?: number) => {
     setLoading(true);
@@ -1382,6 +1769,12 @@ function SupportTab() {
           {error}
         </div>
       )}
+      {ban.msg && (
+        <div className="mb-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200">
+          {ban.msg}
+        </div>
+      )}
+      {ban.target && <BanGuestModal guest={ban.target} onClose={ban.close} onResult={ban.report} />}
       {rows.length === 0 && !loading ? (
         <Empty label="No tickets yet." />
       ) : rows.length === 0 ? (
@@ -1389,7 +1782,7 @@ function SupportTab() {
       ) : (
         <div className="flex flex-col gap-2">
           {rows.map((t) => (
-            <TicketCard key={t.id} t={t} onStatus={updateStatus} onReplied={refresh} />
+            <TicketCard key={t.id} t={t} onStatus={updateStatus} onReplied={refresh} onBan={ban.open} />
           ))}
         </div>
       )}
@@ -1416,6 +1809,7 @@ type CommunityMsg = {
   id: number;
   channel: string;
   ts: number;
+  playerId: string;
   playerName: string;
   text: string;
   deleted: boolean;
@@ -1434,6 +1828,7 @@ function CommunityTab() {
   const [loading, setLoading] = useState(true);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const ban = useGuestBan();
 
   const load = useCallback(async (before?: number) => {
     setLoading(true);
@@ -1473,6 +1868,12 @@ function CommunityTab() {
           {error}
         </div>
       )}
+      {ban.msg && (
+        <div className="mb-2 rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200">
+          {ban.msg}
+        </div>
+      )}
+      {ban.target && <BanGuestModal guest={ban.target} onClose={ban.close} onResult={ban.report} />}
       {rows.length === 0 && !loading ? (
         <Empty label="No community messages yet." />
       ) : rows.length === 0 ? (
@@ -1491,12 +1892,23 @@ function CommunityTab() {
                   <span className="text-white/30">{ago(m.ts)}</span>
                 </div>
                 {!m.deleted ? (
-                  <button
-                    onClick={() => void remove(m.id)}
-                    className="rounded-md border border-rose-400/30 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-rose-300 transition hover:bg-rose-400/10"
-                  >
-                    Delete
-                  </button>
+                  <span className="flex items-center gap-1.5">
+                    {isGuestId(m.playerId) && (
+                      <button
+                        onClick={() => ban.open(m.playerId, m.playerName)}
+                        title='Ban this guest by their anonymous uuid'
+                        className="rounded-md border border-amber-400/30 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-amber-300 transition hover:bg-amber-400/10"
+                      >
+                        Ban guest
+                      </button>
+                    )}
+                    <button
+                      onClick={() => void remove(m.id)}
+                      className="rounded-md border border-rose-400/30 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-rose-300 transition hover:bg-rose-400/10"
+                    >
+                      Delete
+                    </button>
+                  </span>
                 ) : (
                   <span className="font-mono text-[10px] italic text-white/30">removed</span>
                 )}

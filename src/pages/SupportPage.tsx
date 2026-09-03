@@ -190,8 +190,9 @@ export default function SupportPage() {
   const [sentId, setSentId] = useState<number | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
 
-  // The player's own tickets (only meaningful when logged in — the server keys
-  // them to the account; a guest gets an empty list).
+  // The caller's own tickets — keyed to the account when logged in, or to the
+  // browser's anonymous guest identity otherwise (see server/support.ts), so a
+  // guest's open thread is visible back to them on the same browser.
   const loadTickets = useCallback(async () => {
     try {
       const r = await fetch('/api/support/tickets', { credentials: 'same-origin' });
@@ -331,7 +332,7 @@ export default function SupportPage() {
                   Goes straight to the dev behind the admin panel.
                   {auth.account
                     ? ` Logged in as ${auth.account.username} — your ticket is attached to this account.`
-                    : ' Log in in the game to attach your account and track the ticket.'}
+                    : " Tickets opened here are tracked on this browser automatically — no account needed."}
                 </p>
                 {err && <div className="mt-3 text-[12px] text-rose-300">{err}</div>}
                 <button
@@ -350,30 +351,22 @@ export default function SupportPage() {
             <h2 className="flex items-center gap-3 font-display text-[11px] font-bold uppercase tracking-[0.26em] text-cyan-200/90">
               Your tickets
               <span className="h-px flex-1 bg-white/10" aria-hidden="true" />
-              {auth.account && (
-                <button
-                  onClick={() => void loadTickets()}
-                  title="Refresh"
-                  aria-label="Refresh tickets"
-                  className="font-mono text-[11px] font-bold text-cyan-300/70 transition hover:text-cyan-200"
-                >
-                  ⟳
-                </button>
-              )}
+              <button
+                onClick={() => void loadTickets()}
+                title="Refresh"
+                aria-label="Refresh tickets"
+                className="font-mono text-[11px] font-bold text-cyan-300/70 transition hover:text-cyan-200"
+              >
+                ⟳
+              </button>
             </h2>
 
-            {!auth.account ? (
-              <p className="mt-5 text-[13px] leading-relaxed text-white/45">
-                Log in in the game to see your ticket history and replies here. You
-                can still open a ticket as a guest — it’ll come through with a random
-                <span className="text-white/70"> Guest</span> name.
-              </p>
-            ) : tickets === null ? (
+            {tickets === null ? (
               <p className="mt-5 font-mono text-[12px] text-white/35">Loading…</p>
             ) : tickets.length === 0 ? (
               <p className="mt-5 text-[13px] leading-relaxed text-white/45">
-                No tickets yet — anything you open below will show up here with its
-                status and the reply thread.
+                No tickets from this browser yet — anything you open below shows up
+                here with its status and the reply thread.
               </p>
             ) : (
               <ul className="mt-4 flex flex-col gap-3">

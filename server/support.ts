@@ -6,7 +6,7 @@
 // caps + a tight rate limit, mirroring server/feedback.ts.
 
 import { Router, type Request } from 'express';
-import { accountId } from './auth';
+import { accountId, ensureGuestId, guestId } from './auth';
 import {
   TICKET_CATEGORIES,
   addPlayerTicketReply,
@@ -99,9 +99,13 @@ supportRouter.post('/support/tickets', (req, res) => {
   // client-supplied name (cosmetic only); otherwise Guest.
   const account = id ? findUserById(id) : null;
   const playerName = account?.username || str(req, 'name').slice(0, 32) || 'Guest';
+  // Attribution: accounts by their account id; guests by their stable igpid
+  // uuid (minted on first ticket) so a guest's thread follows one identity the
+  // admin can moderate (reply + ban-by-uuid from the ticket).
+  const playerId = id || ensureGuestId(req, res);
 
   const newId = submitTicket({
-    playerId: id,
+    playerId,
     playerName,
     category,
     subject,
@@ -117,7 +121,7 @@ supportRouter.post('/support/tickets', (req, res) => {
 
   logEvent({
     event: 'support.ticket',
-    actorId: id,
+    actorId: playerId,
     actorName: playerName,
     targetId: String(newId),
     detail: { category, subject },
@@ -128,16 +132,19 @@ supportRouter.post('/support/tickets', (req, res) => {
   res.json({ ok: true, id: newId });
 });
 
-// A logged-in player's own tickets, newest first, with the full thread attached
-// (replies are cheap and capped at 200 per ticket). Guests have no stable
-// identity to key tickets to, so they get an empty list — the form still works.
+// The caller's own tickets, newest first, with the full thread attached
+// (replies are cheap and capped at 200 per ticket). Accounts key off their
+// account id; guests key off their stable igpid uuid (tickets opened in the
+// same browser are attributed to it), so a guest's open thread is visible back
+// to them. No identity at all → an empty list — the form still works.
 supportRouter.get('/support/tickets', (req, res) => {
   const id = accountId(req);
-  if (!id) {
+  const identity = id || guestId(req);
+  if (!identity) {
     res.json({ tickets: [] });
     return;
   }
-  const tickets = listTickets({ limit: 20, playerId: id });
+  const tickets = listTickets({ limit: 20, playerId: identity });
   const withReplies = tickets.map((t) => ({ ...t, replies: listReplies(t.id) }));
   res.json({ tickets: withReplies });
 });
@@ -147,11 +154,12 @@ const REPLY_MAX = 2000;
 
 // The ticket's author replying back (the admin replies via /api/admin/support).
 // Keeps the thread alive for the admin and reopens a resolved/closed ticket.
-// Session-only (a reply must be attributable to an account), rate-limited like
-// submissions, audit-logged.
+// The author is the logged-in account when present, else the browser's guest
+// identity (igpid uuid) — a guest's reply is attributable to the same uuid their
+// ticket is keyed to. Rate-limited like submissions, audit-logged.
 supportRouter.post('/support/tickets/:id/replies', (req, res) => {
-  const accountIdVal = accountId(req);
-  if (!accountIdVal) {
+  const identity = accountId(req) || guestId(req);
+  if (!identity) {
     res.status(401).json({ error: 'unauthorized' });
     return;
   }
@@ -167,7 +175,7 @@ supportRouter.post('/support/tickets/:id/replies', (req, res) => {
   }
 
   const now = Date.now();
-  if (!allowPost(accountIdVal, now)) {
+  if (!allowPost(identity, now)) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
@@ -178,21 +186,24 @@ supportRouter.post('/support/tickets/:id/replies', (req, res) => {
     return;
   }
   // Ownership: you can only reply to your OWN ticket.
-  if (ticket.playerId !== accountIdVal) {
+  if (ticket.playerId !== identity) {
     res.status(403).json({ error: 'forbidden' });
     return;
   }
 
-  const account = findUserById(accountIdVal);
-  const replyId = addPlayerTicketReply(id, account?.username || 'Guest', text, now);
+  const account = identity ? findUserById(identity) : null;
+  // Author: the account username, else the name the guest opened the ticket
+  // under (keeps the thread's voice consistent for the admin side).
+  const author = account?.username || ticket.playerName || 'Guest';
+  const replyId = addPlayerTicketReply(id, author, text, now);
   if (!replyId) {
     res.status(500).json({ error: 'server_error' });
     return;
   }
   logEvent({
     event: 'support.reply',
-    actorId: accountIdVal,
-    actorName: account?.username || 'Guest',
+    actorId: identity,
+    actorName: author,
     targetId: String(id),
     detail: { subject: ticket.subject },
     ip: req.ip,

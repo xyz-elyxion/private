@@ -12,6 +12,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { accountId } from './auth';
+import type { OnlinePlayer } from './elyxion-game';
 import { acCounts, acRecent, type AcKind } from './anticheat';
 import {
   FEEDBACK_STATUSES,
@@ -82,9 +83,10 @@ export function setLiveCountsSource(fn: () => LiveCounts): void {
 // place live sockets + the ban table meet). Defaults are safe no-ops so the
 // routes are well-formed even before the socket attaches.
 type BanListEntry = {
-  kind: 'name' | 'ip';
-  name: string; // display name ('', for direct IP bans)
+  kind: 'name' | 'ip' | 'guest';
+  name: string; // display name ('', for direct IP / guest bans)
   ip?: string; // set for IP bans
+  guestId?: string; // set for guest-uuid bans
   reason: string;
   bannedBy: string;
   createdAt: number;
@@ -92,10 +94,19 @@ type BanListEntry = {
 };
 type ModerationActions = {
   kick: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] };
-  // Name ban — auto-captures the online target's IP so a reconnecting guest
-  // can't dodge it by renumbering their "Guest N" name. `bannedUntil`: epoch ms
-  // the ban lifts (0 = permanent).
+  // Kick a guest by their anonymous uuid (the igpid cookie) — targets every
+  // live connection carrying that identity.
+  kickGuest: (guestId: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  // Name ban — auto-captures the online target's IP AND guest uuid so a
+  // reconnecting guest can't dodge it by renumbering their "Guest N" name.
+  // `bannedUntil`: epoch ms the ban lifts (0 = permanent).
   ban: (name: string, reason: string, actorName: string, bannedUntil?: number) => {
+    found: boolean;
+    names: string[];
+  };
+  // Guest-uuid ban — persists (refused at the guest's next connect even with a
+  // fresh name/IP), auto-captures the online guest's IP, and boots them now.
+  banGuest: (guestId: string, reason: string, actorName: string, bannedUntil?: number) => {
     found: boolean;
     names: string[];
   };
@@ -105,16 +116,23 @@ type ModerationActions = {
     names: string[];
   };
   unban: (name: string, actorName: string) => boolean;
+  unbanGuest: (guestId: string, actorName: string) => boolean;
   unbanIp: (ip: string, actorName: string) => boolean;
   list: () => BanListEntry[];
+  // Live players + guests (guests carry their uuid/IP for moderation).
+  online: () => OnlinePlayer[];
 };
 let moderation: ModerationActions = {
   kick: () => ({ found: false, names: [] }),
+  kickGuest: () => ({ found: false, names: [] }),
   ban: () => ({ found: false, names: [] }),
+  banGuest: () => ({ found: false, names: [] }),
   banIp: () => ({ found: false, names: [] }),
   unban: () => false,
+  unbanGuest: () => false,
   unbanIp: () => false,
   list: () => [],
+  online: () => [],
 };
 export function setModerationActions(m: ModerationActions): void {
   moderation = m;
@@ -177,6 +195,18 @@ function denyToken(req: Request, res: Response): boolean {
 }
 
 const cleanUsername = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
+// A guest target is the anonymous igpid uuid (an RFC 4122 lowercase hex-uuid
+// minted into the igpid cookie). Validate the shape so junk can't land in the
+// guest-ban table (a non-uuid row would sit inert forever); lowercased for the
+// ban store.
+const GUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const cleanGuestId = (v: unknown): string => {
+  if (typeof v !== 'string') return '';
+  const g = v.trim().toLowerCase();
+  return GUEST_ID_RE.test(g) ? g : '';
+};
+
 
 // Set/clear a player's verified blue-check (Krunker-style), by username.
 adminRouter.post('/verify', (req, res) => {
@@ -465,17 +495,37 @@ adminRouter.delete('/announcements/:id', (req, res) => {
 // never moderate. The ban list (GET) is read-only, so it stays token-readable.
 
 // Kick a player out of a live match / the lobby: disconnected immediately, no
-// ban, resume slot released. Unknown/offline name → 404 'not_online'.
+// ban, resume slot released. Target a display NAME ({ name }, case-insensitive)
+// or a guest by their uuid ({ guest }). Unknown/offline target → 404
+// 'not_online'.
 adminRouter.post('/kick', (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const name = cleanUsername(body.name);
+  const guest = cleanGuestId(body.guest);
   const reason = cleanUsername(body.reason).slice(0, 200);
-  if (!name) {
-    res.status(400).json({ error: 'bad_name' });
+  const admin = (req as AdminRequest).admin;
+  if (guest) {
+    const r = moderation.kickGuest(guest, reason, admin.username);
+    logEvent({
+      event: 'admin.kick_guest',
+      actorId: admin.id,
+      actorName: admin.username,
+      targetId: guest,
+      detail: { guest, reason, names: r.names },
+      ip: req.ip,
+    });
+    if (!r.found) {
+      res.status(404).json({ error: 'not_online', guest });
+      return;
+    }
+    res.json({ ok: true, guest, names: r.names, reason });
     return;
   }
-  const admin = (req as AdminRequest).admin;
+  if (!name) {
+    res.status(400).json({ error: 'bad_target' });
+    return;
+  }
   const r = moderation.kick(name, reason, admin.username);
   logEvent({
     event: 'admin.kick',
@@ -491,15 +541,18 @@ adminRouter.post('/kick', (req, res) => {
   res.json({ ok: true, names: r.names, reason });
 });
 
-// Ban a display name (case-insensitive, persisted) OR an IP address directly
-// ({ ip } body). A name ban kicks everyone live under that name and auto-
-// captures their IPs (a reconnecting guest can't dodge it by renumbering). An
-// IP ban blocks the address at the door and boots whoever is on it now.
-// Optional { durationMs } makes it a timed ban (0/absent = permanent).
+// Ban a display name (case-insensitive, persisted), a guest uuid ({ guest }), OR
+// an IP address directly ({ ip }). A name ban kicks everyone live under that
+// name and auto-captures their IPs + guest uuids (a reconnecting guest can't
+// dodge it by renumbering). A guest ban persists against the uuid (refused at
+// the guest's next connect) and boots them now. An IP ban blocks the address at
+// the door and boots whoever is on it now. Optional { durationMs } makes it a
+// timed ban (0/absent = permanent).
 adminRouter.post('/ban', (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const name = cleanUsername(body.name);
+  const guest = cleanGuestId(body.guest);
   const ip = cleanUsername(body.ip);
   const reason = cleanUsername(body.reason).slice(0, 200);
   const durationMs =
@@ -507,11 +560,24 @@ adminRouter.post('/ban', (req, res) => {
       ? Math.min(Math.floor(body.durationMs), 10 * 365 * 86_400_000) // cap: ~10y
       : 0;
   const bannedUntil = durationMs > 0 ? Date.now() + durationMs : 0;
-  if (!name && !ip) {
+  if (!name && !guest && !ip) {
     res.status(400).json({ error: 'bad_target' });
     return;
   }
   const admin = (req as AdminRequest).admin;
+  if (guest) {
+    const r = moderation.banGuest(guest, reason, admin.username, bannedUntil);
+    logEvent({
+      event: 'admin.ban_guest',
+      actorId: admin.id,
+      actorName: admin.username,
+      targetId: guest,
+      detail: { guest, reason, durationMs, bannedUntil, names: r.names },
+      ip: req.ip,
+    });
+    res.json({ ok: true, guest, names: r.names, reason, bannedUntil });
+    return;
+  }
   if (ip) {
     const r = moderation.banIp(ip, reason, admin.username, bannedUntil);
     logEvent({
@@ -535,18 +601,37 @@ adminRouter.post('/ban', (req, res) => {
   res.json({ ok: true, names: r.names, name, reason, bannedUntil });
 });
 
-// Lift a ban — by name ({ name }, also lifts the IPs that ban captured) or by
-// IP ({ ip }). No-op (404) when nothing matched.
+// Lift a ban — by name ({ name }, also lifts the IPs + guest uuids that ban
+// captured), by guest uuid ({ guest }, also lifts the IP it captured), or by IP
+// ({ ip }). No-op (404) when nothing matched.
 adminRouter.post('/unban', (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const name = cleanUsername(body.name);
+  const guest = cleanGuestId(body.guest);
   const ip = cleanUsername(body.ip);
-  if (!name && !ip) {
+  if (!name && !guest && !ip) {
     res.status(400).json({ error: 'bad_target' });
     return;
   }
   const admin = (req as AdminRequest).admin;
+  if (guest) {
+    const ok = moderation.unbanGuest(guest, admin.username);
+    logEvent({
+      event: 'admin.unban_guest',
+      actorId: admin.id,
+      actorName: admin.username,
+      targetId: guest,
+      detail: { guest },
+      ip: req.ip,
+    });
+    if (!ok) {
+      res.status(404).json({ error: 'not_banned', guest });
+      return;
+    }
+    res.json({ ok: true, guest });
+    return;
+  }
   if (ip) {
     const ok = moderation.unbanIp(ip, admin.username);
     logEvent({
@@ -581,6 +666,13 @@ adminRouter.post('/unban', (req, res) => {
 // Current ban list, newest first (for review / the dashboard). Read-only.
 adminRouter.get('/bans', (_req, res) => {
   res.json({ bans: moderation.list() });
+});
+
+// Live players right now — accounts AND each online guest (uuid + IP + where
+// they are) — for the admin online list + per-guest kick/ban. Read-only, so a
+// bearer token may view it too (unlike the mutations above).
+adminRouter.get('/online', (_req, res) => {
+  res.json({ online: moderation.online() });
 });
 
 // Recent audit events for moderation review / the future metrics dashboard.

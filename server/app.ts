@@ -30,7 +30,14 @@ import { supportRouter } from './support';
 import { communityRouter } from './community';
 import { tempReplaysRouter } from './tempReplays';
 import { announcementsRouter } from './announcements';
-import { authRouter, adminUsernamesFromEnv } from './auth';
+import {
+  accountIdFromCookieHeader,
+  adminUsernamesFromEnv,
+  authRouter,
+  guestIdFromCookieHeader,
+  guestSetCookieHeader,
+  mintGuestId,
+} from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource, setModerationActions } from './admin';
 import { syncAdminsFromEnv } from './db';
 import { attachElyxionWs } from './elyxion-game';
@@ -284,6 +291,21 @@ const elyxionWss = new WebSocketServer({
   noServer: true,
   maxPayload: 16 * 1024,
   perMessageDeflate: false,
+});
+// Mint the anonymous guest identity (igpid) on the WS handshake itself, so a
+// guest who jumps straight into a match — possibly before any /api response
+// has set the cookie — still connects with a stable uuid (it's also how they'd
+// get one at all: the socket request is a plain GET and never hits the Express
+// routers). Fires for every handled upgrade right before the 101 response is
+// written; the minted uuid is stashed on the request so the game's connection
+// handler resolves it without re-parsing cookies.
+elyxionWss.on('headers', (headers, req) => {
+  const cookie = req.headers.cookie;
+  if (accountIdFromCookieHeader(cookie)) return; // logged in → the account is the identity
+  if (guestIdFromCookieHeader(cookie)) return; // already has a guest identity
+  const uuid = mintGuestId();
+  headers.push(`Set-Cookie: ${guestSetCookieHeader(uuid)}`);
+  (req as { igpid?: string }).igpid = uuid;
 });
 const elyxion = attachElyxionWs(elyxionWss);
 setLiveCountsSource(elyxion.liveCounts);

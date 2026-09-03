@@ -5,7 +5,7 @@
 // length caps + a tight rate limit to blunt spam.
 
 import { Router, type Request } from 'express';
-import { accountId } from './auth';
+import { accountId, ensureGuestId } from './auth';
 import { FEEDBACK_TYPES, findUserById, logEvent, submitFeedback, type FeedbackType } from './db';
 
 export const feedbackRouter = Router();
@@ -88,9 +88,13 @@ feedbackRouter.post('/feedback', (req, res) => {
   // client-supplied name (cosmetic only); otherwise Guest.
   const account = id ? findUserById(id) : null;
   const playerName = account?.username || str(req, 'name').slice(0, 32) || 'Guest';
+  // Attribution: accounts by their account id; guests by their stable igpid
+  // uuid (minted on first guest submit) so admin moderation can tie the row to
+  // one guest identity and ban it from here.
+  const playerId = id || ensureGuestId(req, res);
 
   const newId = submitFeedback({
-    playerId: id,
+    playerId,
     playerName,
     type,
     title,
@@ -106,7 +110,7 @@ feedbackRouter.post('/feedback', (req, res) => {
 
   logEvent({
     event: 'feedback.submitted',
-    actorId: id,
+    actorId: playerId,
     actorName: playerName,
     targetId: String(newId),
     detail: { type, title },

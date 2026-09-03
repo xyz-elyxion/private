@@ -143,6 +143,22 @@ CREATE TABLE IF NOT EXISTS elyxion_ip_bans (
   -- epoch ms the ban lifts; 0 = permanent (mirrors elyxion_bans.banned_until)
   banned_until INTEGER NOT NULL DEFAULT 0
 );
+-- Moderation: banned guest identities (the anonymous igpid UUID cookie). A
+-- guest's per-room "Guest N" name renumbers every session, so since guests now
+-- have a stable browser identity, THAT is their moderation handle: a guest ban
+-- refuses the uuid at connect regardless of name or IP. Banning an ONLINE guest
+-- auto-captures their IP here too (captured_name ties it to the name ban that
+-- captured it, mirroring elyxion_ip_bans) so clearing cookies (fresh uuid) on
+-- the same address can't dodge it. Enforcement is at connect.
+CREATE TABLE IF NOT EXISTS elyxion_guest_bans (
+  guest_id      TEXT PRIMARY KEY,
+  reason        TEXT NOT NULL DEFAULT '',
+  banned_by     TEXT NOT NULL DEFAULT '',
+  captured_name TEXT NOT NULL DEFAULT '', -- name_lower that captured this guest ('' = direct ban by uuid)
+  created_at    INTEGER NOT NULL,
+  -- epoch ms the ban lifts; 0 = permanent (mirrors the other ban tables)
+  banned_until  INTEGER NOT NULL DEFAULT 0
+);
 `);
 
 // Additive progression columns. SQLite has no `ADD COLUMN IF NOT EXISTS`, and we
@@ -1154,8 +1170,9 @@ function isAdminId(playerId: string): boolean {
 // bannedUntil: epoch ms the ban lifts; 0 = permanent.
 export type BanRow = { name: string; reason: string; bannedBy: string; createdAt: number; bannedUntil: number };
 export type IpBanRow = { ip: string; reason: string; bannedBy: string; createdAt: number; bannedUntil: number };
+export type GuestBanRow = { guestId: string; reason: string; bannedBy: string; createdAt: number; bannedUntil: number };
 export type BanListItem =
-  | (BanRow & { kind: 'name'; ip?: undefined })
+  | (BanRow & { kind: 'name'; ip?: undefined; guestId?: undefined })
   | {
       kind: 'ip';
       name: string;
@@ -1164,6 +1181,17 @@ export type BanListItem =
       bannedBy: string;
       createdAt: number;
       bannedUntil: number;
+      guestId?: undefined;
+    }
+  | {
+      kind: 'guest';
+      name: string;
+      guestId: string;
+      reason: string;
+      bannedBy: string;
+      createdAt: number;
+      bannedUntil: number;
+      ip?: undefined;
     };
 
 // A ban is active while permanent (0) or not yet expired.
@@ -1197,6 +1225,31 @@ const ipBanListStmt = sqlite.prepare(
   `SELECT ip, reason, banned_by, created_at, banned_until FROM elyxion_ip_bans
    WHERE banned_until = 0 OR banned_until > ? ORDER BY created_at DESC`,
 );
+// Guest-uuid rows: a row with captured_name = '' is a direct ban by uuid; a row
+// tied to a name_lower was auto-captured from an online guest during a name ban
+// and lifts with that name ban (see removeBan).
+const guestBanCheckStmt = sqlite.prepare(
+  `SELECT guest_id, reason, banned_by, created_at, banned_until FROM elyxion_guest_bans WHERE guest_id = ?`,
+);
+const guestBanInsertStmt = sqlite.prepare(
+  `INSERT OR REPLACE INTO elyxion_guest_bans (guest_id, reason, banned_by, captured_name, created_at, banned_until)
+   VALUES (?, ?, ?, ?, ?, ?)`,
+);
+const guestBanDeleteStmt = sqlite.prepare(`DELETE FROM elyxion_guest_bans WHERE guest_id = ?`);
+const guestBanDeleteByNameStmt = sqlite.prepare(
+  `DELETE FROM elyxion_guest_bans WHERE captured_name = ?`,
+);
+const guestBanListStmt = sqlite.prepare(
+  `SELECT guest_id, reason, banned_by, created_at, banned_until FROM elyxion_guest_bans
+   WHERE banned_until = 0 OR banned_until > ? ORDER BY created_at DESC`,
+);
+
+const normGuest = (guestId: string): string => guestId.trim().toLowerCase();
+// A usable guest id is a non-empty, UUID-ish token (the igpid cookie value).
+const usableGuest = (guestId: string): boolean => {
+  const g = normGuest(guestId);
+  return g.length > 0;
+};
 
 const normIp = (ip: string): string => ip.trim();
 // 'unknown' is the debounced fallback when no forwarding header exists — never
@@ -1246,6 +1299,24 @@ export function getBanByIp(ip: string): IpBanRow | undefined {
   };
 }
 
+// Ban row for a guest identity (undefined = not banned) — the reason rides along
+// so the kicked/blocked message can say why. Reads are expiry-aware, like the
+// name/IP lookups.
+export function getBanByGuestId(guestId: string): GuestBanRow | undefined {
+  if (!usableGuest(guestId)) return undefined;
+  const r = guestBanCheckStmt.get(normGuest(guestId)) as
+    | { guest_id: string; reason: string; banned_by: string; created_at: number; banned_until: number }
+    | undefined;
+  if (!r || !banActive(r.banned_until, Date.now())) return undefined;
+  return {
+    guestId: r.guest_id,
+    reason: r.reason,
+    bannedBy: r.banned_by,
+    createdAt: r.created_at,
+    bannedUntil: r.banned_until,
+  };
+}
+
 // Name ban; when the target is online their IP is auto-captured too (see
 // addIpBan), so a reconnecting guest can't dodge the ban by renumbering.
 // `capturedFrom` is the banned player's name_lower, tying the IP row to this ban.
@@ -1282,31 +1353,73 @@ export function addIpBan(
   return true;
 }
 
+// Direct guest-uuid ban (or the db half of a ban captured from a name ban).
+// `capturedFrom` is the banned player's name_lower, tying the guest row to the
+// name ban it came from ('' = direct). bannedUntil mirrors the other ban tables.
+export function addGuestBan(
+  guestId: string,
+  reason: string,
+  bannedBy: string,
+  capturedFrom: string = '',
+  now: number = Date.now(),
+  bannedUntil: number = 0,
+): boolean {
+  if (!usableGuest(guestId)) return false;
+  guestBanInsertStmt.run(
+    normGuest(guestId),
+    reason || '',
+    bannedBy || '',
+    capturedFrom,
+    now,
+    bannedUntil,
+  );
+  return true;
+}
+
 // Delete lapsed timed bans (permanent rows survive). Idempotent — safe to run on
 // a timer; cheap enough that running it on the game sweep is fine.
-export function sweepExpiredBans(now: number = Date.now()): { nameBans: number; ipBans: number } {
+export function sweepExpiredBans(now: number = Date.now()): {
+  nameBans: number;
+  ipBans: number;
+  guestBans: number;
+} {
   const nameBans = sqlite
     .prepare(`DELETE FROM elyxion_bans WHERE banned_until > 0 AND banned_until <= ?`)
     .run(now).changes;
   const ipBans = sqlite
     .prepare(`DELETE FROM elyxion_ip_bans WHERE banned_until > 0 AND banned_until <= ?`)
     .run(now).changes;
-  return { nameBans, ipBans };
+  const guestBans = sqlite
+    .prepare(`DELETE FROM elyxion_guest_bans WHERE banned_until > 0 AND banned_until <= ?`)
+    .run(now).changes;
+  return { nameBans, ipBans, guestBans };
 }
 
-// Lifting a name ban also lifts the IPs it auto-captured (an unban must mean
-// "this player can come back"). Manual /banip rows (capturedFrom '') survive.
+// Lifting a name ban also lifts the IPs AND guest uuids it auto-captured (an
+// unban must mean "this player can come back"). Manual /banip rows
+// (capturedFrom '') survive.
 export function removeBan(name: string): boolean {
   const lower = name.trim().toLowerCase();
   if (!lower) return false;
   let removed = banDeleteStmt.run(lower).changes > 0;
   removed = ipBanDeleteByNameStmt.run(lower).changes > 0 || removed;
+  removed = guestBanDeleteByNameStmt.run(lower).changes > 0 || removed;
   return removed;
 }
 
 export function removeIpBan(ip: string): boolean {
   if (!usableIp(ip)) return false;
   return ipBanDeleteStmt.run(normIp(ip)).changes > 0;
+}
+
+// Lifting a guest-uuid ban also lifts the IP that ban captured (the uuid was the
+// target; the address was only collateral for the cookie-clearing dodge).
+export function removeGuestBan(guestId: string): boolean {
+  const g = normGuest(guestId);
+  if (!g) return false;
+  let removed = guestBanDeleteStmt.run(g).changes > 0;
+  removed = ipBanDeleteByNameStmt.run(g).changes > 0 || removed;
+  return removed;
 }
 
 export function listBans(): BanListItem[] {
@@ -1325,6 +1438,13 @@ export function listBans(): BanListItem[] {
     created_at: number;
     banned_until: number;
   }[];
+  const guestRows = guestBanListStmt.all(now) as {
+    guest_id: string;
+    reason: string;
+    banned_by: string;
+    created_at: number;
+    banned_until: number;
+  }[];
   const all: BanListItem[] = [
     ...nameRows.map((r) => ({
       kind: 'name' as const,
@@ -1338,6 +1458,15 @@ export function listBans(): BanListItem[] {
       kind: 'ip' as const,
       name: '',
       ip: r.ip,
+      reason: r.reason,
+      bannedBy: r.banned_by,
+      createdAt: r.created_at,
+      bannedUntil: r.banned_until,
+    })),
+    ...guestRows.map((r) => ({
+      kind: 'guest' as const,
+      name: '',
+      guestId: r.guest_id,
       reason: r.reason,
       bannedBy: r.banned_by,
       createdAt: r.created_at,

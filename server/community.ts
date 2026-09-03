@@ -4,7 +4,7 @@
 // "Guest"; logged-in accounts post as their username with admin/verified snapshots.
 
 import { Router } from 'express';
-import { accountId } from './auth';
+import { accountId, ensureGuestId } from './auth';
 import { containsProfanity } from './profanity';
 import {
   COMMUNITY_CHANNELS,
@@ -109,10 +109,14 @@ communityRouter.post('/community/messages', (req, res) => {
 
   const account = id ? findUserById(id) : null;
   const playerName = account?.username || 'Guest';
+  // Attribution: accounts by their account id; guests by their stable igpid
+  // uuid (minted here on first guest post) so all of one guest's content ties
+  // to a single identity an admin can moderate (soft-delete + ban-by-uuid).
+  const playerId = id || ensureGuestId(req, res);
 
   const newId = postCommunityMessage({
     channel,
-    playerId: id,
+    playerId,
     playerName,
     text,
     admin: account?.isAdmin ?? false,
@@ -132,7 +136,7 @@ communityRouter.post('/community/messages', (req, res) => {
       id: newId,
       channel,
       ts: now,
-      playerId: id,
+      playerId,
       playerName,
       text,
       deleted: false,

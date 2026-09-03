@@ -62,8 +62,10 @@ import {
 import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
 import {
   addBan,
+  addGuestBan,
   addIpBan,
   findUserById,
+  getBanByGuestId,
   getBanByIp,
   getBanByName,
   getRankedProfile,
@@ -72,11 +74,12 @@ import {
   listBans,
   recordRankedResult,
   removeBan,
+  removeGuestBan,
   removeIpBan,
   sweepExpiredBans,
   unlockedSetFor,
 } from './db';
-import { accountIdFromCookieHeader } from './auth';
+import { accountIdFromCookieHeader, guestIdFromCookieHeader } from './auth';
 import { acLog, acThrottledLog } from './anticheat';
 import { containsProfanity } from './profanity';
 
@@ -248,6 +251,12 @@ type ClientRecord = {
   crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
+  // Anonymous guest identity (the igpid uuid cookie, minted on the WS upgrade if
+  // no /api response set it first). '' for a logged-in account (the account id
+  // is the identity) or a pre-identity guest. This is the guest's moderation
+  // handle — unlike their per-room "Guest N" name it is stable across
+  // reconnects, so bans keyed to it follow the same browser.
+  guestId: string;
   admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
   verified: boolean; // account is_verified — drives the blue check (echoed in snapshots)
 };
@@ -472,6 +481,24 @@ function rayAabb(
   if (tmax < 0) return null;
   return tmin < 0 ? 0 : tmin;
 }
+
+// One live connection as the admin moderation layer sees it (GET
+// /api/admin/online). Guests are listed individually by their stable uuid — the
+// handle kick/ban target — unlike the public presence broadcast, which only
+// counts them.
+export type OnlinePlayer = {
+  id: ClientId; // socket/connection id (changes on reconnect)
+  name: string; // current display name (account username, or "Guest N" in a room)
+  kind: 'account' | 'guest';
+  playerId?: string; // account id (kind 'account')
+  guestId?: string; // anonymous igpid uuid (kind 'guest')
+  admin: boolean;
+  verified: boolean;
+  ip: string;
+  connectedAt: number;
+  location: 'lobby' | 'in-match' | 'spectating';
+  room?: { id: string; name: string; mode: GameMode; mapId: string; members: number };
+};
 
 export function attachElyxionWs(wss: WebSocketServer) {
   const clients = new Map<ClientId, ClientRecord>();
@@ -1175,6 +1202,19 @@ export function attachElyxionWs(wss: WebSocketServer) {
     return out;
   };
 
+  // Every LIVE connection carrying this guest identity (uuid from the igpid
+  // cookie — the same browser can hold several tabs/sockets).
+  const liveByGuest = (guestId: string): ClientRecord[] => {
+    const needle = guestId.trim().toLowerCase();
+    if (!needle) return [];
+    const out: ClientRecord[] = [];
+    for (const c of clients.values()) {
+      if (c.disconnectedAt > 0) continue;
+      if (c.guestId && c.guestId.toLowerCase() === needle) out.push(c);
+    }
+    return out;
+  };
+
   // Human text for a banned player: the reason plus, for timed bans, when it
   // lifts — shown on the kicked/blocked message so they know it's not forever.
   const banDisplayReason = (ban: { reason: string; bannedUntil: number }): string => {
@@ -1192,7 +1232,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
   const banByName = (name: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
     const targets = liveByName(name);
     const actorName = actor?.name ?? 'moderator';
-    for (const t of targets) addIpBan(t.ip, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
+    for (const t of targets) {
+      addIpBan(t.ip, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
+      // An online GUEST target also gets their stable uuid captured (tied to
+      // this name ban, so /unban <name> lifts it too). Their per-room name
+      // renumbers every reconnect, so the uuid — not the IP alone — is now what
+      // keeps the ban on them.
+      if (t.guestId)
+        addGuestBan(t.guestId, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
+    }
     addBan(name, reason, actorName, undefined, undefined, Date.now(), bannedUntil);
     acLog({
       kind: 'ban',
@@ -1204,6 +1252,37 @@ export function attachElyxionWs(wss: WebSocketServer) {
     });
     const ejectReason = banDisplayReason({ reason, bannedUntil });
     for (const t of targets) ejectClient(t, ejectReason, true, actor);
+    return { found: targets.length > 0, names: targets.map((t) => t.name) };
+  };
+
+  // Direct guest-uuid ban (REST / the admin online list / guest content rows):
+  // persists the uuid ban, boots the guest if they're online now, and auto-
+  // captures their current IP (tied to the uuid) so a cleared cookie — a fresh
+  // uuid on the same address — can't dodge it. Mirrors banByName with the uuid
+  // as the handle; an offline guest (e.g. banned from their content) just gets
+  // the persisted row and is refused at their next connect.
+  const banGuest = (guestId: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
+    const g = guestId.trim().toLowerCase();
+    const targets = liveByGuest(g);
+    const actorName = actor?.name ?? 'moderator';
+    for (const t of targets) addIpBan(t.ip, reason, actorName, g, Date.now(), bannedUntil);
+    addGuestBan(g, reason, actorName, '', Date.now(), bannedUntil);
+    acLog({
+      kind: 'ban',
+      target: g,
+      actor: actorName,
+      detail: 'guest',
+      reason: reason || undefined,
+      bannedUntil: bannedUntil || undefined,
+    });
+    const ejectReason = banDisplayReason({ reason, bannedUntil });
+    for (const t of targets) ejectClient(t, ejectReason, true, actor);
+    return { found: targets.length > 0, names: targets.map((t) => t.name) };
+  };
+
+  const kickByGuest = (guestId: string, reason: string, actor?: Moderator) => {
+    const targets = liveByGuest(guestId);
+    for (const t of targets) ejectClient(t, reason, false, actor);
     return { found: targets.length > 0, names: targets.map((t) => t.name) };
   };
 
@@ -1225,17 +1304,44 @@ export function attachElyxionWs(wss: WebSocketServer) {
     return { found: targets.length > 0, names: targets.map((t) => t.name) };
   };
 
+  // Resolve the strongest active ban for a connection, in priority order: a
+  // display-name ban (the stable handle for accounts), a guest-uuid ban (the
+  // stable handle for guests), then an IP ban. Undefined = clear to play. Used
+  // at connect AND at join/spectate/resume so a ban landing mid-session can't
+  // be slipped past by a queued message.
+  type ActiveBan = {
+    kind: 'name' | 'guest' | 'ip';
+    reason: string;
+    bannedUntil: number;
+    target: string;
+  };
+  const activeBanFor = (rec: ClientRecord): ActiveBan | undefined => {
+    const nameBan = getBanByName(rec.name);
+    if (nameBan) return { kind: 'name', reason: nameBan.reason, bannedUntil: nameBan.bannedUntil, target: nameBan.name };
+    // Guest-uuid bans apply only while the caller IS a guest — registering an
+    // account on the same browser is a fresh, separate identity, so a ban on
+    // the old anonymous uuid must not lock the new account out.
+    if (!rec.playerId && rec.guestId) {
+      const guestBan = getBanByGuestId(rec.guestId);
+      if (guestBan)
+        return { kind: 'guest', reason: guestBan.reason, bannedUntil: guestBan.bannedUntil, target: guestBan.guestId };
+    }
+    const ipBan = getBanByIp(rec.ip);
+    if (ipBan) return { kind: 'ip', reason: ipBan.reason, bannedUntil: ipBan.bannedUntil, target: ipBan.ip };
+    return undefined;
+  };
+
   // A banned player trying to join/spectate: tell them (with the ban's reason
   // and, for timed bans, when it lifts), then close the socket — they must not
   // sit in the lobby browsing either.
   const rejectBanned = (rec: ClientRecord) => {
     rec.moderatedAt = Date.now();
-    const ban = getBanByName(rec.name);
+    const ban = activeBanFor(rec);
     const display = ban ? banDisplayReason(ban) : 'banned at join';
     acLog({
       kind: 'block',
-      target: rec.name,
-      detail: 'banned-name',
+      target: ban?.target ?? rec.name,
+      detail: ban ? `banned-${ban.kind}` : 'banned-at-join',
       reason: ban?.reason || 'banned at join',
     });
     sendRaw(rec.socket, { type: 'kicked', reason: display, banned: true });
@@ -1292,7 +1398,13 @@ export function attachElyxionWs(wss: WebSocketServer) {
       const bans = listBans();
       if (bans.length === 0) return 'No active bans.';
       return `Active bans: ${bans
-        .map((b) => (b.kind === 'ip' ? `IP ${b.ip}` : `“${b.name}”`))
+        .map((b) =>
+          b.kind === 'ip'
+            ? `IP ${b.ip}`
+            : b.kind === 'guest'
+              ? `guest ${b.guestId.slice(0, 8)}…`
+              : `“${b.name}”`,
+        )
         .join(', ')}`;
     }
     if (verbL === 'banip' || verbL === 'unbanip') {
@@ -1870,6 +1982,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // `igsession` cookie) rides the WS upgrade on the same origin — we use it to
     // ownership-check cosmetic equips. Guests resolve to '' (defaults only).
     const playerId = accountIdFromCookieHeader(req?.headers?.cookie);
+    // The anonymous guest identity (igpid uuid cookie) rides the same upgrade.
+    // app.ts mints + Set-Cookies it on the handshake when a guest has none yet
+    // (stashing the fresh uuid on the request), so a guest who connects before
+    // any /api response still has a stable id to moderate against. Accounts
+    // don't need it — their account id is the identity.
+    const guestId =
+      guestIdFromCookieHeader(req?.headers?.cookie) ||
+      (req as { igpid?: string } | undefined)?.igpid?.trim().toLowerCase() ||
+      '';
     // The display name is SERVER-AUTHORITATIVE — never taken from the client.
     // A logged-in player gets their account username (moderated at registration,
     // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a
@@ -1917,6 +2038,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       crosshair: '',
       card: null,
       playerId,
+      guestId,
       ip: ip ?? 'unknown',
       admin: !!account?.isAdmin,
       verified: !!account?.isVerified,
@@ -1935,19 +2057,18 @@ export function attachElyxionWs(wss: WebSocketServer) {
     sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
     schedulePresence(); // a new socket bumps the online count for everyone in the menu
 
-    // Bans apply at the door: a banned NAME (stable for accounts) or banned IP
-    // (what actually stops a reconnecting guest — their "Guest N" name renumbers
-    // every session, the IP does not) is refused before it can browse the lobby
-    // or join anything. Reaped by handleDisconnect (moderatedAt → immediate reap).
-    const nameBan = getBanByName(record.name);
-    const ipBan = getBanByIp(record.ip);
-    const preBan = nameBan ?? ipBan;
+    // Bans apply at the door: a banned NAME (stable for accounts), a banned
+    // GUEST UUID (the stable handle for a reconnecting guest — their "Guest N"
+    // name renumbers every session), or a banned IP, is refused before it can
+    // browse the lobby or join anything. Reaped by handleDisconnect
+    // (moderatedAt → immediate reap).
+    const preBan = activeBanFor(record);
     if (preBan) {
       record.moderatedAt = Date.now();
       acLog({
         kind: 'block',
-        target: nameBan ? record.name : record.ip,
-        detail: nameBan ? 'banned-name' : 'banned-ip',
+        target: preBan.target,
+        detail: `banned-${preBan.kind}`,
         reason: preBan.reason || undefined,
       });
       sendRaw(socket, { type: 'kicked', reason: banDisplayReason(preBan), banned: true });
@@ -2222,7 +2343,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
         case 'join': {
           rankedQueue.delete(record.id); // joining a room → leave the ranked queue
-          if (isBannedName(record.name)) {
+          if (activeBanFor(record)) {
             rejectBanned(record);
             break;
           }
@@ -2244,7 +2365,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // exactly what you can't join but should be able to watch. Spectators
           // never enter members, so they're excluded from snapshots, shots,
           // teams, and votes; they only receive the room's broadcasts + state.
-          if (isBannedName(record.name)) {
+          if (activeBanFor(record)) {
             rejectBanned(record);
             break;
           }
@@ -2292,7 +2413,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
         case 'resume': {
           // A reconnecting client presents its previous resume token to reclaim
           // its in-match slot + score. On miss/expiry, fall back to a fresh join.
-          if (isBannedName(record.name)) {
+          if (activeBanFor(record)) {
             rejectBanned(record); // a ban must also block a mid-grace reclaim
             break;
           }
@@ -2761,12 +2882,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // Lapsed timed bans are inert at read time (expiry-aware lookups), but
     // delete the rows so the ban tables don't grow forever.
     const swept = sweepExpiredBans(now);
-    if (swept.nameBans + swept.ipBans > 0) {
+    if (swept.nameBans + swept.ipBans + swept.guestBans > 0) {
       acLog({
         kind: 'unban',
         target: 'expired',
         detail: 'sweep',
-        reason: `${swept.nameBans} name + ${swept.ipBans} ip timed bans lapsed`,
+        reason: `${swept.nameBans} name + ${swept.ipBans} ip + ${swept.guestBans} guest timed bans lapsed`,
       });
     }
     // Drop stale clients (socket dead) and AFK players (alive socket but no real
@@ -2830,6 +2951,44 @@ export function attachElyxionWs(wss: WebSocketServer) {
   rankedTimer.unref?.();
   sweepTimer.unref?.();
 
+  // Live players for the admin moderation layer: every live socket with its
+  // display identity — accounts by username, guests individually by uuid + IP.
+  // The public presence broadcast deliberately hides guests (just a count); this
+  // per-connection list is admin-only and powers the online list + guest kick/
+  // ban actions. Dropped (resume-grace) sockets are not live and are skipped.
+  const onlinePlayers = (): OnlinePlayer[] => {
+    const out: OnlinePlayer[] = [];
+    for (const c of clients.values()) {
+      if (c.disconnectedAt > 0) continue;
+      const room = c.roomId ? rooms.get(c.roomId) : undefined;
+      const inMatch = !!room?.members.has(c.id);
+      out.push({
+        id: c.id,
+        name: c.name,
+        kind: c.playerId ? 'account' : 'guest',
+        ...(c.playerId ? { playerId: c.playerId } : {}),
+        ...(c.guestId ? { guestId: c.guestId } : {}),
+        admin: c.admin,
+        verified: c.verified,
+        ip: c.ip,
+        connectedAt: c.connectedAt,
+        location: c.spectating ? 'spectating' : inMatch ? 'in-match' : 'lobby',
+        ...(room
+          ? {
+              room: {
+                id: room.id,
+                name: room.name,
+                mode: room.mode,
+                mapId: room.mapId,
+                members: room.members.size,
+              },
+            }
+          : {}),
+      });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name) || a.connectedAt - b.connectedAt);
+  };
+
   // Live counts for the lobby/landing "N playing now" social-proof readout.
   return {
     liveCounts() {
@@ -2847,20 +3006,31 @@ export function attachElyxionWs(wss: WebSocketServer) {
     },
     // Live moderation handles for the REST layer (server/admin.ts routes). A
     // kick disconnects immediately; a ban persists + kicks everyone of that
-    // name; an unban lifts the ban (does nothing to live sockets). All take a
-    // display name as typed on the scoreboard/chat (case-insensitive).
+    // identity; an unban lifts the ban (does nothing to live sockets). Names
+    // are display names as typed on the scoreboard/chat (case-insensitive);
+    // guest ids are the anonymous igpid uuids the online list exposes.
     moderation: {
       kick: (name: string, reason: string, actorName: string) =>
         kickByName(name, reason, { name: actorName }),
+      kickGuest: (guestId: string, reason: string, actorName: string) =>
+        kickByGuest(guestId, reason, { name: actorName }),
       // `bannedUntil`: epoch ms the ban lifts; 0 = permanent (the REST route
       // converts its durationMs to an epoch before calling).
       ban: (name: string, reason: string, actorName: string, bannedUntil: number = 0) =>
         banByName(name, reason, { name: actorName }, bannedUntil),
+      banGuest: (guestId: string, reason: string, actorName: string, bannedUntil: number = 0) =>
+        banGuest(guestId, reason, { name: actorName }, bannedUntil),
       banIp: (ip: string, reason: string, actorName: string, bannedUntil: number = 0) =>
         banIpAddress(ip, reason, { name: actorName }, bannedUntil),
       unban: (name: string, actorName: string) => {
         const ok = removeBan(name);
         if (ok) acLog({ kind: 'unban', target: name.trim(), actor: actorName, detail: 'name' });
+        return ok;
+      },
+      unbanGuest: (guestId: string, actorName: string) => {
+        const g = guestId.trim().toLowerCase();
+        const ok = removeGuestBan(g);
+        if (ok) acLog({ kind: 'unban', target: g, actor: actorName, detail: 'guest' });
         return ok;
       },
       unbanIp: (ip: string, actorName: string) => {
@@ -2869,6 +3039,9 @@ export function attachElyxionWs(wss: WebSocketServer) {
         return ok;
       },
       list: () => listBans(),
+      // Live players + guests (incl. guests' uuids/IPs) for the admin UI's
+      // online list + guest moderation.
+      online: () => onlinePlayers(),
     },
   };
 }

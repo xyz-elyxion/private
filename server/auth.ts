@@ -3,8 +3,8 @@
 // are scrypt-hashed (Node built-in, no dependency) with a per-user salt and
 // compared in constant time. The session is an opaque httpOnly cookie token.
 
-import { Router, type Request } from 'express';
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { Router, type Request, type Response } from 'express';
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import {
   createSession,
   createUser,
@@ -28,6 +28,13 @@ export function adminUsernamesFromEnv(): string[] {
 }
 
 const SESSION_COOKIE = 'igsession';
+// Anonymous guest identity cookie. Logged-in players are identified by their
+// account (igsession); everyone else carries a persistent random UUID here, so
+// a guest has ONE stable identity across sessions/reconnects — the handle
+// moderation (kick/ban by uuid), connect-time guest-ban enforcement, and guest-
+// authored content (community / feedback / support) all key off it. httpOnly
+// like the session cookie; clearing cookies = a fresh identity.
+export const GUEST_COOKIE = 'igpid';
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
 const SESSION_MAX_AGE = 1000 * 60 * 60 * 24 * 365; // 1 year
 
@@ -49,6 +56,27 @@ function genToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
+// A fresh guest identity (RFC 4122 v4 UUID). Minted lazily: on the first HTTP
+// response that needs an identity for a guest, and on the WS upgrade handshake
+// (app.ts) so a guest who jumps straight into a match still has one.
+export function mintGuestId(): string {
+  return randomUUID();
+}
+
+// Value of one named cookie inside a raw `Cookie:` header ('' = absent) — the
+// WS upgrade path doesn't go through Express's cookie parser.
+function cookieFromHeader(header: string | undefined, name: string): string {
+  if (!header) return '';
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) {
+      return decodeURIComponent(part.slice(i + 1).trim());
+    }
+  }
+  return '';
+}
+
 // The account id behind a request's session cookie ('' = guest). This IS the
 // progression identity used by the stats API.
 export function accountId(req: Request): string {
@@ -59,16 +87,44 @@ export function accountId(req: Request): string {
 // Same, but from a raw `Cookie:` header — for the game WebSocket upgrade, which
 // doesn't go through Express's cookie parser.
 export function accountIdFromCookieHeader(header: string | undefined): string {
-  if (!header) return '';
-  for (const part of header.split(';')) {
-    const i = part.indexOf('=');
-    if (i < 0) continue;
-    if (part.slice(0, i).trim() === SESSION_COOKIE) {
-      return userIdFromSession(decodeURIComponent(part.slice(i + 1).trim()));
-    }
-  }
-  return '';
+  const token = cookieFromHeader(header, SESSION_COOKIE);
+  return token ? userIdFromSession(token) : '';
 }
+
+// The guest identity (igpid) behind a request — '' when absent.
+export function guestId(req: Request): string {
+  const v = req.cookies?.[GUEST_COOKIE];
+  return typeof v === 'string' ? v.trim().toLowerCase() : '';
+}
+
+// Same, from a raw `Cookie:` header — for the game WebSocket upgrade. Lowercased
+// so guest ids compare case-insensitively against the ban store (randomUUID
+// emits lowercase, but cookies round-trip whatever a client echoes back).
+export function guestIdFromCookieHeader(header: string | undefined): string {
+  return cookieFromHeader(header, GUEST_COOKIE).trim().toLowerCase();
+}
+
+// The guest identity for a request, minting + setting the cookie on first use.
+// Returns '' for a logged-in caller (the account IS the identity — a guest uuid
+// is meaningless behind one) or when no response is available to set a cookie
+// on (pass res only where a cookie can actually be delivered).
+export function ensureGuestId(req: Request, res: Response): string {
+  if (accountId(req)) return '';
+  const existing = guestId(req);
+  if (existing) return existing;
+  const uuid = mintGuestId();
+  res.cookie(GUEST_COOKIE, uuid, cookieOpts);
+  return uuid;
+}
+
+// A ready-to-push Set-Cookie line for the guest identity, for the WS upgrade
+// handshake (which doesn't go through res.cookie). Mirrors cookieOpts exactly.
+export function guestSetCookieHeader(uuid: string): string {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${GUEST_COOKIE}=${uuid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE / 1000}${secure}`;
+}
+
+
 
 // Lightweight per-IP attempt limiter so register/login can't be brute-forced.
 const attempts = new Map<string, { n: number; resetAt: number }>();
@@ -90,10 +146,14 @@ setInterval(() => {
 
 export const authRouter = Router();
 
-// Who am I? → the account behind the session, or null (guest).
+// Who am I? → the account behind the session, or null (guest). A guest also
+// gets their anonymous igpid minted here (first /me sets the cookie), so the
+// very first page the game client or any page opens seeds the guest identity
+// that the WS + content routes then key off.
 authRouter.get('/auth/me', (req, res) => {
   const id = accountId(req);
   const user = id ? findUserById(id) : undefined;
+  if (!user) ensureGuestId(req, res);
   res.json({
     user: user
       ? { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified }
