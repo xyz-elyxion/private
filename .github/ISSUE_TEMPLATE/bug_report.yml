@@ -1,4 +1,3 @@
-name: Bug report
 description: Report a reproducible problem in Elyxion.
 title: "[Bug]: "
 labels: ["bug"]

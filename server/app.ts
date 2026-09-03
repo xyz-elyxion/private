@@ -28,6 +28,8 @@ import { challengeRouter } from './challenge';
 import { feedbackRouter } from './feedback';
 import { supportRouter } from './support';
 import { communityRouter } from './community';
+import { tempReplaysRouter } from './tempReplays';
+import { announcementsRouter } from './announcements';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource, setModerationActions } from './admin';
 import { syncAdminsFromEnv } from './db';
@@ -181,6 +183,8 @@ app.use('/api', challengeRouter);
 app.use('/api', feedbackRouter);
 app.use('/api', supportRouter);
 app.use('/api', communityRouter);
+app.use('/api', tempReplaysRouter);
+app.use('/api', announcementsRouter);
 app.use('/api/admin', adminRouter);
 
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;
@@ -204,7 +208,10 @@ if (hasBuild && !dev) {
     express.static(distDir, {
       index: false,
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.html')) {
+        if (filePath.endsWith('.html') || filePath.endsWith('sw.js')) {
+          // sw.js too: the browser polls it for updates on navigations (and we
+          // stamp a fresh build id into it every deploy). A long max-age here
+          // would delay new workers by days.
           res.setHeader('Cache-Control', 'no-cache');
         } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
           // Vite fingerprints these (content-hashed filenames) → safe forever.

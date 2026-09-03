@@ -124,7 +124,10 @@ CREATE TABLE IF NOT EXISTS elyxion_bans (
   name        TEXT NOT NULL,
   reason      TEXT NOT NULL DEFAULT '',
   banned_by   TEXT NOT NULL DEFAULT '',
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- epoch ms the ban lifts; 0 = permanent. Expired rows are inert (reads treat
+  -- them as not banned) and swept periodically.
+  banned_until INTEGER NOT NULL DEFAULT 0
 );
 -- Moderation: banned IP addresses. Guests renumber ("Guest 3" → "Guest 4") on
 -- every reconnect, so a name ban alone can't stop a guest from slipping back in
@@ -136,7 +139,9 @@ CREATE TABLE IF NOT EXISTS elyxion_ip_bans (
   reason       TEXT NOT NULL DEFAULT '',
   banned_by    TEXT NOT NULL DEFAULT '',
   banned_name  TEXT NOT NULL DEFAULT '', -- name_lower that captured this IP ('' = manual /banip)
-  created_at   INTEGER NOT NULL
+  created_at   INTEGER NOT NULL,
+  -- epoch ms the ban lifts; 0 = permanent (mirrors elyxion_bans.banned_until)
+  banned_until INTEGER NOT NULL DEFAULT 0
 );
 `);
 
@@ -176,6 +181,20 @@ function ensureUserColumns() {
     sqlite.exec(`ALTER TABLE elyxion_users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0`);
 }
 ensureUserColumns();
+
+// Additive ban columns (same no-migration pattern): banned_until on both ban
+// tables — epoch ms the ban lifts, 0 = permanent. Live databases created before
+// timed bans existed get the column added on boot.
+function ensureBanColumns() {
+  for (const table of ['elyxion_bans', 'elyxion_ip_bans']) {
+    const cols = new Set(
+      (sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((r) => r.name),
+    );
+    if (!cols.has('banned_until'))
+      sqlite.exec(`ALTER TABLE ${table} ADD COLUMN banned_until INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+ensureBanColumns();
 
 // Append-only audit log: account registrations, logins, recorded matches, and
 // admin actions. Powers auditing now and a metrics dashboard later. `detail` is
@@ -677,6 +696,37 @@ export function addTicketReply(ticketId: number, author: string, body: string, n
   }
 }
 
+// The ticket AUTHOR replying (the /support page). Unlike an admin reply this
+// must NOT auto-ack (the ticket still needs the admin). A reply to a
+// resolved/closed ticket reopens it as 'open' (the issue clearly isn't done);
+// open/ack keep their status. Bumps updated_at either way. Returns the new
+// reply id (0 on failure / missing ticket).
+export function addPlayerTicketReply(
+  ticketId: number,
+  author: string,
+  body: string,
+  now?: number,
+): number {
+  try {
+    const t = now ?? Date.now();
+    const ticket = getTicket(ticketId);
+    if (!ticket) return 0;
+    const r = insertTicketReplyStmt.run({
+      ticketId,
+      ts: t,
+      author: (author || 'Guest').slice(0, 32),
+      body: body.slice(0, 4000),
+    });
+    const nextStatus =
+      ticket.status === 'resolved' || ticket.status === 'closed' ? 'open' : ticket.status;
+    mSetTicketStatus.run({ id: ticketId, status: nextStatus, now: t });
+    return Number(r.lastInsertRowid) || 0;
+  } catch (err) {
+    console.error('[support] player reply failed', err);
+    return 0;
+  }
+}
+
 const listRepliesStmt = sqlite.prepare(
   `SELECT * FROM elyxion_ticket_replies WHERE ticket_id = ? ORDER BY id ASC LIMIT 200`,
 );
@@ -1101,37 +1151,51 @@ function isAdminId(playerId: string): boolean {
 // directly; the stable handle for guests). A banned player is refused at
 // join/resume/spectate (name) / at connect (IP) and — if they're online at ban
 // time — kicked immediately.
-export type BanRow = { name: string; reason: string; bannedBy: string; createdAt: number };
-export type IpBanRow = { ip: string; reason: string; bannedBy: string; createdAt: number };
+// bannedUntil: epoch ms the ban lifts; 0 = permanent.
+export type BanRow = { name: string; reason: string; bannedBy: string; createdAt: number; bannedUntil: number };
+export type IpBanRow = { ip: string; reason: string; bannedBy: string; createdAt: number; bannedUntil: number };
 export type BanListItem =
   | (BanRow & { kind: 'name'; ip?: undefined })
-  | { kind: 'ip'; name: string; ip: string; reason: string; bannedBy: string; createdAt: number };
+  | {
+      kind: 'ip';
+      name: string;
+      ip: string;
+      reason: string;
+      bannedBy: string;
+      createdAt: number;
+      bannedUntil: number;
+    };
+
+// A ban is active while permanent (0) or not yet expired.
+const banActive = (until: number, now: number): boolean => until === 0 || until > now;
 
 const banCheckStmt = sqlite.prepare(
-  `SELECT name, reason, banned_by, created_at FROM elyxion_bans WHERE name_lower = ?`,
+  `SELECT name, reason, banned_by, created_at, banned_until FROM elyxion_bans WHERE name_lower = ?`,
 );
 const banInsertStmt = sqlite.prepare(
-  `INSERT OR REPLACE INTO elyxion_bans (name_lower, name, reason, banned_by, created_at)
-   VALUES (?, ?, ?, ?, ?)`,
+  `INSERT OR REPLACE INTO elyxion_bans (name_lower, name, reason, banned_by, created_at, banned_until)
+   VALUES (?, ?, ?, ?, ?, ?)`,
 );
 const banDeleteStmt = sqlite.prepare(`DELETE FROM elyxion_bans WHERE name_lower = ?`);
 const banListStmt = sqlite.prepare(
-  `SELECT name, reason, banned_by, created_at FROM elyxion_bans ORDER BY created_at DESC`,
+  `SELECT name, reason, banned_by, created_at, banned_until FROM elyxion_bans
+   WHERE banned_until = 0 OR banned_until > ? ORDER BY created_at DESC`,
 );
 // IP rows: an unnamed row (banned_name = '') is a manual /banip or API ban;
 // a row tied to a name_lower was auto-captured from an online player and lifts
 // with the name ban it came from.
 const ipBanCheckStmt = sqlite.prepare(
-  `SELECT ip, reason, banned_by, banned_name, created_at FROM elyxion_ip_bans WHERE ip = ?`,
+  `SELECT ip, reason, banned_by, banned_name, created_at, banned_until FROM elyxion_ip_bans WHERE ip = ?`,
 );
 const ipBanInsertStmt = sqlite.prepare(
-  `INSERT OR REPLACE INTO elyxion_ip_bans (ip, reason, banned_by, banned_name, created_at)
-   VALUES (?, ?, ?, ?, ?)`,
+  `INSERT OR REPLACE INTO elyxion_ip_bans (ip, reason, banned_by, banned_name, created_at, banned_until)
+   VALUES (?, ?, ?, ?, ?, ?)`,
 );
 const ipBanDeleteStmt = sqlite.prepare(`DELETE FROM elyxion_ip_bans WHERE ip = ?`);
 const ipBanDeleteByNameStmt = sqlite.prepare(`DELETE FROM elyxion_ip_bans WHERE banned_name = ?`);
 const ipBanListStmt = sqlite.prepare(
-  `SELECT ip, reason, banned_by, created_at FROM elyxion_ip_bans ORDER BY created_at DESC`,
+  `SELECT ip, reason, banned_by, created_at, banned_until FROM elyxion_ip_bans
+   WHERE banned_until = 0 OR banned_until > ? ORDER BY created_at DESC`,
 );
 
 const normIp = (ip: string): string => ip.trim();
@@ -1144,33 +1208,50 @@ const usableIp = (ip: string): boolean => {
 };
 
 export function isBannedName(name: string): boolean {
-  if (!name) return false;
-  return !!banCheckStmt.get(name.trim().toLowerCase());
+  return !!getBanByName(name);
 }
 
 // Ban row for a name (undefined = not banned) — the reason rides along so the
 // kicked message can say why.
+// Reads are expiry-aware: a lapsed ban reads as "not banned" everywhere
+// (join/connect enforcement, unban resolution, the admin list), so an expired
+// row is inert until the sweeper deletes it.
 export function getBanByName(name: string): BanRow | undefined {
   if (!name) return undefined;
   const r = banCheckStmt.get(name.trim().toLowerCase()) as
-    | { name: string; reason: string; banned_by: string; created_at: number }
+    | { name: string; reason: string; banned_by: string; created_at: number; banned_until: number }
     | undefined;
-  if (!r) return undefined;
-  return { name: r.name, reason: r.reason, bannedBy: r.banned_by, createdAt: r.created_at };
+  if (!r || !banActive(r.banned_until, Date.now())) return undefined;
+  return {
+    name: r.name,
+    reason: r.reason,
+    bannedBy: r.banned_by,
+    createdAt: r.created_at,
+    bannedUntil: r.banned_until,
+  };
 }
 
 export function getBanByIp(ip: string): IpBanRow | undefined {
   if (!usableIp(ip)) return undefined;
   const r = ipBanCheckStmt.get(normIp(ip)) as
-    | { ip: string; reason: string; banned_by: string; created_at: number }
+    | { ip: string; reason: string; banned_by: string; created_at: number; banned_until: number }
     | undefined;
-  if (!r) return undefined;
-  return { ip: r.ip, reason: r.reason, bannedBy: r.banned_by, createdAt: r.created_at };
+  if (!r || !banActive(r.banned_until, Date.now())) return undefined;
+  return {
+    ip: r.ip,
+    reason: r.reason,
+    bannedBy: r.banned_by,
+    createdAt: r.created_at,
+    bannedUntil: r.banned_until,
+  };
 }
 
 // Name ban; when the target is online their IP is auto-captured too (see
 // addIpBan), so a reconnecting guest can't dodge the ban by renumbering.
 // `capturedFrom` is the banned player's name_lower, tying the IP row to this ban.
+// bannedUntil: epoch ms the ban lifts (0 = permanent). Captured IPs inherit the
+// same expiry, so a timed name ban can't be dodged by reconnecting as a guest
+// for longer than the ban itself lasts.
 export function addBan(
   name: string,
   reason: string,
@@ -1178,11 +1259,13 @@ export function addBan(
   ip?: string,
   capturedFrom?: string,
   now: number = Date.now(),
+  bannedUntil: number = 0,
 ): boolean {
   const n = name.trim();
   if (!n) return false;
-  banInsertStmt.run(n.toLowerCase(), n, reason || '', bannedBy || '', now);
-  if (usableIp(ip ?? '')) addIpBan(ip!, reason, bannedBy, capturedFrom ?? n.toLowerCase(), now);
+  banInsertStmt.run(n.toLowerCase(), n, reason || '', bannedBy || '', now, bannedUntil);
+  if (usableIp(ip ?? ''))
+    addIpBan(ip!, reason, bannedBy, capturedFrom ?? n.toLowerCase(), now, bannedUntil);
   return true;
 }
 
@@ -1192,10 +1275,23 @@ export function addIpBan(
   bannedBy: string,
   capturedFrom: string = '',
   now: number = Date.now(),
+  bannedUntil: number = 0,
 ): boolean {
   if (!usableIp(ip)) return false;
-  ipBanInsertStmt.run(normIp(ip), reason || '', bannedBy || '', capturedFrom, now);
+  ipBanInsertStmt.run(normIp(ip), reason || '', bannedBy || '', capturedFrom, now, bannedUntil);
   return true;
+}
+
+// Delete lapsed timed bans (permanent rows survive). Idempotent — safe to run on
+// a timer; cheap enough that running it on the game sweep is fine.
+export function sweepExpiredBans(now: number = Date.now()): { nameBans: number; ipBans: number } {
+  const nameBans = sqlite
+    .prepare(`DELETE FROM elyxion_bans WHERE banned_until > 0 AND banned_until <= ?`)
+    .run(now).changes;
+  const ipBans = sqlite
+    .prepare(`DELETE FROM elyxion_ip_bans WHERE banned_until > 0 AND banned_until <= ?`)
+    .run(now).changes;
+  return { nameBans, ipBans };
 }
 
 // Lifting a name ban also lifts the IPs it auto-captured (an unban must mean
@@ -1214,8 +1310,21 @@ export function removeIpBan(ip: string): boolean {
 }
 
 export function listBans(): BanListItem[] {
-  const nameRows = banListStmt.all() as { name: string; reason: string; banned_by: string; created_at: number }[];
-  const ipRows = ipBanListStmt.all() as { ip: string; reason: string; banned_by: string; created_at: number }[];
+  const now = Date.now();
+  const nameRows = banListStmt.all(now) as {
+    name: string;
+    reason: string;
+    banned_by: string;
+    created_at: number;
+    banned_until: number;
+  }[];
+  const ipRows = ipBanListStmt.all(now) as {
+    ip: string;
+    reason: string;
+    banned_by: string;
+    created_at: number;
+    banned_until: number;
+  }[];
   const all: BanListItem[] = [
     ...nameRows.map((r) => ({
       kind: 'name' as const,
@@ -1223,6 +1332,7 @@ export function listBans(): BanListItem[] {
       reason: r.reason,
       bannedBy: r.banned_by,
       createdAt: r.created_at,
+      bannedUntil: r.banned_until,
     })),
     ...ipRows.map((r) => ({
       kind: 'ip' as const,
@@ -1231,6 +1341,7 @@ export function listBans(): BanListItem[] {
       reason: r.reason,
       bannedBy: r.banned_by,
       createdAt: r.created_at,
+      bannedUntil: r.banned_until,
     })),
   ];
   return all.sort((a, b) => b.createdAt - a.createdAt);
@@ -2597,6 +2708,234 @@ function weeklyReplayPlayerIds(weekKeyStr: string): Set<string> {
   return new Set(rows.map((r) => r.player_id));
 }
 
+// ── Temporary shareable replays ──────────────────────────────────────────────
+// Every finished match can be uploaded as a short-lived, shareable replay
+// (`/replay/<code>`). Rows expire after TTL_SHARE_REPLAY_HOURS (server sweeper
+// deletes them) — the storage is explicitly temporary, so the cap + sweep bound
+// disk growth tightly. The blob is the gzipped replay-codec binary exactly like
+// weekly replays; the summary columns let the recap page render the full
+// competition-style header + standings WITHOUT downloading the blob.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_temp_replays (
+  code       TEXT PRIMARY KEY,
+  data       BLOB NOT NULL,       -- gzipped replay-codec binary
+  raw_bytes  INTEGER NOT NULL,
+  map_id     TEXT NOT NULL DEFAULT '',
+  won        INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  runner     TEXT NOT NULL DEFAULT '',
+  stats_json TEXT NOT NULL DEFAULT '{}', -- {runner:{kills,deaths,headshots,shots},players:[{name,kills,deaths,headshots}]}
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  user_id    TEXT NOT NULL DEFAULT '', -- uploading account ('' = guest upload, not listable)
+  mode       TEXT NOT NULL DEFAULT ''  -- match mode tag: ffa/duel/tdm/ranked/solo/bots/challenge/training
+);
+CREATE INDEX IF NOT EXISTS idx_temp_replays_expires ON elyxion_temp_replays(expires_at);
+`);
+
+// Additive temp-replay columns (same no-migration pattern): user_id ties uploads
+// to the account for the "My replays" page; mode labels the gamemode. Old
+// databases get the columns added on boot — and the user index is created HERE
+// (after the ALTERs), never in the CREATE TABLE exec, because that runs against
+// live old tables before this guard.
+function ensureTempReplayColumns() {
+  const cols = new Set(
+    (sqlite.prepare(`PRAGMA table_info(elyxion_temp_replays)`).all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+  if (!cols.has('user_id')) sqlite.exec(`ALTER TABLE elyxion_temp_replays ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`);
+  if (!cols.has('mode')) sqlite.exec(`ALTER TABLE elyxion_temp_replays ADD COLUMN mode TEXT NOT NULL DEFAULT ''`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_temp_replays_user ON elyxion_temp_replays(user_id, created_at)`);
+}
+ensureTempReplayColumns();
+
+export const TMP_REPLAY_HOURS = 24; // "temporary": share links live a day, then die
+const TMP_REPLAY_MAX_ROWS = 5_000; // growth backstop (sweeper also prunes expired)
+
+const trInsertStmt = sqlite.prepare(`
+  INSERT INTO elyxion_temp_replays
+    (code, data, raw_bytes, map_id, won, duration_ms, runner, stats_json, created_at, expires_at, user_id, mode)
+  VALUES (@code, @data, @rawBytes, @mapId, @won, @durationMs, @runner, @statsJson, @now, @expiresAt, @userId, @mode)`);
+const trGetMetaStmt = sqlite.prepare(
+  `SELECT map_id, won, duration_ms, runner, stats_json, created_at, expires_at FROM elyxion_temp_replays WHERE code = ?`,
+);
+const trGetBlobStmt = sqlite.prepare(`SELECT data FROM elyxion_temp_replays WHERE code = ? AND expires_at > ?`);
+const trDeleteStmt = sqlite.prepare(`DELETE FROM elyxion_temp_replays WHERE code = ?`);
+const trSweepStmt = sqlite.prepare(`DELETE FROM elyxion_temp_replays WHERE expires_at < ?`);
+const trTrimStmt = sqlite.prepare(
+  `DELETE FROM elyxion_temp_replays WHERE code NOT IN
+     (SELECT code FROM elyxion_temp_replays ORDER BY created_at DESC LIMIT ?)`,
+);
+
+export type TempReplayMeta = {
+  code: string;
+  mapId: string;
+  won: boolean;
+  durationMs: number;
+  runner: string;
+  createdAt: number;
+  expiresAt: number;
+  rawBytes: number;
+  stats: {
+    runner: { kills: number; deaths: number; headshots: number; shots: number };
+    players: { name: string; kills: number; deaths: number; headshots: number }[];
+  };
+};
+
+type TempReplayMetaRow = {
+  map_id: string;
+  won: number;
+  duration_ms: number;
+  runner: string;
+  stats_json: string;
+  created_at: number;
+  expires_at: number;
+};
+
+export type TempReplayInput = {
+  code: string;
+  dataGz: Buffer;
+  rawBytes: number;
+  mapId: string;
+  won: boolean;
+  durationMs: number;
+  runner: string;
+  statsJson: string;
+  now: number;
+  userId: string; // uploading account id ('' = guest upload)
+  mode: string; // ffa/duel/tdm/ranked/solo/bots/challenge/training ('' = unknown)
+};
+
+// Store a new temp replay (gzip blob + derived summary). Returns false if the
+// code already exists (collision — caller retries with a fresh code).
+export function storeTempReplay(t: TempReplayInput): boolean {
+  try {
+    const r = trInsertStmt.run({
+      code: t.code,
+      data: t.dataGz,
+      rawBytes: t.rawBytes,
+      mapId: t.mapId,
+      won: t.won ? 1 : 0,
+      durationMs: Math.max(0, Math.floor(t.durationMs)),
+      runner: t.runner.slice(0, 32) || 'Player',
+      statsJson: t.statsJson.slice(0, 64_000),
+      now: t.now,
+      expiresAt: t.now + TMP_REPLAY_HOURS * 3600_000,
+      userId: t.userId.slice(0, 64),
+      mode: t.mode.slice(0, 16),
+    });
+    if (r.changes > 0) trTrimStmt.run(TMP_REPLAY_MAX_ROWS);
+    return r.changes > 0;
+  } catch {
+    return false;
+  }
+}
+
+export type MyReplayRow = {
+  code: string;
+  mapId: string;
+  mode: string;
+  won: boolean;
+  durationMs: number;
+  runner: string;
+  statsJson: string;
+  createdAt: number;
+  expiresAt: number;
+};
+
+const trUserListStmt = sqlite.prepare(
+  `SELECT code, map_id, mode, won, duration_ms, runner, stats_json, created_at, expires_at
+   FROM elyxion_temp_replays WHERE user_id = ? AND expires_at > ?
+   ORDER BY created_at DESC LIMIT 200`,
+);
+const trUserDeleteStmt = sqlite.prepare(
+  `DELETE FROM elyxion_temp_replays WHERE code = ? AND user_id = ?`,
+);
+
+// Active replays belonging to one account, newest first — powers the "My
+// replays" page. Blobs are NOT fetched (the page only needs the summary).
+export function listTempReplaysForUser(userId: string, now: number = Date.now()): MyReplayRow[] {
+  if (!userId) return [];
+  const rows = trUserListStmt.all(userId, now) as {
+    code: string;
+    map_id: string;
+    mode: string;
+    won: number;
+    duration_ms: number;
+    runner: string;
+    stats_json: string;
+    created_at: number;
+    expires_at: number;
+  }[];
+  return rows.map((r) => ({
+    code: r.code,
+    mapId: r.map_id,
+    mode: r.mode,
+    won: !!r.won,
+    durationMs: r.duration_ms,
+    runner: r.runner,
+    statsJson: r.stats_json,
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+  }));
+}
+
+// Owner-scoped delete: only the account that uploaded a replay may remove it
+// (admins can purge via the DB directly). False when the code isn't theirs.
+export function deleteTempReplayForUser(code: string, userId: string): boolean {
+  if (!userId || !code) return false;
+  try {
+    return trUserDeleteStmt.run(code, userId).changes > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function getTempReplayMeta(code: string, now: number = Date.now()): TempReplayMeta | null {
+  const row = trGetMetaStmt.get(code) as TempReplayMetaRow | undefined;
+  if (!row || row.expires_at < now) return null;
+  let stats = { runner: { kills: 0, deaths: 0, headshots: 0, shots: 0 }, players: [] as TempReplayMeta['stats']['players'] };
+  try {
+    stats = JSON.parse(row.stats_json) as TempReplayMeta['stats'];
+  } catch {
+    /* stale/malformed summary → zeros */
+  }
+  return {
+    code,
+    mapId: row.map_id,
+    won: !!row.won,
+    durationMs: row.duration_ms,
+    runner: row.runner || 'Player',
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    rawBytes: 0, // filled by getTempReplayBlob when the blob is fetched
+    stats,
+  };
+}
+
+export function getTempReplayBlob(code: string, now: number = Date.now()): Buffer | null {
+  const row = trGetBlobStmt.get(code, now) as { data: Buffer } | undefined;
+  return row ? row.data : null;
+}
+
+// Expired rows → deleted. Returns how many were removed (0 when idle).
+export function sweepTempReplays(now: number = Date.now()): number {
+  try {
+    return trSweepStmt.run(now).changes;
+  } catch {
+    return 0;
+  }
+}
+
+export function deleteTempReplay(code: string): boolean {
+  try {
+    return trDeleteStmt.run(code).changes > 0;
+  } catch {
+    return false;
+  }
+}
+
 // Headline weekly-challenge participation for the metrics/analytics API.
 const wcStatsStmt = sqlite.prepare(`
   SELECT COUNT(*) AS participants,
@@ -2766,4 +3105,115 @@ export function getWeeklyChallengeMe(
   const entry = toWcEntry(r);
   entry.hasReplay = weeklyReplayPlayerIds(wk).has(playerId);
   return { ...entry, rank };
+}
+
+// ── Server announcements ─────────────────────────────────────────────────────
+// Site-wide notices admins post from the dashboard. Served publicly to the
+// landing page (menu) until manually deleted or (optionally) expired; rows are
+// soft-deleted so removed announcements stay in the audit trail.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_announcements (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  text       TEXT NOT NULL,
+  author     TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL DEFAULT 0, -- epoch ms; 0 = never expires
+  deleted    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_announcements_active ON elyxion_announcements(expires_at, deleted);
+`);
+
+export const ANNOUNCEMENT_MAX_LEN = 500; // caps the landing-page strip size
+
+type AnnouncementRow = {
+  id: number;
+  text: string;
+  author: string;
+  created_at: number;
+  expires_at: number;
+  deleted: number;
+};
+
+const annInsertStmt = sqlite.prepare(
+  `INSERT INTO elyxion_announcements (text, author, created_at, expires_at) VALUES (@text, @author, @createdAt, @expiresAt)`,
+);
+const annListStmt = sqlite.prepare(
+  `SELECT id, text, author, created_at, expires_at, deleted FROM elyxion_announcements
+   WHERE deleted = 0 ORDER BY created_at DESC LIMIT ?`,
+);
+const annActiveStmt = sqlite.prepare(
+  `SELECT id, text, author, created_at, expires_at, deleted FROM elyxion_announcements
+   WHERE deleted = 0 AND (expires_at = 0 OR expires_at > ?) ORDER BY created_at DESC LIMIT 20`,
+);
+const annDeleteStmt = sqlite.prepare(
+  `UPDATE elyxion_announcements SET deleted = 1 WHERE id = ? AND deleted = 0`,
+);
+
+export type Announcement = {
+  id: number;
+  text: string;
+  author: string;
+  createdAt: number;
+  expiresAt: number; // epoch ms; 0 = never expires
+};
+
+const toAnnouncement = (r: AnnouncementRow): Announcement => ({
+  id: r.id,
+  text: r.text,
+  author: r.author,
+  createdAt: r.created_at,
+  expiresAt: r.expires_at,
+});
+
+// Post a new announcement. Returns its id, or null on an empty/oversized body
+// (the caller surfaces a 4xx) or a write failure.
+export function createAnnouncement(a: {
+  text: string;
+  author: string;
+  now: number;
+  expiresAt: number; // epoch ms; 0 = never
+}): number | null {
+  const text = a.text.trim();
+  if (!text || text.length > ANNOUNCEMENT_MAX_LEN) return null;
+  try {
+    const r = annInsertStmt.run({
+      text: text.slice(0, ANNOUNCEMENT_MAX_LEN),
+      author: (a.author || 'admin').slice(0, 64),
+      createdAt: a.now,
+      expiresAt: Math.max(0, Math.floor(a.expiresAt)),
+    });
+    return Number(r.lastInsertRowid) || null;
+  } catch {
+    return null;
+  }
+}
+
+// All non-deleted announcements, newest first (admin management list — includes
+// expired ones so staff can see what lapsed).
+export function listAnnouncements(limit: number = 50): Announcement[] {
+  try {
+    return (annListStmt.all(limit) as AnnouncementRow[]).map(toAnnouncement);
+  } catch {
+    return [];
+  }
+}
+
+// Announcements currently shown to players (non-deleted, not yet expired),
+// newest first — the public landing-page feed.
+export function listActiveAnnouncements(now: number = Date.now()): Announcement[] {
+  try {
+    return (annActiveStmt.all(now) as AnnouncementRow[]).map(toAnnouncement);
+  } catch {
+    return [];
+  }
+}
+
+// Soft-delete an announcement (hidden from the landing page immediately; the
+// row is kept for the audit trail). False when the id is missing/gone.
+export function deleteAnnouncement(id: number): boolean {
+  try {
+    return annDeleteStmt.run(id).changes > 0;
+  } catch {
+    return false;
+  }
 }

@@ -21,6 +21,7 @@ export type AcEvent = {
   detail: string; // what was caught: 'speed' | 'fire-rate' | 'shot-origin' | 'aimbot' | 'chat-rate' | 'banned-ip' | …
   actor?: string; // for ban/unban: who did it
   reason?: string; // human-readable context (rates/distances/windows)
+  bannedUntil?: number; // for timed bans: epoch ms the ban lifts (0/absent = permanent)
   count: number; // occurrences folded into this event (hot paths)
 };
 

@@ -136,7 +136,8 @@ the live site runs on.
 | Left click         | Fire railgun (one shot, one kill)   |
 | `W` `A` `S` `D`    | Move                                |
 | `Space`            | Jump (double-jump in the air)       |
-| `Shift`            | Dash (directional, on a cooldown)   |
+| `Q`                | Dash (directional, on a cooldown)   |
+| `E`                | Zoom / aim (hold)                   |
 | Jump into a wall   | Wall-jump                           |
 | `Esc`              | Release mouse / open the menu       |
 

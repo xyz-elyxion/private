@@ -68,7 +68,7 @@ win but gated behind the iframe fix + review. Poki is a long shot.
 
 **Controls:**
 > WASD move · Mouse aim · Left click fire (railgun) · Space jump (double / wall) ·
-> Shift dash. Playable on desktop with mouse + keyboard.
+> Q dash · E zoom. Playable on desktop with mouse + keyboard.
 
 **Tags / keywords:**
 > instagib, fps, first-person-shooter, arena-shooter, shooter, multiplayer, io,

@@ -13,6 +13,8 @@ const ElyxionClient = lazy(() => import('./ElyxionClient'));
 const PodiumLab = lazy(() => import('./PodiumLab'));
 const LockerLab = lazy(() => import('./LockerLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
+const ReplayPage = lazy(() => import('./pages/ReplayPage'));
+const MyReplaysPage = lazy(() => import('./pages/MyReplaysPage'));
 
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
@@ -37,6 +39,25 @@ const Loading = () => (
 // context, pointer-lock, and a WebSocket; React 18/19 StrictMode double-invokes
 // effects in dev, which would spin up two GL contexts / two sockets. Production
 // builds never run StrictMode anyway, so we keep dev and prod identical here.
+// Offline play + fast updates (production only). The generated worker
+// (scripts/sw.js → dist/sw.js) precaches the shell and app chunks, so once the
+// site has loaded the whole game — solo, bots, training — keeps working with no
+// network, and every deploy ships a fresh worker that makes the new build
+// instantly available. It never force-reloads mid-match: the updater in the
+// game client (src/update-checker.ts) still owns the reload moment. Dev stays
+// worker-free — Vite HMR owns dev updates.
+if (
+  import.meta.env.PROD &&
+  typeof navigator !== 'undefined' &&
+  'serviceWorker' in navigator
+) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      /* non-fatal: the site works without a worker */
+    });
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <BrowserRouter>
     <Routes>
@@ -51,6 +72,23 @@ createRoot(document.getElementById('root')!).render(
       />
       <Route path="/support" element={<SupportPage />} />
       <Route path="/community" element={<CommunityPage />} />
+      <Route
+        path="/replays"
+        element={
+          <Suspense fallback={<Loading />}>
+            <MyReplaysPage />
+          </Suspense>
+        }
+      />
+      {/* Temporary share-link replays: /replay/<code> (competition-style recap) */}
+      <Route
+        path="/replay/:code"
+        element={
+          <Suspense fallback={<Loading />}>
+            <ReplayPage />
+          </Suspense>
+        }
+      />
       <Route
         path="/podiumlab"
         element={

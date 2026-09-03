@@ -211,14 +211,19 @@ function encodeSettings(s: Settings): string {
 function decodeSettings(code: string): Settings | null {
   try {
     const body = code.trim().replace(/^IGS-/i, '').replace(/-/g, '+').replace(/_/g, '/');
-    const parsed = JSON.parse(atob(body)) as Partial<Settings>;
+    const parsed = JSON.parse(atob(body)) as StoredSettings;
     if (!parsed || typeof parsed !== 'object') return null;
     // Merge over defaults so a partial/older code fills gaps and new fields survive.
+    // Same migration rule as loadSettings: codes exported before the E/Q default
+    // change carry the legacy C/L-Shift layout and get remapped; current-version
+    // codes import exactly as saved.
+    let keybinds = { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) };
+    if ((parsed.settingsVersion ?? 0) < SETTINGS_VERSION) keybinds = migrateKeybinds(keybinds);
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
       crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
-      keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
+      keybinds,
       viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
     };
   } catch {
@@ -378,6 +383,12 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const SETTINGS_KEY = 'elyxion-settings-v2';
+// Settings schema version. Bumped whenever a one-time migration (e.g. the E/Q
+// keybind default change) must run against existing saves: loadSettings applies
+// pending migrations then re-persists with the new version, and saveSettings
+// always stamps the current version — so a fresh save is never re-migrated
+// later (a deliberate rebind back to an old default key keeps working).
+const SETTINGS_VERSION = 1;
 
 // Rarity → accent color for cosmetic cards in the Locker.
 const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
@@ -644,12 +655,42 @@ function PlayerCard({
   );
 }
 
+// The default layout moved zoom → E and dash → Q. Players who still have the
+// OLD default values stored (i.e. never customized those binds) are carried to
+// the new layout; a player who deliberately rebinds keeps their own key.
+const LEGACY_DEFAULT_BINDS: Partial<Record<KeybindAction, string>> = {
+  dash: 'ShiftLeft',
+  zoom: 'KeyC',
+};
+function migrateKeybinds(kb: Record<KeybindAction, string>): Record<KeybindAction, string> {
+  const next = { ...kb };
+  for (const [action, legacy] of Object.entries(LEGACY_DEFAULT_BINDS) as [KeybindAction, string][]) {
+    if (next[action] === legacy) next[action] = DEFAULT_KEYBINDS[action];
+  }
+  return next;
+}
+
+type StoredSettings = Partial<Settings> & { settingsVersion?: number };
+
 function loadSettings(): Settings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
   try {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw) as Partial<Settings>;
+    const parsed = JSON.parse(raw) as StoredSettings;
+    // Pending migrations (runs once per version bump; see SETTINGS_VERSION):
+    // v1 carried the legacy C/L-Shift layout forward to the E/Q defaults.
+    // Re-persisting with the new version makes the migration one-time — a
+    // deliberate rebind back to an old default key is never reverted.
+    if ((parsed.settingsVersion ?? 0) < SETTINGS_VERSION) {
+      parsed.keybinds = migrateKeybinds({ ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) });
+      parsed.settingsVersion = SETTINGS_VERSION;
+      try {
+        window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...parsed }));
+      } catch {
+        /* non-fatal: the in-memory copy below is still migrated */
+      }
+    }
     const merged: Settings = {
       ...DEFAULT_SETTINGS,
       ...parsed,
@@ -685,7 +726,9 @@ function saveSettings(s: Settings) {
     // ambiguous when testing with two tabs. Each tab regenerates its own until
     // the user types a real one (which is then persisted normally).
     const toSave = AUTO_NAME_RE.test(s.playerName) ? { ...s, playerName: '' } : s;
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(toSave));
+    // Stamp the current schema version on every save so the one-time migrations
+    // in loadSettings never re-run against a save made after them.
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...toSave, settingsVersion: SETTINGS_VERSION }));
   } catch {
     // ignore
   }
@@ -816,13 +859,11 @@ export default function ElyxionClient() {
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
-  // Auto-update (update-checker.ts — no-ops in dev, HMR owns dev): a newer
-  // build's assets are prefetched in the background even mid-match, but the
-  // reload only fires at a safe boundary (back in the lobby), so gameplay is
-  // never interrupted.
+  // Auto-update (update-checker.ts — no-ops in dev, HMR owns dev). Runs ONLY
+  // in the lobby: during a match nothing is polled or prefetched, so there is
+  // zero network traffic that could jitter gameplay. Returning to the lobby
+  // re-checks immediately and applies any fresh deployment.
   const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null);
-  const viewRef = useRef<'lobby' | 'playing'>(view);
-  viewRef.current = view;
   const reloadTimerRef = useRef<number | null>(null);
 
   // Load persisted settings once on mount + backfill window-dependent defaults.
@@ -866,9 +907,12 @@ export default function ElyxionClient() {
     saveSettings(settings);
   }, [settings]);
 
-  // Background updater: keep playing on the running bundle while a newer build
-  // is polled and prefetched; the reload is deferred until a safe moment — back
-  // in the lobby after the match ends, or after a short grace if idle there.
+  // Background updater — lobby only. During a match this effect is not even
+  // mounted: no polling, no prefetch, no reload timer, nothing (cleanup cancels
+  // the reload too, so clicking Play right after an update was spotted never
+  // reloads mid-game). Back in the lobby, the checker's first check runs
+  // immediately, so a deployment that landed while you played is picked up the
+  // second the match ends.
   const scheduleReload = useCallback(() => {
     if (reloadTimerRef.current != null) return;
     reloadTimerRef.current = window.setTimeout(() => {
@@ -878,27 +922,22 @@ export default function ElyxionClient() {
   }, []);
 
   useEffect(() => {
+    if (view !== 'lobby') return;
     const stop = startUpdateChecker({
       intervalMs: 45_000,
       onUpdate: (info) => {
         setPendingUpdate(info);
-        // Mid-match: the new bundle is already in the background, keep playing
-        // on the old one; the lobby effect below applies it after the match.
-        if (viewRef.current === 'playing') return;
         scheduleReload();
       },
     });
     return () => {
       stop();
-      if (reloadTimerRef.current != null) window.clearTimeout(reloadTimerRef.current);
+      if (reloadTimerRef.current != null) {
+        window.clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
     };
-  }, [scheduleReload]);
-
-  // The match ended / player returned to the lobby with an update queued → now
-  // it's safe to switch to the freshly downloaded build.
-  useEffect(() => {
-    if (view === 'lobby' && pendingUpdate) scheduleReload();
-  }, [view, pendingUpdate, scheduleReload]);
+  }, [view, scheduleReload]);
 
   // Your in-game name is your identity: the account username when logged in,
   // or "Guest" otherwise. This is the source of truth (overrides any old local
@@ -1093,6 +1132,10 @@ function GameView({
   // We freeze the final standings here so a late snapshot can't change the podium.
   const [onlineResults, setOnlineResults] = useState(false);
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
+  // Temporary shareable replay for the competition recap: the decoded run feeds
+  // the action list + watch button; the uploaded code makes a /replay/<code> link.
+  const [replayData, setReplayData] = useState<ReplayData | null>(null);
+  const [shareReplay, setShareReplay] = useState<{ code: string; url: string } | null>(null);
   const hudRef = useRef<HudState>(INITIAL_HUD);
   const offlineMatch = config.mode !== 'multiplayer';
   // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
@@ -1125,6 +1168,39 @@ function GameView({
         void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
           if (p) setEndProgression(p);
         });
+      }
+      // Any finished match → temporary shareable replay (competition recap:
+      // action feed + watch button + /replay/<code> link). Best-effort: a
+      // failed upload just means no share link this match.
+      const run = game.getRunReplay();
+      if (run) {
+        let dec: ReplayData | null = null;
+        try {
+          dec = decodeReplay(run);
+        } catch {
+          /* malformed recording — skip sharing */
+        }
+        if (dec) {
+          setReplayData(dec);
+          // Label the upload with the gamemode (display-only on "My replays" —
+          // the server derives all stats from the recording itself).
+          const rawTag = game.getMatchModeTag();
+          const modeTag =
+            rawTag === 'ranked'
+              ? 'ranked'
+              : config.mode === 'local'
+                ? isChallenge
+                  ? 'challenge'
+                  : config.training
+                    ? 'training'
+                    : config.botCount > 0
+                      ? 'bots'
+                      : 'solo'
+                : rawTag;
+          void uploadTempReplay(run, modeTag).then((s) => {
+            if (s) setShareReplay(s);
+          });
+        }
       }
       if (config.mode === 'multiplayer') {
         setPodiumScores(hudRef.current.scores);
@@ -1310,6 +1386,8 @@ function GameView({
           settings={settings}
           result={endResult}
           progression={endProgression}
+          replayData={replayData}
+          shareReplay={shareReplay}
           onContinue={() => setOnlineResults(false)}
         />
       )}
@@ -1344,6 +1422,9 @@ function GameView({
         <RankedResultOverlay
           result={rankedResult}
           progression={endProgression}
+          settings={settings}
+          replayData={replayData}
+          shareReplay={shareReplay}
           onLobby={() => {
             exitFullscreen();
             onExit(endResult);
@@ -1371,6 +1452,8 @@ function GameView({
           settings={settings}
           result={endResult}
           progression={endProgression}
+          replayData={replayData}
+          shareReplay={shareReplay}
           onPlayAgain={() => {
             exitFullscreen();
             onPlayAgain();
@@ -2410,6 +2493,7 @@ function ResultsPanel({
   result,
   progression,
   footer,
+  competition,
 }: {
   won: boolean;
   scores: PlayerScore[];
@@ -2417,6 +2501,8 @@ function ResultsPanel({
   result: MatchResult | null;
   progression: ProgressionResp | null;
   footer: ReactNode;
+  // Optional competition-style recap (action feed + watch/share replay).
+  competition?: ReactNode;
 }) {
   const acc = result && result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
   // Stable winners identity so the 3D scene mounts once (not every HUD tick).
@@ -2484,6 +2570,8 @@ function ResultsPanel({
 
           {progression && <XpReward progression={progression} />}
 
+          {competition}
+
           <div className='mt-6 flex gap-3'>{footer}</div>
         </div>
       </div>
@@ -2500,6 +2588,8 @@ function MatchOverOverlay({
   progression,
   onPlayAgain,
   onLobby,
+  replayData,
+  shareReplay,
 }: {
   won: boolean;
   scores: PlayerScore[];
@@ -2508,31 +2598,173 @@ function MatchOverOverlay({
   progression: ProgressionResp | null;
   onPlayAgain: () => void;
   onLobby: () => void;
+  // Temporary shareable replay (competition recap) — null when nothing usable
+  // was recorded/uploaded this match.
+  replayData: ReplayData | null;
+  shareReplay: { code: string; url: string } | null;
 }) {
+  const [watch, setWatch] = useState(false);
+  const localName =
+    replayData?.profiles.find((p) => p.id === replayData.localId)?.name ?? '';
+  const mapLabelStr = replayData ? mapLabel(replayData.mapId) : '';
   return (
-    <ResultsPanel
-      won={won}
-      scores={scores}
-      settings={settings}
-      result={result}
-      progression={progression}
-      footer={
-        <>
+    <>
+      <ResultsPanel
+        won={won}
+        scores={scores}
+        settings={settings}
+        result={result}
+        progression={progression}
+        competition={
+          replayData ? (
+            <CompetitionRecap
+              replayData={replayData}
+              share={shareReplay}
+              localName={localName}
+              mapLabelStr={mapLabelStr}
+              onWatch={() => setWatch(true)}
+            />
+          ) : undefined
+        }
+        footer={
+          <>
+            <button
+              onClick={onPlayAgain}
+              className='flex-1 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
+            >
+              Play Again
+            </button>
+            <button
+              onClick={onLobby}
+              className='flex-1 rounded-lg border border-white/20 bg-white/5 px-5 py-3 text-sm font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-white/10'
+            >
+              Lobby
+            </button>
+          </>
+        }
+      />
+      {/* Watch the full run in the in-game viewer (inline decoded data — no refetch). */}
+      {watch && replayData && (
+        <ReplayViewerOverlay
+          playerName={localName || 'Your run'}
+          data={replayData}
+          settings={settings}
+          onClose={() => setWatch(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// Competition-style match recap: the runner line (name / map / duration), the
+// full kill-by-kill action feed with timestamps (from the recording itself),
+// and the rewatch + share buttons. This is the "broadcast" flavor — the podium
+// + scoreboard live above it in ResultsPanel.
+function CompetitionRecap({
+  replayData,
+  share,
+  localName,
+  mapLabelStr,
+  onWatch,
+}: {
+  replayData: ReplayData;
+  share: { code: string; url: string } | null;
+  localName: string;
+  mapLabelStr: string;
+  onWatch: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const localId = replayData.localId;
+  const feed = [...replayData.kills].sort((a, b) => a.t - b.t);
+  const localShots = replayData.shots.filter((s) => s.killerId === localId).length;
+  const localKills = feed.filter((k) => k.killerId === localId).length;
+  const acc = localShots > 0 ? Math.round((localKills / localShots) * 100) : 0;
+
+  const copyLink = async () => {
+    if (!share) return;
+    const link = `${window.location.origin}${share.url}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+    } catch {
+      // Fallback: select-in-place is enough for desktop; flash anyway.
+      setCopied(true);
+    }
+    window.setTimeout(() => setCopied(false), 1800);
+  };
+
+  return (
+    <div className='mt-4 rounded-lg border border-cyan-400/25 bg-cyan-400/5'>
+      {/* Broadcast header */}
+      <div className='flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-3 py-2'>
+        <span className='text-[9px] font-bold uppercase tracking-[0.28em] text-cyan-200/80'>
+          Match action
+        </span>
+        <span className='font-mono text-[10px] uppercase tracking-[0.18em] text-white/45'>
+          {localName || 'You'} · {mapLabelStr} · {fmtChallengeTime(replayData.durationMs)}
+        </span>
+      </div>
+
+      {/* Stats strip */}
+      <div className='grid grid-cols-3 gap-2 border-b border-white/10 px-3 py-2 text-center'>
+        <MiniStat label='Kills' value={localKills} />
+        <MiniStat
+          label='Headshots'
+          value={feed.filter((k) => k.killerId === localId && k.headshot).length}
+        />
+        <MiniStat label='Acc' value={`${acc}%`} />
+      </div>
+
+      {/* Action feed: every kill with a timestamp, newest at the top */}
+      {feed.length === 0 ? (
+        <p className='px-3 py-3 text-[11px] text-white/40'>No frags were recorded this match.</p>
+      ) : (
+        <ul className='max-h-[120px] space-y-0.5 overflow-y-auto px-3 py-2'>
+          {[...feed].reverse().map((k, i) => (
+            <li
+              key={i}
+              className='flex items-baseline justify-between gap-2 rounded px-1.5 py-0.5 font-mono text-[11px]'
+            >
+              <span className='shrink-0 tabular-nums text-white/35'>
+                {fmtChallengeTime(k.t * 1000)}
+              </span>
+              <span className='min-w-0 flex-1 truncate text-right'>
+                <span className={k.killerId === localId ? 'font-bold text-emerald-300' : 'text-white/80'}>
+                  {k.killerName}
+                </span>
+                <span className='text-white/30'> → </span>
+                <span className={k.victimId === localId ? 'font-bold text-rose-300' : 'text-white/55'}>
+                  {k.victimName}
+                </span>
+                {k.headshot && <span className='ml-1 text-amber-300' title='Headshot'>◎</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Watch / share */}
+      <div className='flex gap-2 px-3 py-2'>
+        <button
+          onClick={onWatch}
+          className='flex-1 rounded-md bg-cyan-400 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-cyan-300'
+        >
+          ▶ Watch replay
+        </button>
+        {share ? (
           <button
-            onClick={onPlayAgain}
-            className='flex-1 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
+            onClick={() => void copyLink()}
+            className='flex-1 rounded-md border border-white/15 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10'
           >
-            Play Again
+            {copied ? 'Copied ✓' : 'Share replay'}
           </button>
-          <button
-            onClick={onLobby}
-            className='flex-1 rounded-lg border border-white/20 bg-white/5 px-5 py-3 text-sm font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-white/10'
-          >
-            Lobby
-          </button>
-        </>
-      }
-    />
+        ) : (
+          <span className='flex-1 rounded-md border border-white/10 px-3 py-2 text-center text-[10px] uppercase tracking-[0.14em] text-white/30'>
+            Share unavailable
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -2544,6 +2776,8 @@ function OnlineMatchResults({
   settings,
   result,
   progression,
+  replayData,
+  shareReplay,
   onContinue,
 }: {
   won: boolean;
@@ -2551,10 +2785,20 @@ function OnlineMatchResults({
   settings: Settings;
   result: MatchResult | null;
   progression: ProgressionResp | null;
+  // Temporary shareable replay (competition recap) — recorded for every
+  // finished match, including online; null when nothing usable was captured.
+  replayData: ReplayData | null;
+  shareReplay: { code: string; url: string } | null;
   onContinue: () => void;
 }) {
   const [secs, setSecs] = useState(8);
+  const [watch, setWatch] = useState(false);
+  const localName = replayData?.profiles.find((p) => p.id === replayData.localId)?.name ?? '';
+  const mapLabelStr = replayData ? mapLabel(replayData.mapId) : '';
+  // Auto-advance to the map vote, but hold while the player is watching the
+  // replay — the countdown must not yank them out of the viewer.
   useEffect(() => {
+    if (watch) return;
     if (secs <= 0) {
       onContinue();
       return;
@@ -2562,24 +2806,45 @@ function OnlineMatchResults({
     const t = setTimeout(() => setSecs((s) => s - 1), 1000);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secs]);
+  }, [secs, watch]);
 
   return (
-    <ResultsPanel
-      won={won}
-      scores={scores}
-      settings={settings}
-      result={result}
-      progression={progression}
-      footer={
-        <button
-          onClick={onContinue}
-          className='flex-1 rounded-lg bg-cyan-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300'
-        >
-          Continue to Map Vote → {secs > 0 ? `(${secs})` : ''}
-        </button>
-      }
-    />
+    <>
+      <ResultsPanel
+        won={won}
+        scores={scores}
+        settings={settings}
+        result={result}
+        progression={progression}
+        competition={
+          replayData ? (
+            <CompetitionRecap
+              replayData={replayData}
+              share={shareReplay}
+              localName={localName}
+              mapLabelStr={mapLabelStr}
+              onWatch={() => setWatch(true)}
+            />
+          ) : undefined
+        }
+        footer={
+          <button
+            onClick={onContinue}
+            className='flex-1 rounded-lg bg-cyan-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300'
+          >
+            Continue to Map Vote → {secs > 0 ? `(${secs})` : ''}
+          </button>
+        }
+      />
+      {watch && replayData && (
+        <ReplayViewerOverlay
+          playerName={localName || 'Your run'}
+          data={replayData}
+          settings={settings}
+          onClose={() => setWatch(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -4387,6 +4652,48 @@ async function submitChallengeRun(
   }
 }
 
+// Upload a finished match's full recording to the temporary share library.
+// Returns the share link info, or null (non-fatal — the recap just skips the
+// share row). Opaque to the user; the server validates + TTLs the blob.
+async function uploadTempReplay(
+  blob: Uint8Array,
+  mode: string,
+): Promise<{ code: string; url: string } | null> {
+  try {
+    const res = await fetch('/api/replays', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        // Gamemode label for the "My replays" page (ffa/duel/tdm/ranked/solo/…).
+        ...(mode ? { 'X-Elyxion-Mode': mode } : {}),
+      },
+      credentials: 'same-origin',
+      // Standalone ArrayBuffer: the typed-array view's offset mustn't ship bytes
+      // outside the recording.
+      body: blob.slice().buffer,
+    });
+    if (!res.ok) return null;
+    const d = (await res.json()) as { ok?: boolean; code?: string; url?: string };
+    return d.code ? { code: d.code, url: d.url ?? `/replay/${d.code}` } : null;
+  } catch {
+    return null;
+  }
+}
+
+// Fetch + decode a stored weekly-challenge replay (leaderboard rewatch path).
+async function fetchReplayBlob(playerId: string): Promise<ReplayData | null> {
+  try {
+    const res = await fetch(
+      `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}`,
+      { credentials: 'same-origin' },
+    );
+    if (!res.ok) return null;
+    return decodeReplay(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
 // Top-center count-up run timer for the weekly challenge. Shows the live run time
 // (the engine's recorder clock — starts at the gun-go, freezes at match end), so
 // it matches the time that gets submitted exactly. rAF-polls the engine for a
@@ -4462,16 +4769,37 @@ function rankedStandingText(ranked: ElyxionProfile['ranked']): string {
 function RankedResultOverlay({
   result,
   progression,
+  settings,
+  replayData,
+  shareReplay,
   onLobby,
 }: {
   result: RankedResult;
   progression: ProgressionResp | null;
+  settings: Settings;
+  // Ranked duels are recorded like every other match — surface watch/share
+  // here too so ranked replays are reachable (not just uploaded).
+  replayData: ReplayData | null;
+  shareReplay: { code: string; url: string } | null;
   onLobby: () => void;
 }) {
   const won = result.won;
   const mine = result.rating ? (won ? result.rating.winner : result.rating.loser) : null;
   const tier = mine ? rankedTier(mine.rating) : null;
   const delta = mine?.delta ?? 0;
+  const [watch, setWatch] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const localName = replayData?.profiles.find((p) => p.id === replayData.localId)?.name ?? '';
+  const copyReplayLink = async () => {
+    if (!shareReplay) return;
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}${shareReplay.url}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
   return (
     <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md">
       <div className="w-[420px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl">
@@ -4525,6 +4853,26 @@ function RankedResultOverlay({
             </div>
           )}
         </div>
+        {(replayData || shareReplay) && (
+          <div className="flex gap-2 border-t border-white/10 px-7 py-3">
+            {replayData ? (
+              <button
+                onClick={() => setWatch(true)}
+                className="flex-1 rounded-lg bg-cyan-400/90 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-cyan-300"
+              >
+                ▶ Watch replay
+              </button>
+            ) : null}
+            {shareReplay ? (
+              <button
+                onClick={() => void copyReplayLink()}
+                className="flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10"
+              >
+                {copied ? 'Copied ✓' : 'Share replay'}
+              </button>
+            ) : null}
+          </div>
+        )}
         <div className="flex justify-center border-t border-white/10 px-7 py-4">
           <button
             onClick={onLobby}
@@ -4534,6 +4882,14 @@ function RankedResultOverlay({
           </button>
         </div>
       </div>
+      {watch && replayData && (
+        <ReplayViewerOverlay
+          playerName={localName || 'Your run'}
+          data={replayData}
+          settings={settings}
+          onClose={() => setWatch(false)}
+        />
+      )}
     </div>
   );
 }
@@ -4884,11 +5240,14 @@ function ReplayViewerOverlay({
   playerName,
   settings,
   onClose,
+  data,
 }: {
-  playerId: string;
+  playerId?: string; // weekly-leaderboard source; unused when `data` is given
   playerName: string;
   settings: Settings;
   onClose: () => void;
+  // Inline decoded recording (competition recap) — when given, skip the fetch.
+  data?: ReplayData;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -4916,22 +5275,13 @@ function ReplayViewerOverlay({
     let viewer: ReplayViewer | null = null;
     (async () => {
       try {
-        const res = await fetch(
-          `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}`,
-          { credentials: 'same-origin' },
-        );
-        if (!res.ok) throw new Error('unavailable');
-        const buf = await res.arrayBuffer();
-        let data: ReplayData;
-        try {
-          data = decodeReplay(buf);
-        } catch {
-          throw new Error('corrupt');
-        }
+        // Inline decoded data (match-end recap) or fetch (weekly leaderboard).
+        const decoded: ReplayData | null = data ?? (playerId ? await fetchReplayBlob(playerId) : null);
+        if (!decoded) throw new Error('unavailable');
         if (cancelled || !canvasRef.current) return;
         viewer = new ReplayViewer(
           canvasRef.current,
-          data,
+          decoded,
           (s) => {
             if (!cancelled) setState(s);
           },
@@ -4964,7 +5314,7 @@ function ReplayViewerOverlay({
       viewer?.dispose();
       viewerRef.current = null;
     };
-  }, [playerId]);
+  }, [data, playerId]);
 
   // Once the scene is loaded + the first frame is rendering (behind the black
   // cover), run a short 3-2-1 countdown, then auto-play. The cover masks the

@@ -9,7 +9,9 @@ import { Router, type Request } from 'express';
 import { accountId } from './auth';
 import {
   TICKET_CATEGORIES,
+  addPlayerTicketReply,
   findUserById,
+  getTicket,
   listReplies,
   listTickets,
   logEvent,
@@ -138,4 +140,63 @@ supportRouter.get('/support/tickets', (req, res) => {
   const tickets = listTickets({ limit: 20, playerId: id });
   const withReplies = tickets.map((t) => ({ ...t, replies: listReplies(t.id) }));
   res.json({ tickets: withReplies });
+});
+
+const REPLY_MIN = 1;
+const REPLY_MAX = 2000;
+
+// The ticket's author replying back (the admin replies via /api/admin/support).
+// Keeps the thread alive for the admin and reopens a resolved/closed ticket.
+// Session-only (a reply must be attributable to an account), rate-limited like
+// submissions, audit-logged.
+supportRouter.post('/support/tickets/:id/replies', (req, res) => {
+  const accountIdVal = accountId(req);
+  if (!accountIdVal) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  const text = str(req, 'message', 'body', 'text');
+  if (text.length < REPLY_MIN || text.length > REPLY_MAX) {
+    res.status(400).json({ error: 'bad_body' });
+    return;
+  }
+
+  const now = Date.now();
+  if (!allowPost(accountIdVal, now)) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+
+  const ticket = getTicket(id);
+  if (!ticket) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  // Ownership: you can only reply to your OWN ticket.
+  if (ticket.playerId !== accountIdVal) {
+    res.status(403).json({ error: 'forbidden' });
+    return;
+  }
+
+  const account = findUserById(accountIdVal);
+  const replyId = addPlayerTicketReply(id, account?.username || 'Guest', text, now);
+  if (!replyId) {
+    res.status(500).json({ error: 'server_error' });
+    return;
+  }
+  logEvent({
+    event: 'support.reply',
+    actorId: accountIdVal,
+    actorName: account?.username || 'Guest',
+    targetId: String(id),
+    detail: { subject: ticket.subject },
+    ip: req.ip,
+    now,
+  });
+  res.json({ ok: true, id, replyId });
 });

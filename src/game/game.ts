@@ -58,7 +58,7 @@ import {
 import { EffectsManager } from './effects';
 import { TrainingRange } from './training';
 import { InputManager } from './input';
-import { buildMapMesh, DEFAULT_MAP, mapById, rayAabb, type ArenaMap } from './map';
+import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';
 import {
   DEFAULT_KILL_EFFECT,
@@ -2469,6 +2469,24 @@ export class Game {
   // would inflate totalGames and pollute win-rate / K-D-per-game (#4).
   hasRecordableStats(): boolean {
     return this.playerFrags > 0 || this.playerDeaths > 0 || this.playerShotsFired > 0;
+  }
+
+  // The whole-run recording for ANY finished match (the same recorder that
+  // powers the weekly challenge runs for every match) — drives the temporary
+  // share link + the competition recap on the results screen and /replay/<code>.
+  // Returns null before a match ends or when nothing worth watching was recorded.
+  getRunReplay(): Uint8Array | null {
+    // A run is over offline when endMatch latched matchOver; online the match
+    // ends at the vote opening / ranked result — matchSubmitted latches exactly
+    // those moments (and resets on the next join/round), so it doubles as the
+    // run-end flag here. Without this, online matches (ffa/duel/tdm/ranked)
+    // would never export a shareable replay.
+    if (!this.matchOver && !(this.net && this.matchSubmitted)) return null;
+    const mapId = MAPS.find((m) => m.map === this.map)?.id ?? '';
+    const won = this.net ? this.wonLastMatch : this.matchWon;
+    const data = this.recorder.export('you', mapId, won);
+    if (data.frames.length === 0 && data.kills.length === 0) return null;
+    return encodeReplay(data);
   }
 
   // Weekly-challenge result for the client to submit: the score (won → run time;

@@ -45,6 +45,12 @@ import {
   type TicketStatus,
 } from './db';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
+import {
+  ANNOUNCEMENT_MAX_LEN,
+  createAnnouncement,
+  deleteAnnouncement,
+  listAnnouncements,
+} from './db';
 
 export const adminRouter = Router();
 
@@ -82,14 +88,22 @@ type BanListEntry = {
   reason: string;
   bannedBy: string;
   createdAt: number;
+  bannedUntil: number; // epoch ms the ban lifts; 0 = permanent
 };
 type ModerationActions = {
   kick: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] };
   // Name ban — auto-captures the online target's IP so a reconnecting guest
-  // can't dodge it by renumbering their "Guest N" name.
-  ban: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  // can't dodge it by renumbering their "Guest N" name. `bannedUntil`: epoch ms
+  // the ban lifts (0 = permanent).
+  ban: (name: string, reason: string, actorName: string, bannedUntil?: number) => {
+    found: boolean;
+    names: string[];
+  };
   // Direct IP ban — blocks every connection from that address, now + future.
-  banIp: (ip: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  banIp: (ip: string, reason: string, actorName: string, bannedUntil?: number) => {
+    found: boolean;
+    names: string[];
+  };
   unban: (name: string, actorName: string) => boolean;
   unbanIp: (ip: string, actorName: string) => boolean;
   list: () => BanListEntry[];
@@ -374,6 +388,77 @@ adminRouter.post('/community/messages/:id/delete', (req, res) => {
   res.json({ ok: true, id });
 });
 
+// ── Server announcements ────────────────────────────────────────────────────
+// Site-wide notices shown on the landing page (public read at /api/
+// announcements). The management list is read-only → token-readable; posting
+// and deleting mutate → session-only (denyToken) + audit-logged, mirroring the
+// other moderation mutations.
+adminRouter.get('/announcements', (_req, res) => {
+  res.json({ announcements: listAnnouncements(100) });
+});
+
+// Post a new announcement: { text, durationMs? }. durationMs 0/absent = stays
+// until manually deleted; otherwise it auto-expires (hidden from players) after
+// that long. Appears on the landing page immediately.
+adminRouter.post('/announcements', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (!text || text.length > ANNOUNCEMENT_MAX_LEN) {
+    res.status(400).json({ error: 'bad_text' });
+    return;
+  }
+  const durationMs =
+    typeof body.durationMs === 'number' && Number.isFinite(body.durationMs) && body.durationMs > 0
+      ? Math.min(Math.floor(body.durationMs), 10 * 365 * 86_400_000) // cap: ~10y
+      : 0;
+  const admin = (req as AdminRequest).admin;
+  const now = Date.now();
+  const id = createAnnouncement({
+    text,
+    author: admin.username,
+    now,
+    expiresAt: durationMs > 0 ? now + durationMs : 0,
+  });
+  if (!id) {
+    res.status(500).json({ error: 'server_error' });
+    return;
+  }
+  logEvent({
+    event: 'admin.announce',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: String(id),
+    detail: { text: text.slice(0, 120), durationMs },
+    ip: req.ip,
+  });
+  res.json({ ok: true, id });
+});
+
+// Remove an announcement (hidden from the landing page immediately; the row is
+// soft-deleted and stays in the audit trail). Session-only + audit-logged.
+adminRouter.delete('/announcements/:id', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  if (!deleteAnnouncement(id)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: 'admin.announce_delete',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: String(id),
+    ip: req.ip,
+  });
+  res.json({ ok: true, id });
+});
+
 // ── Moderation: kick / ban / unban ─────────────────────────────────────────
 // All mutations — they boot live players and persist bans — so (like
 // verify/grant) they require a real admin session: a read-only API token may
@@ -410,38 +495,44 @@ adminRouter.post('/kick', (req, res) => {
 // ({ ip } body). A name ban kicks everyone live under that name and auto-
 // captures their IPs (a reconnecting guest can't dodge it by renumbering). An
 // IP ban blocks the address at the door and boots whoever is on it now.
+// Optional { durationMs } makes it a timed ban (0/absent = permanent).
 adminRouter.post('/ban', (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const name = cleanUsername(body.name);
   const ip = cleanUsername(body.ip);
   const reason = cleanUsername(body.reason).slice(0, 200);
+  const durationMs =
+    typeof body.durationMs === 'number' && Number.isFinite(body.durationMs) && body.durationMs > 0
+      ? Math.min(Math.floor(body.durationMs), 10 * 365 * 86_400_000) // cap: ~10y
+      : 0;
+  const bannedUntil = durationMs > 0 ? Date.now() + durationMs : 0;
   if (!name && !ip) {
     res.status(400).json({ error: 'bad_target' });
     return;
   }
   const admin = (req as AdminRequest).admin;
   if (ip) {
-    const r = moderation.banIp(ip, reason, admin.username);
+    const r = moderation.banIp(ip, reason, admin.username, bannedUntil);
     logEvent({
       event: 'admin.ban_ip',
       actorId: admin.id,
       actorName: admin.username,
-      detail: { ip, reason },
+      detail: { ip, reason, durationMs, bannedUntil },
       ip: req.ip,
     });
-    res.json({ ok: true, ip, names: r.names, reason });
+    res.json({ ok: true, ip, names: r.names, reason, bannedUntil });
     return;
   }
-  const r = moderation.ban(name, reason, admin.username);
+  const r = moderation.ban(name, reason, admin.username, bannedUntil);
   logEvent({
     event: 'admin.ban',
     actorId: admin.id,
     actorName: admin.username,
-    detail: { name, reason },
+    detail: { name, reason, durationMs, bannedUntil },
     ip: req.ip,
   });
-  res.json({ ok: true, names: r.names, name, reason });
+  res.json({ ok: true, names: r.names, name, reason, bannedUntil });
 });
 
 // Lift a ban — by name ({ name }, also lifts the IPs that ban captured) or by

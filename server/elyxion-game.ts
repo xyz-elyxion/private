@@ -73,6 +73,7 @@ import {
   recordRankedResult,
   removeBan,
   removeIpBan,
+  sweepExpiredBans,
   unlockedSetFor,
 } from './db';
 import { accountIdFromCookieHeader } from './auth';
@@ -1174,42 +1175,70 @@ export function attachElyxionWs(wss: WebSocketServer) {
     return out;
   };
 
+  // Human text for a banned player: the reason plus, for timed bans, when it
+  // lifts — shown on the kicked/blocked message so they know it's not forever.
+  const banDisplayReason = (ban: { reason: string; bannedUntil: number }): string => {
+    const base = ban.reason || 'banned';
+    return ban.bannedUntil > 0 ? `${base} (until ${new Date(ban.bannedUntil).toLocaleString()})` : base;
+  };
+
   // Ban = persist immediately (survives reconnect / restart), then boot anyone
   // of that name who is online right now — and AUTO-CAPTURE each online
   // target's IP into the ban store, so a guest who reconnects (their "Guest N"
   // name renumbers) is still refused at the door by address. Removing the name
-  // ban later lifts those captured IPs too (true "unban").
-  const banByName = (name: string, reason: string, actor?: Moderator) => {
+  // ban later lifts those captured IPs too (true "unban"). `bannedUntil` is the
+  // epoch ms the ban lifts (0 = permanent); captured IPs inherit the same
+  // expiry so a timed ban can't be outlasted by reconnecting as a guest.
+  const banByName = (name: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
     const targets = liveByName(name);
     const actorName = actor?.name ?? 'moderator';
-    for (const t of targets) addIpBan(t.ip, reason, actorName, name.toLowerCase());
-    addBan(name, reason, actorName);
-    acLog({ kind: 'ban', target: name.trim(), actor: actorName, detail: 'name', reason: reason || undefined });
-    for (const t of targets) ejectClient(t, reason, true, actor);
+    for (const t of targets) addIpBan(t.ip, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
+    addBan(name, reason, actorName, undefined, undefined, Date.now(), bannedUntil);
+    acLog({
+      kind: 'ban',
+      target: name.trim(),
+      actor: actorName,
+      detail: 'name',
+      reason: reason || undefined,
+      bannedUntil: bannedUntil || undefined,
+    });
+    const ejectReason = banDisplayReason({ reason, bannedUntil });
+    for (const t of targets) ejectClient(t, ejectReason, true, actor);
     return { found: targets.length > 0, names: targets.map((t) => t.name) };
   };
 
   // Direct IP ban (/banip, REST { ip }): blocks the address at connect for
   // everyone on it, and boots whoever is online on it right now.
-  const banIpAddress = (ip: string, reason: string, actor?: Moderator) => {
-    addIpBan(ip, reason, actor?.name ?? 'moderator');
-    acLog({ kind: 'ban', target: ip.trim(), actor: actor?.name ?? 'moderator', detail: 'ip', reason: reason || undefined });
+  const banIpAddress = (ip: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
+    addIpBan(ip, reason, actor?.name ?? 'moderator', '', Date.now(), bannedUntil);
+    acLog({
+      kind: 'ban',
+      target: ip.trim(),
+      actor: actor?.name ?? 'moderator',
+      detail: 'ip',
+      reason: reason || undefined,
+      bannedUntil: bannedUntil || undefined,
+    });
     const targets = liveByIp(ip);
-    for (const t of targets) ejectClient(t, reason, true, actor);
+    const ejectReason = banDisplayReason({ reason, bannedUntil });
+    for (const t of targets) ejectClient(t, ejectReason, true, actor);
     return { found: targets.length > 0, names: targets.map((t) => t.name) };
   };
 
-  // A banned player trying to join/spectate: tell them (with the ban's reason),
-  // then close the socket — they must not sit in the lobby browsing either.
+  // A banned player trying to join/spectate: tell them (with the ban's reason
+  // and, for timed bans, when it lifts), then close the socket — they must not
+  // sit in the lobby browsing either.
   const rejectBanned = (rec: ClientRecord) => {
     rec.moderatedAt = Date.now();
+    const ban = getBanByName(rec.name);
+    const display = ban ? banDisplayReason(ban) : 'banned at join';
     acLog({
       kind: 'block',
       target: rec.name,
       detail: 'banned-name',
-      reason: getBanByName(rec.name)?.reason || 'banned at join',
+      reason: ban?.reason || 'banned at join',
     });
-    sendRaw(rec.socket, { type: 'kicked', reason: getBanByName(rec.name)?.reason ?? '', banned: true });
+    sendRaw(rec.socket, { type: 'kicked', reason: display, banned: true });
     try {
       rec.socket.close();
     } catch {
@@ -1235,10 +1264,25 @@ export function attachElyxionWs(wss: WebSocketServer) {
     return { name: parts[0], reason: parts.slice(1).join(' ') };
   };
 
-  // Parse an admin chat command: /kick <name> [reason], /ban <name> [reason],
-  // /banip <ip> [reason], /unban <name>[/ip], /bans. Returns the result line to
-  // ack, or null (not a command — the caller moves on; for a live-target action
-  // the ack was already sent to the room by ejectClient).
+  // Optional leading duration token on ban commands (`/ban name 2h reason`,
+  // `/banip 1.2.3.4 30m reason`): <n> minutes/hours/days/weeks. Absent →
+  // permanent. Returns the remaining text (the reason) alongside the ms.
+  const parseBanDuration = (text: string): { durationMs: number; rest: string } => {
+    const t = text.trim();
+    // Match ONLY the leading duration token (e.g. "2h"), leaving the rest as
+    // the reason — the lookahead keeps the reason text out of the match.
+    const m = /^(\d+)\s*([mhdw])(?=\s|$)/i.exec(t);
+    if (!m) return { durationMs: 0, rest: text };
+    const n = parseInt(m[1], 10);
+    const mult = m[2].toLowerCase() === 'm' ? 60_000 : m[2].toLowerCase() === 'h' ? 3_600_000 : m[2].toLowerCase() === 'd' ? 86_400_000 : 604_800_000;
+    return { durationMs: n * mult, rest: t.slice(m[0].length).trim() };
+  };
+
+  // Parse an admin chat command: /kick <name> [reason], /ban <name> [duration]
+  // [reason], /banip <ip> [duration] [reason], /unban <name>[/ip], /bans.
+  // Returns the result line to ack, or null (not a command — the caller moves
+  // on; for a live-target action the ack was already sent to the room by
+  // ejectClient).
   const modCommand = (text: string, actor: ClientRecord): string | null => {
     const m = /^\/(kick|ban|unban|bans|banip|unbanip)\b[\s\S]*$/i.exec(text);
     if (!m) return null;
@@ -1256,9 +1300,10 @@ export function attachElyxionWs(wss: WebSocketServer) {
       // (ignored for unban).
       const [ipTok = '', ...restParts] = rest.split(/\s+/);
       const ip = ipTok.trim();
-      if (!ip) return `Usage: /${verbL} <ip> [reason]`;
+      if (!ip) return `Usage: /${verbL} <ip> [duration] [reason]`;
       if (verbL === 'banip') {
-        const r = banIpAddress(ip, restParts.join(' ').trim().slice(0, 200), actor);
+        const dur = parseBanDuration(restParts.join(' ').trim().slice(0, 200));
+        const r = banIpAddress(ip, dur.rest, actor, dur.durationMs > 0 ? Date.now() + dur.durationMs : 0);
         return r.found ? null : `Banned IP ${ip} (nobody online on it).`;
       }
       const okIp = removeIpBan(ip);
@@ -1278,9 +1323,10 @@ export function attachElyxionWs(wss: WebSocketServer) {
     } else if (verbL === 'ban') {
       const r = resolveTarget(rest, (n) => liveByName(n).length > 0);
       target = r.name;
-      reason = r.reason;
+      const dur = parseBanDuration(r.reason);
+      reason = dur.rest;
       if (target) {
-        const hit = banByName(target, reason, actor);
+        const hit = banByName(target, reason, actor, dur.durationMs > 0 ? Date.now() + dur.durationMs : 0);
         return hit.found ? null : `Banned “${target}” (they weren't online).`;
       }
     } else {
@@ -1904,7 +1950,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
         detail: nameBan ? 'banned-name' : 'banned-ip',
         reason: preBan.reason || undefined,
       });
-      sendRaw(socket, { type: 'kicked', reason: preBan.reason, banned: true });
+      sendRaw(socket, { type: 'kicked', reason: banDisplayReason(preBan), banned: true });
       socket.on('close', () => handleDisconnect(record));
       socket.on('error', () => handleDisconnect(record));
       try {
@@ -2712,6 +2758,17 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
   const sweepTimer = setInterval(() => {
     const now = Date.now();
+    // Lapsed timed bans are inert at read time (expiry-aware lookups), but
+    // delete the rows so the ban tables don't grow forever.
+    const swept = sweepExpiredBans(now);
+    if (swept.nameBans + swept.ipBans > 0) {
+      acLog({
+        kind: 'unban',
+        target: 'expired',
+        detail: 'sweep',
+        reason: `${swept.nameBans} name + ${swept.ipBans} ip timed bans lapsed`,
+      });
+    }
     // Drop stale clients (socket dead) and AFK players (alive socket but no real
     // input in a while — pings alone keep `lastSeen` fresh but not `lastActiveMs`,
     // so an idle client used to hold a slot, e.g. blocking a 2-cap duel room).
@@ -2795,10 +2852,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
     moderation: {
       kick: (name: string, reason: string, actorName: string) =>
         kickByName(name, reason, { name: actorName }),
-      ban: (name: string, reason: string, actorName: string) =>
-        banByName(name, reason, { name: actorName }),
-      banIp: (ip: string, reason: string, actorName: string) =>
-        banIpAddress(ip, reason, { name: actorName }),
+      // `bannedUntil`: epoch ms the ban lifts; 0 = permanent (the REST route
+      // converts its durationMs to an epoch before calling).
+      ban: (name: string, reason: string, actorName: string, bannedUntil: number = 0) =>
+        banByName(name, reason, { name: actorName }, bannedUntil),
+      banIp: (ip: string, reason: string, actorName: string, bannedUntil: number = 0) =>
+        banIpAddress(ip, reason, { name: actorName }, bannedUntil),
       unban: (name: string, actorName: string) => {
         const ok = removeBan(name);
         if (ok) acLog({ kind: 'unban', target: name.trim(), actor: actorName, detail: 'name' });

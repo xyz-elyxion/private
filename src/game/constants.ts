@@ -329,8 +329,8 @@ export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
   left: 'KeyA',
   right: 'KeyD',
   jump: 'Space',
-  dash: 'ShiftLeft',
-  zoom: 'KeyC',
+  dash: 'KeyQ',
+  zoom: 'KeyE',
   scoreboard: 'Tab',
   chat: 'KeyY',
 };

@@ -54,10 +54,121 @@ const ERRORS: Record<string, string> = {
   bad_category: 'Pick a category.',
   bad_subject: 'Give it a short subject (3–120 characters).',
   bad_body: 'Add a bit more detail (10–4000 characters).',
+  bad_id: 'That ticket doesn’t exist.',
+  not_found: 'That ticket doesn’t exist.',
+  forbidden: 'That ticket belongs to another account.',
+  unauthorized: 'Log in to reply to your tickets.',
   rate_limited: 'You’ve sent a lot recently — try again in a bit.',
   server_error: 'Something went wrong — try again.',
   network: 'Network error — try again.',
 };
+
+// One ticket card: the original message, the full reply thread, and — for the
+// ticket's own author — a reply box so the conversation is two-way instead of
+// admin-only. Replying reopens a resolved/closed ticket (the server does it).
+function TicketCard({ t, onReplied }: { t: Ticket; onReplied: () => void }) {
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const send = async () => {
+    if (busy || draft.trim().length === 0) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch(`/api/support/tickets/${t.id}/replies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ message: draft.trim() }),
+      });
+      const d = (await r.json().catch(() => ({}))) as { error?: string };
+      if (r.ok) {
+        setDraft('');
+        onReplied();
+      } else {
+        setErr(ERRORS[d.error ?? ''] ?? 'Something went wrong.');
+      }
+    } catch {
+      setErr(ERRORS.network);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <li className="rounded-lg border border-white/10 bg-black/30 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-baseline gap-2 text-[12px]">
+          <span className="shrink-0 font-mono text-[10px] tabular-nums text-white/30">
+            #{t.id}
+          </span>
+          <span
+            className={`shrink-0 font-bold uppercase tracking-[0.12em] ${CATEGORY_COLOR[t.category]}`}
+          >
+            {CATEGORIES.find((c) => c.id === t.category)?.label ?? t.category}
+          </span>
+          <span className="truncate font-medium text-white/85">{t.subject}</span>
+        </div>
+        <span
+          className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] ${STATUS_COLOR[t.status]}`}
+        >
+          {STATUS_LABEL[t.status]}
+        </span>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/70">
+        {t.body}
+      </p>
+      <div className="mt-1.5 font-mono text-[10px] text-white/35">{ago(t.ts)}</div>
+
+      {t.replies.length > 0 && (
+        <div className="mt-2 flex flex-col gap-2 border-t border-white/10 pt-2">
+          {t.replies.map((r) => (
+            <div key={r.id} className="rounded-md bg-cyan-400/5 px-2.5 py-2">
+              <div className="flex items-baseline justify-between gap-2 font-mono text-[10px] text-cyan-300/80">
+                <span className="font-bold uppercase tracking-[0.14em]">{r.author} replied</span>
+                <span className="text-white/30">{ago(r.ts)}</span>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/80">
+                {r.body}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-2 border-t border-white/10 pt-2">
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+          maxLength={2000}
+          rows={2}
+          placeholder="Reply to the dev — more details, or let them know it’s sorted…"
+          className="w-full resize-y rounded-md border border-white/15 bg-black/40 px-2.5 py-1.5 font-mono text-[12px] leading-relaxed text-white outline-none focus:border-cyan-400/60"
+        />
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[10px] text-white/35">
+            {(t.status === 'resolved' || t.status === 'closed') &&
+              'Replying reopens this ticket.'}
+          </span>
+          {err && <span className="text-[11px] text-rose-300">{err}</span>}
+          <button
+            onClick={() => void send()}
+            disabled={busy || draft.trim().length === 0}
+            className="ml-auto rounded-md bg-cyan-400/90 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-cyan-300 disabled:opacity-40"
+          >
+            {busy ? '…' : 'Send reply'}
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -239,6 +350,16 @@ export default function SupportPage() {
             <h2 className="flex items-center gap-3 font-display text-[11px] font-bold uppercase tracking-[0.26em] text-cyan-200/90">
               Your tickets
               <span className="h-px flex-1 bg-white/10" aria-hidden="true" />
+              {auth.account && (
+                <button
+                  onClick={() => void loadTickets()}
+                  title="Refresh"
+                  aria-label="Refresh tickets"
+                  className="font-mono text-[11px] font-bold text-cyan-300/70 transition hover:text-cyan-200"
+                >
+                  ⟳
+                </button>
+              )}
             </h2>
 
             {!auth.account ? (
@@ -257,50 +378,7 @@ export default function SupportPage() {
             ) : (
               <ul className="mt-4 flex flex-col gap-3">
                 {tickets.map((t) => (
-                  <li
-                    key={t.id}
-                    className="rounded-lg border border-white/10 bg-black/30 p-3"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-baseline gap-2 text-[12px]">
-                        <span className="shrink-0 font-mono text-[10px] tabular-nums text-white/30">
-                          #{t.id}
-                        </span>
-                        <span
-                          className={`shrink-0 font-bold uppercase tracking-[0.12em] ${CATEGORY_COLOR[t.category]}`}
-                        >
-                          {CATEGORIES.find((c) => c.id === t.category)?.label ?? t.category}
-                        </span>
-                        <span className="truncate font-medium text-white/85">{t.subject}</span>
-                      </div>
-                      <span
-                        className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] ${STATUS_COLOR[t.status]}`}
-                      >
-                        {STATUS_LABEL[t.status]}
-                      </span>
-                    </div>
-                    <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/70">
-                      {t.body}
-                    </p>
-                    <div className="mt-1.5 font-mono text-[10px] text-white/35">{ago(t.ts)}</div>
-                    {t.replies.length > 0 && (
-                      <div className="mt-2 flex flex-col gap-2 border-t border-white/10 pt-2">
-                        {t.replies.map((r) => (
-                          <div key={r.id} className="rounded-md bg-cyan-400/5 px-2.5 py-2">
-                            <div className="flex items-baseline justify-between gap-2 font-mono text-[10px] text-cyan-300/80">
-                              <span className="font-bold uppercase tracking-[0.14em]">
-                                {r.author} replied
-                              </span>
-                              <span className="text-white/30">{ago(r.ts)}</span>
-                            </div>
-                            <p className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/80">
-                              {r.body}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </li>
+                  <TicketCard key={t.id} t={t} onReplied={() => void loadTickets()} />
                 ))}
               </ul>
             )}

@@ -54,6 +54,7 @@ type BanEntry = {
   reason: string;
   bannedBy: string;
   createdAt: number;
+  bannedUntil: number; // epoch ms the ban lifts; 0 = permanent
 };
 type PlayerRow = {
   id: string;
@@ -268,7 +269,7 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat' | 'support' | 'community';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat' | 'support' | 'community' | 'announcements';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
@@ -279,6 +280,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'anticheat', label: 'Anticheat' },
   { id: 'support', label: 'Support' },
   { id: 'community', label: 'Community' },
+  { id: 'announcements', label: 'Announcements' },
 ];
 
 // ── Tab: Overview ────────────────────────────────────────────────────────────
@@ -612,6 +614,28 @@ const PLAYER_SORTS: { id: string; label: string }[] = [
   { id: 'accuracy', label: 'Accuracy' },
   { id: 'xp', label: 'XP' },
 ];
+// Ban duration presets for the ban dialog (ms; 0 = permanent).
+const BAN_DURATIONS: { label: string; ms: number }[] = [
+  { label: '1 hour', ms: 60 * 60 * 1000 },
+  { label: '6 hours', ms: 6 * 60 * 60 * 1000 },
+  { label: '12 hours', ms: 12 * 60 * 60 * 1000 },
+  { label: '1 day', ms: 24 * 60 * 60 * 1000 },
+  { label: '3 days', ms: 3 * 24 * 60 * 60 * 1000 },
+  { label: '7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: '30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+  { label: 'Permanent', ms: 0 },
+];
+// Compact label for a duration / time remaining: "30m", "2h", "3d", "1w".
+const msLabel = (ms: number): string => {
+  if (ms <= 0) return 'now';
+  const mins = ms / 60_000;
+  if (mins < 60) return `${Math.round(mins)}m`;
+  const hrs = mins / 60;
+  if (hrs < 24) return `${Math.round(hrs)}h`;
+  const days = hrs / 24;
+  if (days < 7) return `${Math.round(days)}d`;
+  return `${Math.round((days / 7) * 10) / 10}w`;
+};
 // Moderation actions on the players table (kick / ban / unban). Bans persist
 // server-side; kick disconnects a live player (must be online to hit). Both are
 // session-only routes — the token/read-only path can't mutate.
@@ -623,6 +647,9 @@ function PlayersTab() {
   const [bans, setBans] = useState<BanEntry[]>([]);
   const [modBusy, setModBusy] = useState<string | null>(null);
   const [modMsg, setModMsg] = useState<string | null>(null);
+  const [banTarget, setBanTarget] = useState<string | null>(null);
+  const [banReason, setBanReason] = useState('');
+  const [banDurationMs, setBanDurationMs] = useState(0);
   // Bans: NAME rows flag the players table (banned chip + Unban toggle); IP rows
   // render as removable chips below. Re-fetched after every action because a
   // name unban also lifts the IPs that ban captured (server-side).
@@ -634,10 +661,11 @@ function PlayersTab() {
   useEffect(() => {
     reloadBans();
   }, [reloadBans]);
-  const nameBanSet = useMemo(
-    () => new Set(bans.filter((b) => b.kind === 'name').map((b) => b.name.toLowerCase())),
+  const nameBanMap = useMemo(
+    () => new Map(bans.filter((b) => b.kind === 'name').map((b) => [b.name.toLowerCase(), b])),
     [bans],
   );
+  const nameBanSet = useMemo(() => new Set(nameBanMap.keys()), [nameBanMap]);
   const ipBans = useMemo(() => bans.filter((b) => b.kind === 'ip'), [bans]);
   // Auto-dismiss the action result line.
   useEffect(() => {
@@ -647,32 +675,51 @@ function PlayersTab() {
   }, [modMsg]);
   const moderate = (name: string, verb: 'kick' | 'ban' | 'unban') => {
     if (modBusy) return;
-    let reason = '';
     if (verb === 'ban') {
-      const v = window.prompt(`Ban “${name}”? Optional reason:`, '');
-      if (v === null) return; // cancelled
-      reason = v.trim().slice(0, 200);
+      // Open the duration/reason dialog instead of a prompt — bans are no
+      // longer always permanent.
+      setBanReason('');
+      setBanDurationMs(0);
+      setBanTarget(name);
+      return;
     }
     setModBusy(name);
-    void postJSON<{ ok: boolean }>(`/api/admin/${verb}`, { name, reason }).then((d) => {
+    void postJSON<{ ok: boolean }>(`/api/admin/${verb}`, { name, reason: '' }).then((d) => {
       setModBusy(null);
       if (d?.ok) {
-        setModMsg(
-          verb === 'kick'
-            ? `Kicked ${name}.`
-            : verb === 'ban'
-              ? `Banned ${name} (their IP too).`
-              : `Unbanned ${name}.`,
-        );
-        if (verb === 'ban' || verb === 'unban') reloadBans();
+        setModMsg(verb === 'kick' ? `Kicked ${name}.` : `Unbanned ${name}.`);
+        if (verb === 'unban') reloadBans();
       } else {
         setModMsg(
           verb === 'unban'
             ? `“${name}” wasn't banned.`
-            : verb === 'kick'
-              ? `“${name}” isn't online right now (kick needs a live connection).`
-              : `Couldn't ban “${name}”.`,
+            : `“${name}” isn't online right now (kick needs a live connection).`,
         );
+      }
+    });
+  };
+  // Confirm the ban dialog: timed when a non-zero duration is picked.
+  const confirmBan = () => {
+    if (!banTarget || modBusy) return;
+    const target = banTarget;
+    const durationMs = banDurationMs;
+    setModBusy(target);
+    void postJSON<{ ok: boolean }>('/api/admin/ban', {
+      name: target,
+      reason: banReason.trim().slice(0, 200),
+      durationMs,
+    }).then((d) => {
+      setModBusy(null);
+      setBanTarget(null);
+      if (d?.ok) {
+        setModMsg(
+          durationMs > 0
+            ? `Banned ${target} for ${msLabel(durationMs)} (their IP too).`
+            : `Banned ${target} permanently (their IP too).`,
+        );
+        reloadBans();
+      } else {
+        setModMsg(`Couldn't ban “${target}”.`);
       }
     });
   };
@@ -729,6 +776,55 @@ function PlayersTab() {
   );
   return (
     <Panel title="Players" right={controls}>
+      {banTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => setBanTarget(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg border border-rose-400/30 bg-zinc-950 p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className='mb-3 font-mono text-[13px] font-semibold text-rose-200'>
+              Ban “{banTarget}”
+            </h3>
+            <input
+              value={banReason}
+              onChange={(e) => setBanReason(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && confirmBan()}
+              placeholder="Reason (optional)"
+              autoFocus
+              className="mb-2 w-full rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[12px] text-white outline-none focus:border-rose-400/60"
+            />
+            <select
+              value={banDurationMs}
+              onChange={(e) => setBanDurationMs(Number(e.target.value))}
+              className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1.5 font-mono text-[12px] text-white/80 outline-none focus:border-rose-400/60"
+            >
+              {BAN_DURATIONS.map((d) => (
+                <option key={d.ms} value={d.ms} className="bg-zinc-900">
+                  {d.label}
+                </option>
+              ))}
+            </select>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setBanTarget(null)}
+                className="rounded border border-white/15 px-3 py-1 font-mono text-[11px] uppercase tracking-wider text-white/60 transition hover:text-white/90"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmBan}
+                disabled={modBusy !== null}
+                className="rounded border border-rose-500/40 px-3 py-1 font-mono text-[11px] uppercase tracking-wider text-rose-200 transition hover:border-rose-400/70 hover:text-rose-100 disabled:opacity-40"
+              >
+                Ban
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {modMsg && <div className='mb-3 rounded-md border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 font-mono text-[11px] text-cyan-100'>{modMsg}</div>}
       {ipBans.length > 0 && (
         <div className='mb-3 flex flex-wrap items-center gap-1.5 rounded-md border border-rose-400/25 bg-rose-500/10 px-3 py-2'>
@@ -739,6 +835,11 @@ function PlayersTab() {
               className='inline-flex items-center gap-1.5 rounded border border-rose-400/30 bg-rose-950/40 px-2 py-0.5 font-mono text-[11px] text-rose-100'
             >
               {b.ip}
+              {b.bannedUntil > 0 && (
+                <span className='text-rose-200/50' title={new Date(b.bannedUntil).toLocaleString()}>
+                  · {msLabel(b.bannedUntil - Date.now())} left
+                </span>
+              )}
               {b.reason && <span className='text-rose-200/60'>— {b.reason}</span>}
               <button
                 onClick={() => moderateIp(b.ip ?? '')}
@@ -779,9 +880,16 @@ function PlayersTab() {
                   <td className="py-2 pr-3 text-white/85">
                     <span className="flex items-center gap-1.5">
                       {p.userName}
-                      {nameBanSet.has((p.userName ?? '').toLowerCase()) && (
-                        <span className="text-[9px] uppercase tracking-wide text-rose-300">banned</span>
-                      )}
+              {nameBanSet.has((p.userName ?? '').toLowerCase()) && (
+                <span className="text-[9px] uppercase tracking-wide text-rose-300">
+                  {(() => {
+                    const b = nameBanMap.get((p.userName ?? '').toLowerCase());
+                    return b && b.bannedUntil > 0
+                      ? `banned · ${msLabel(b.bannedUntil - Date.now())} left`
+                      : 'banned';
+                  })()}
+                </span>
+              )}
                       {p.admin && <span className="text-[9px] uppercase tracking-wide text-amber-300">staff</span>}
                       {p.verified && <span className="text-cyan-300">✓</span>}
                     </span>
@@ -817,7 +925,7 @@ function PlayersTab() {
                         <button
                           onClick={() => moderate(p.userName, 'ban')}
                           disabled={modBusy !== null}
-                          title='Ban this name (persisted; kicks them if online)'
+                          title='Ban this name — pick a duration (persisted; kicks them if online)'
                           className='rounded border border-rose-500/40 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-rose-300 transition hover:border-rose-400/70 hover:text-rose-200 disabled:opacity-40'
                         >
                           Ban
@@ -869,6 +977,16 @@ async function postJSON<T>(url: string, body: object): Promise<T | null> {
       credentials: 'same-origin',
       body: JSON.stringify(body),
     });
+    if (!r.ok) return null;
+    return (await r.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function delJSON<T>(url: string): Promise<T | null> {
+  try {
+    const r = await fetch(url, { method: 'DELETE', credentials: 'same-origin' });
     if (!r.ok) return null;
     return (await r.json()) as T;
   } catch {
@@ -1520,6 +1638,188 @@ function AnticheatTab() {
   );
 }
 
+// ── Tab: Server announcements ───────────────────────────────────────────────
+// Site-wide notices shown on the landing page (menu). Posting + deleting need
+// an admin session (denyToken server-side); the list itself is token-readable.
+type AnnouncementRow = {
+  id: number;
+  text: string;
+  author: string;
+  createdAt: number;
+  expiresAt: number; // epoch ms; 0 = never expires
+};
+const ANN_DURATIONS: { label: string; ms: number }[] = [
+  { label: 'Until deleted', ms: 0 },
+  { label: '1 hour', ms: 60 * 60 * 1000 },
+  { label: '6 hours', ms: 6 * 60 * 60 * 1000 },
+  { label: '1 day', ms: 24 * 60 * 60 * 1000 },
+  { label: '3 days', ms: 3 * 24 * 60 * 60 * 1000 },
+  { label: '7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: '30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+];
+
+function AnnouncementsTab() {
+  const [rows, setRows] = useState<AnnouncementRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [durationMs, setDurationMs] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const d = await getJSON<{ announcements: AnnouncementRow[] }>('/api/admin/announcements');
+    setRows(d?.announcements ?? []);
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const announce = async () => {
+    const text = draft.trim();
+    if (busy || !text) return;
+    setBusy(true);
+    setError(null);
+    const d = await postJSON<{ ok: boolean; id?: number }>('/api/admin/announcements', {
+      text,
+      durationMs,
+    });
+    if (!d?.ok) {
+      setError('Post failed — announcements need an admin session login.');
+      window.setTimeout(() => setError(null), 5000);
+    } else {
+      setDraft('');
+      await load();
+    }
+    setBusy(false);
+  };
+
+  const remove = async (id: number) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const d = await delJSON<{ ok: boolean }>(`/api/admin/announcements/${id}`);
+    if (!d?.ok) {
+      setError('Delete failed — announcements need an admin session login.');
+      window.setTimeout(() => setError(null), 5000);
+    } else {
+      setRows((prev) => prev.filter((r) => r.id !== id));
+    }
+    setBusy(false);
+  };
+
+  const now = Date.now();
+  return (
+    <Panel
+      title="Server announcements"
+      right={
+        <span className='font-mono text-[10px] uppercase tracking-[0.16em] text-white/35'>
+          shown on the landing page
+        </span>
+      }
+    >
+      {/* Compose */}
+      <div className='mb-4 rounded-lg border border-cyan-400/25 bg-cyan-400/5 p-3'>
+        <div className='mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200/80'>
+          New announcement
+        </div>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void announce();
+          }}
+          maxLength={500}
+          rows={3}
+          placeholder={"What should every player know? (e.g. \"Maintenance tonight 11pm UTC\")"}
+          className='w-full resize-y rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60'
+        />
+        <div className='mt-2 flex flex-wrap items-center justify-between gap-2'>
+          <label className='flex items-center gap-2 font-mono text-[11px] text-white/55'>
+            Expires
+            <select
+              value={durationMs}
+              onChange={(e) => setDurationMs(Number(e.target.value))}
+              className='rounded-md border border-white/15 bg-black/40 px-2 py-1 font-mono text-[12px] text-white/80 outline-none focus:border-cyan-400/60'
+            >
+              {ANN_DURATIONS.map((d) => (
+                <option key={d.ms} value={d.ms} className='bg-zinc-900'>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className='flex items-center gap-2'>
+            <span className='font-mono text-[10px] tabular-nums text-white/30'>{draft.length}/500</span>
+            <button
+              onClick={() => void announce()}
+              disabled={busy || draft.trim().length === 0}
+              className='rounded-md bg-cyan-400 px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-950 transition hover:bg-cyan-300 disabled:opacity-40'
+            >
+              {busy ? '…' : 'Announce'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div className='mb-2 rounded-md border border-rose-400/40 bg-rose-400/10 px-3 py-2 text-[11px] text-rose-200'>
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty label='No announcements — post one above to reach every player.' />
+      ) : (
+        <div className='flex flex-col gap-2'>
+          {rows.map((a) => {
+            const active = a.expiresAt === 0 || a.expiresAt > now;
+            return (
+              <div key={a.id} className='rounded-lg border border-white/10 bg-black/30 p-3'>
+                <div className='flex flex-wrap items-center justify-between gap-2'>
+                  <div className='flex items-baseline gap-2 font-mono text-[11px]'>
+                    {active ? (
+                      <span className='rounded border border-emerald-400/40 bg-emerald-400/10 px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.14em] text-emerald-300'>
+                        live
+                      </span>
+                    ) : (
+                      <span className='rounded border border-white/15 px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.14em] text-white/35'>
+                        expired
+                      </span>
+                    )}
+                    <span className='text-amber-300/80'>{a.author}</span>
+                    <span className='text-white/30'>{ago(a.createdAt)}</span>
+                    <span className='text-white/30'>
+                      {active
+                        ? a.expiresAt > 0
+                          ? `expires in ${msLabel(a.expiresAt - now)}`
+                          : 'until deleted'
+                        : `expired ${ago(a.expiresAt)}`}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => void remove(a.id)}
+                    disabled={busy}
+                    className='rounded-md border border-rose-400/30 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-rose-300 transition hover:bg-rose-400/10 disabled:opacity-40'
+                  >
+                    Delete
+                  </button>
+                </div>
+                <p className='mt-1.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/80'>
+                  {a.text}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // ── Shared states ────────────────────────────────────────────────────────────
 function Loading() {
   return <div className="py-10 text-center text-[12px] uppercase tracking-[0.2em] text-white/35">Loading…</div>;
@@ -1630,6 +1930,7 @@ export default function AdminDashboard() {
         {tab === 'anticheat' && <AnticheatTab />}
         {tab === 'support' && <SupportTab />}
         {tab === 'community' && <CommunityTab />}
+        {tab === 'announcements' && <AnnouncementsTab />}
       </div>
     </div>
   );
