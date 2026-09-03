@@ -2421,6 +2421,263 @@ function AiBrainsTab() {
   );
 }
 
+// ── Admin navigation chrome ───────────────────────────────────────────────────
+type AdminNavItem = {
+  id: Tab;
+  title: string;
+  icon: 'grid' | 'activity' | 'trend' | 'reticle' | 'users' | 'chat' | 'shield' | 'support' | 'globe' | 'chip' | 'megaphone';
+  badge?: number | string;
+};
+
+type AdminNavGroup = {
+  heading?: string;
+  items: AdminNavItem[];
+};
+
+const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
+  {
+    items: [
+      { id: 'overview', title: 'Overview', icon: 'grid' },
+      { id: 'activity', title: 'Activity', icon: 'activity' },
+      { id: 'retention', title: 'Retention', icon: 'trend' },
+    ],
+  },
+  {
+    heading: 'Operations',
+    items: [
+      { id: 'matches', title: 'Matches', icon: 'reticle' },
+      { id: 'players', title: 'Players', icon: 'users' },
+      { id: 'feedback', title: 'Feedback', icon: 'chat' },
+      { id: 'support', title: 'Support', icon: 'support' },
+      { id: 'community', title: 'Community', icon: 'globe' },
+    ],
+  },
+  {
+    heading: 'Systems',
+    items: [
+      { id: 'anticheat', title: 'Anticheat', icon: 'shield' },
+      { id: 'ai', title: 'AI brains', icon: 'chip' },
+      { id: 'announcements', title: 'Announcements', icon: 'megaphone' },
+    ],
+  },
+];
+
+function AdminGlyph({ name, size = 17 }: { name: AdminNavItem['icon'] | 'search' | 'chevron' | 'close' | 'menu' | 'command' | 'logout' | 'back'; size?: number }) {
+  const paths: Record<string, string> = {
+    grid: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',
+    activity: 'M3 12h4l2.2-7 4.2 14 2.2-7H21',
+    trend: 'M3 17l5-5 4 3 8-9M15 6h5v5',
+    reticle: 'M12 2v3M12 19v3M2 12h3M19 12h3M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z',
+    users: 'M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20M9.5 10.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM17 11a3 3 0 0 0 0-6M17 14.5h1a4 4 0 0 1 4 4V20',
+    chat: 'M4 5h16v11H8l-4 4V5zM8 9h8M8 12h5',
+    shield: 'M12 3l8 3v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-3zM9 12l2 2 4-4',
+    support: 'M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v5H5a1 1 0 0 1-1-1v-4zM20 13h-3v5h2a1 1 0 0 0 1-1v-4zM12 20h3',
+    globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
+    chip: 'M8 8h8v8H8zM5 9H3M5 12H3M5 15H3M21 9h-2M21 12h-2M21 15h-2M9 5V3M12 5V3M15 5V3M9 21v-2M12 21v-2M15 21v-2',
+    megaphone: 'M3 11v2l12 4V7L3 11zM15 9l4-2v10l-4-2M6 14l1 5h3l-1-4',
+    search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM17 17l4 4',
+    chevron: 'M9 5l7 7-7 7',
+    close: 'M6 6l12 12M18 6L6 18',
+    menu: 'M4 7h16M4 12h16M4 17h16',
+    command: 'M9 9a3 3 0 1 0-3 3 3 3 0 1 0 3 3V9zM15 9a3 3 0 1 1 3 3 3 3 0 1 1-3 3V9zM9 9h6M9 15h6',
+    logout: 'M10 5H5v14h5M14 8l4 4-4 4M9 12h9',
+    back: 'M19 12H5M11 6l-6 6 6 6',
+  };
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox='0 0 24 24'
+      fill='none'
+      stroke='currentColor'
+      strokeWidth='1.6'
+      strokeLinecap='round'
+      strokeLinejoin='round'
+      aria-hidden='true'
+    >
+      <path d={paths[name] ?? paths.grid} />
+    </svg>
+  );
+}
+
+function AdminWorkspaceSwitcher({ username }: { username: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className='relative'>
+      <button
+        type='button'
+        onClick={() => setOpen((v) => !v)}
+        className='group mb-4 flex w-full items-center justify-between rounded-lg px-2 py-2 text-left transition hover:bg-black/[0.04]'
+        aria-expanded={open}
+      >
+        <span className='flex min-w-0 items-center gap-3'>
+          <span className='flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-cyan-400 font-display text-sm font-bold text-zinc-950 shadow-sm'>
+            E
+          </span>
+          <span className='flex min-w-0 flex-col'>
+            <span className='truncate text-[13px] font-semibold leading-none text-zinc-800'>{username}</span>
+            <span className='mt-1 text-[10px] uppercase tracking-[0.16em] text-zinc-400'>Admin workspace</span>
+          </span>
+        </span>
+        <AdminGlyph name='chevron' size={14} />
+      </button>
+      {open && (
+        <>
+          <button
+            type='button'
+            aria-label='Close workspace menu'
+            className='fixed inset-0 z-40 cursor-default'
+            onClick={() => setOpen(false)}
+          />
+          <div className='absolute left-0 top-12 z-50 w-full rounded-lg border border-zinc-200 bg-white p-1 shadow-xl'>
+            <div className='rounded-md bg-cyan-50 px-3 py-2 text-[12px] font-medium text-cyan-800'>
+              Elyxion Admin
+            </div>
+            <div className='px-3 py-2 text-[11px] text-zinc-400'>Live production workspace</div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AdminSidebar({
+  activeId,
+  onSelect,
+  username,
+  onLogout,
+}: {
+  activeId: Tab;
+  onSelect: (id: Tab) => void;
+  username: string;
+  onLogout: () => void;
+}) {
+  return (
+    <aside className='flex h-full w-64 shrink-0 flex-col border-r border-zinc-200 bg-white p-3 font-sans'>
+      <AdminWorkspaceSwitcher username={username} />
+      <nav className='flex-1 overflow-y-auto'>
+        {ADMIN_NAV_GROUPS.map((group, groupIndex) => (
+          <div key={group.heading ?? `group-${groupIndex}`} className='mb-5'>
+            {group.heading && (
+              <div className='mb-1 px-2.5 text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-400'>
+                {group.heading}
+              </div>
+            )}
+            <div className='flex flex-col gap-0.5'>
+              {group.items.map((item) => {
+                const active = activeId === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type='button'
+                    onClick={() => onSelect(item.id)}
+                    className={`group flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13px] transition ${
+                      active
+                        ? 'bg-zinc-100 font-semibold text-zinc-900'
+                        : 'text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800'
+                    }`}
+                  >
+                    <span className={active ? 'text-zinc-800' : 'text-zinc-400 group-hover:text-zinc-600'}>
+                      <AdminGlyph name={item.icon} />
+                    </span>
+                    <span className='min-w-0 flex-1 truncate'>{item.title}</span>
+                    {item.badge && <span className='rounded-full bg-cyan-100 px-1.5 text-[10px] font-semibold text-cyan-700'>{item.badge}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </nav>
+      <div className='flex flex-col gap-0.5 border-t border-zinc-200 pt-3'>
+        <a
+          href='/play'
+          className='group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-zinc-500 transition hover:bg-zinc-50 hover:text-zinc-800'
+        >
+          <span className='text-zinc-400 group-hover:text-zinc-600'><AdminGlyph name='back' /></span>
+          Return to arena
+        </a>
+        <button
+          type='button'
+          onClick={onLogout}
+          className='group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13px] text-zinc-500 transition hover:bg-rose-50 hover:text-rose-700'
+        >
+          <span className='text-zinc-400 group-hover:text-rose-600'><AdminGlyph name='logout' /></span>
+          Log out
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function AdminSearchPalette({
+  open,
+  query,
+  onQuery,
+  onClose,
+  onSelect,
+}: {
+  open: boolean;
+  query: string;
+  onQuery: (query: string) => void;
+  onClose: () => void;
+  onSelect: (id: Tab) => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  const matches = ADMIN_NAV_GROUPS.flatMap((group) => group.items).filter((item) =>
+    item.title.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  return (
+    <div className='fixed inset-0 z-[100] flex items-start justify-center bg-zinc-950/30 px-4 pt-[13vh] backdrop-blur-sm'>
+      <button type='button' aria-label='Close search' className='absolute inset-0 cursor-default' onClick={onClose} />
+      <div className='relative w-full max-w-xl overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-2xl'>
+        <div className='flex items-center gap-3 border-b border-zinc-200 px-4'>
+          <span className='text-zinc-400'><AdminGlyph name='search' /></span>
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => onQuery(event.target.value)}
+            placeholder='Search admin sections…'
+            className='min-w-0 flex-1 bg-transparent py-4 text-sm text-zinc-900 outline-none placeholder:text-zinc-400'
+          />
+          <button type='button' onClick={onClose} className='rounded p-1 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700'>
+            <AdminGlyph name='close' size={17} />
+          </button>
+        </div>
+        <div className='max-h-72 overflow-y-auto p-2'>
+          {matches.length === 0 ? (
+            <div className='flex flex-col items-center gap-2 px-4 py-10 text-center text-zinc-400'>
+              <AdminGlyph name='command' size={24} />
+              <span className='text-[13px]'>No admin sections match that search.</span>
+            </div>
+          ) : (
+            matches.map((item) => (
+              <button
+                key={item.id}
+                type='button'
+                onClick={() => { onSelect(item.id); onClose(); }}
+                className='flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-[13px] text-zinc-600 transition hover:bg-cyan-50 hover:text-cyan-800'
+              >
+                <AdminGlyph name={item.icon} />
+                <span className='flex-1'>{item.title}</span>
+                <AdminGlyph name='chevron' size={14} />
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Shared states ────────────────────────────────────────────────────────────
 function Loading() {
   return <div className="py-10 text-center text-[12px] uppercase tracking-[0.2em] text-white/35">Loading…</div>;
@@ -2437,6 +2694,9 @@ export default function AdminDashboard() {
   const [live, setLive] = useState<LiveCounts | null>(null);
 
   const isAdmin = !!auth.account?.isAdmin;
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -2456,6 +2716,17 @@ export default function AdminDashboard() {
       clearInterval(t);
     };
   }, [isAdmin]);
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, []);
 
   if (!auth.ready) {
     return <Centered>Loading…</Centered>;
@@ -2486,54 +2757,89 @@ export default function AdminDashboard() {
     );
   }
 
+  const selectTab = (next: Tab) => {
+    setTab(next);
+    setSearchOpen(false);
+  };
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <div className="mx-auto max-w-6xl px-4 py-6">
-        <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="font-display text-2xl uppercase tracking-[0.16em] text-cyan-300">
-              Elyxion · Admin
-            </h1>
-            <p className="text-[11px] text-white/40">
-              Signed in as {auth.account.username} · live metrics from production data
-            </p>
-          </div>
-          <a
-            href="/play"
-            className="rounded-md border border-white/15 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200"
-          >
-            ← Arena
-          </a>
-        </header>
-
-        <nav className="mb-6 flex flex-wrap gap-1 border-b border-white/10">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`-mb-px border-b-2 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.16em] transition ${
-                tab === t.id
-                  ? 'border-cyan-400 text-cyan-300'
-                  : 'border-transparent text-white/40 hover:text-white/70'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
-        {tab === 'overview' && <OverviewTab overview={overview} live={live} />}
-        {tab === 'activity' && <ActivityTab />}
-        {tab === 'retention' && <RetentionTab />}
-        {tab === 'matches' && <MatchesTab />}
-        {tab === 'players' && <PlayersTab />}
-        {tab === 'feedback' && <FeedbackTab />}
-        {tab === 'anticheat' && <AnticheatTab />}
-        {tab === 'support' && <SupportTab />}
-        {tab === 'community' && <CommunityTab />}
-        {tab === 'ai' && <AiBrainsTab />}
-        {tab === 'announcements' && <AnnouncementsTab />}
+    <div className='flex h-screen overflow-hidden bg-zinc-50 text-zinc-900'>
+      <div className={`shrink-0 overflow-hidden transition-[width] duration-300 ${sidebarOpen ? 'w-64' : 'w-0'}`}>
+        <AdminSidebar
+          activeId={tab}
+          onSelect={selectTab}
+          username={auth.account.username}
+          onLogout={() => { void auth.logout(); }}
+        />
       </div>
+      <main className='flex min-w-0 flex-1 flex-col overflow-hidden'>
+        <header className='flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4 sm:px-6'>
+          <div className='flex min-w-0 items-center gap-3'>
+            <button
+              type='button'
+              onClick={() => setSidebarOpen((open) => !open)}
+              aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+              className='rounded-md p-1.5 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-800'
+            >
+              <AdminGlyph name='menu' />
+            </button>
+            <div className='hidden items-center gap-2 text-sm text-zinc-400 sm:flex'>
+              <span>Elyxion</span>
+              <span>/</span>
+              <span className='font-medium text-zinc-800'>{TABS.find((item) => item.id === tab)?.label}</span>
+            </div>
+          </div>
+          <button
+            type='button'
+            onClick={() => setSearchOpen(true)}
+            className='flex w-40 items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-left text-[12px] text-zinc-400 transition hover:border-zinc-300 hover:bg-white sm:w-64'
+          >
+            <AdminGlyph name='search' size={15} />
+            <span className='flex-1'>Search sections…</span>
+            <kbd className='hidden rounded border border-zinc-200 bg-white px-1.5 py-0.5 font-mono text-[10px] text-zinc-400 sm:inline'>⌘K</kbd>
+          </button>
+        </header>
+        <div className='min-h-0 flex-1 overflow-y-auto'>
+          <div className='mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8'>
+            <div className='mb-6 flex flex-wrap items-end justify-between gap-3'>
+              <div>
+                <div className='mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-600'>Command deck</div>
+                <h1 className='font-display text-2xl uppercase tracking-[0.14em] text-zinc-900 sm:text-3xl'>
+                  {TABS.find((item) => item.id === tab)?.label}
+                </h1>
+                <p className='mt-1 text-[12px] text-zinc-500'>
+                  Signed in as {auth.account.username} · live metrics from production data
+                </p>
+              </div>
+              {live && (
+                <div className='flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-emerald-700'>
+                  <span className='h-1.5 w-1.5 rounded-full bg-emerald-500' />
+                  {live.online} online
+                </div>
+              )}
+            </div>
+
+            {tab === 'overview' && <OverviewTab overview={overview} live={live} />}
+            {tab === 'activity' && <ActivityTab />}
+            {tab === 'retention' && <RetentionTab />}
+            {tab === 'matches' && <MatchesTab />}
+            {tab === 'players' && <PlayersTab />}
+            {tab === 'feedback' && <FeedbackTab />}
+            {tab === 'anticheat' && <AnticheatTab />}
+            {tab === 'support' && <SupportTab />}
+            {tab === 'community' && <CommunityTab />}
+            {tab === 'ai' && <AiBrainsTab />}
+            {tab === 'announcements' && <AnnouncementsTab />}
+          </div>
+        </div>
+      </main>
+      <AdminSearchPalette
+        open={searchOpen}
+        query={search}
+        onQuery={setSearch}
+        onClose={() => { setSearchOpen(false); setSearch(''); }}
+        onSelect={selectTab}
+      />
     </div>
   );
 }

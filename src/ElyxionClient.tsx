@@ -319,7 +319,13 @@ export type MatchConfig =
       // the match for you using this brain — you just watch.
       autopilot?: { brain: RlBrain };
     }
-  | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
+  | {
+      mode: 'multiplayer';
+      mapId: string;
+      serverUrl: string;
+      roomId: string;
+      autopilot?: { brain: RlBrain };
+    }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
   // the server confirms which room/map we're spectating (Game adopts it then).
   | { mode: 'spectator'; mapId: string; serverUrl: string; roomId: string };
@@ -798,6 +804,7 @@ function applyMatchConfig(game: Game, config: MatchConfig) {
   } else if (config.mode === 'multiplayer') {
     game.setBotsEnabled(false);
     game.setMultiplayer({ enabled: true, url: config.serverUrl, roomId: config.roomId });
+    game.setAutopilot(config.autopilot?.brain ?? null);
   } else {
     game.setMultiplayer({ enabled: false, url: '' });
     game.setTraining(config.training ?? false);
@@ -5547,7 +5554,7 @@ function Lobby({
   // Persist a moderator kick/ban message for the lobby (stops reconnecting via
   // the socket's kicked flag; the banner explains why).
   const [kickMsg, setKickMsg] = useState<string | null>(null);
-  const [invite, setInvite] = useState<{ roomId: string; mapId: string } | null>(null);
+  const [invite, setInvite] = useState<{ roomId: string; mapId: string; autopilot: RlBrain | null } | null>(null);
   const [searching, setSearching] = useState(false); // quick-match in flight (#26e)
   const [rankedOpen, setRankedOpen] = useState(false);
   const [rankedStatus, setRankedStatus] = useState<RankedStatus | null>(null);
@@ -5590,9 +5597,16 @@ function Lobby({
     }
   }, []);
 
+  const onlineAutopilotRef = useRef<RlBrain | null>(null);
   const startOnline = useCallback(
-    (roomId: string, mapId: string) =>
-      onStart({ mode: 'multiplayer', mapId, serverUrl, roomId }),
+    (roomId: string, mapId: string, brain: RlBrain | null = null) =>
+      onStart({
+        mode: 'multiplayer',
+        mapId,
+        serverUrl,
+        roomId,
+        ...(brain ? { autopilot: { brain } } : {}),
+      }),
     [onStart, serverUrl],
   );
 
@@ -5619,10 +5633,14 @@ function Lobby({
       if (info.kind === 'matched') {
         startOnline(info.roomId, info.mapId);
       } else if (info.isPublic) {
-        startOnline(info.roomId, info.mapId);
+        const brain = onlineAutopilotRef.current;
+        onlineAutopilotRef.current = null;
+        startOnline(info.roomId, info.mapId, brain);
       } else {
         // Private: show the invite link; the host enters when ready.
-        setInvite({ roomId: info.roomId, mapId: info.mapId });
+        const brain = onlineAutopilotRef.current;
+        onlineAutopilotRef.current = null;
+        setInvite({ roomId: info.roomId, mapId: info.mapId, autopilot: brain });
       }
     };
     lobby.onPresence = applyPresence;
@@ -5957,7 +5975,9 @@ function Lobby({
           onClose={() => setCreateOnlineOpen(false)}
           onCreate={(opts) => {
             setCreateOnlineOpen(false);
-            lobbyRef.current?.createRoom(opts);
+            onlineAutopilotRef.current = opts.autopilotBrain ?? null;
+            const { autopilotBrain: _autopilotBrain, ...roomOpts } = opts;
+            lobbyRef.current?.createRoom(roomOpts);
           }}
         />
       )}
@@ -5965,9 +5985,9 @@ function Lobby({
         <InviteModal
           roomId={invite.roomId}
           onEnter={() => {
-            const { roomId, mapId } = invite;
+            const { roomId, mapId, autopilot } = invite;
             setInvite(null);
-            startOnline(roomId, mapId);
+            startOnline(roomId, mapId, autopilot);
           }}
           onClose={() => setInvite(null)}
         />
@@ -6509,11 +6529,20 @@ function CreateOnlineModal({
   onChangeSettings: (s: Settings) => void;
   onChangeMode: (m: GameMode) => void;
   onClose: () => void;
-  onCreate: (opts: { mapId: string; isPublic: boolean; capacity: number; mode: GameMode }) => void;
+  onCreate: (opts: {
+    mapId: string;
+    isPublic: boolean;
+    capacity: number;
+    mode: GameMode;
+    autopilotBrain: RlBrain | null;
+  }) => void;
 }) {
   const [players, setPlayers] = useState(MAX_PLAYERS);
   const [mapId, setMapId] = useState(settings.mapId);
   const [isPublic, setIsPublic] = useState(true);
+  const [autopilot, setAutopilot] = useState(false);
+  const [brainTier, setBrainTier] = useState<RlDifficulty>(settings.difficulty);
+  const [brains, setBrains] = useState<Record<RlDifficulty, RlBrain> | null>(null);
 
   // Online play has no bots — restrict to the human-friendly online pool.
   const onlineMaps = MAPS.filter((m) => ONLINE_MAP_IDS.includes(m.id));
@@ -6522,9 +6551,33 @@ function CreateOnlineModal({
   const isDuel = mode === 'duel';
   const capacity = isDuel ? 2 : players;
 
+  useEffect(() => {
+    let active = true;
+    fetch('/api/ai/brain', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ai'))))
+      .then((d: { brains?: RlBrain[] }) => {
+        if (!active || !d.brains) return;
+        const by = {} as Record<RlDifficulty, RlBrain>;
+        for (const b of d.brains) {
+          if ((RL_DIFFICULTIES as readonly string[]).includes(b.difficulty)) by[b.difficulty] = b;
+        }
+        if (by.easy || by.medium || by.hard) setBrains(by);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const create = () => {
     onChangeSettings({ ...settings, mapId });
-    onCreate({ mapId, isPublic, capacity, mode });
+    onCreate({
+      mapId,
+      isPublic,
+      capacity,
+      mode,
+      autopilotBrain: autopilot ? brains?.[brainTier] ?? seedRlBrain(brainTier) : null,
+    });
   };
 
   return (
@@ -6571,6 +6624,52 @@ function CreateOnlineModal({
         {isPublic
           ? 'Public matches appear in Open Lobbies for anyone to join.'
           : 'Private matches are invite-only — you’ll get a link to share.'}
+      </div>
+      <div className='flex flex-col gap-1.5 border-t border-cyan-300/15 pt-3'>
+        <label className='flex cursor-pointer items-center justify-between gap-2'>
+          <span className='text-[10px] uppercase tracking-[0.16em] text-cyan-200/80'>
+            Let the AI play for me
+          </span>
+          <input
+            type='checkbox'
+            checked={autopilot}
+            onChange={(e) => setAutopilot(e.target.checked)}
+            className='accent-cyan-300'
+          />
+        </label>
+        {autopilot && (
+          <>
+            <div className='text-[10px] leading-relaxed text-white/45'>
+              The AI controls your player in this no-bot online match. It targets
+              opponents and sends normal server-authoritative shots.
+            </div>
+            <span className='text-[9px] uppercase tracking-[0.18em] text-white/50'>AI brain</span>
+            <div className='grid grid-cols-3 gap-2'>
+              {RL_DIFFICULTIES.map((d) => {
+                const b = brains?.[d];
+                const active = brainTier === d;
+                return (
+                  <button
+                    key={d}
+                    onClick={() => setBrainTier(d)}
+                    className={`rounded-md border px-2 py-1.5 text-left transition ${
+                      active
+                        ? 'border-cyan-300/80 bg-cyan-300/15 text-cyan-100'
+                        : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
+                    }`}
+                  >
+                    <span className='block text-[10px] font-semibold uppercase tracking-[0.12em]'>
+                      {RL_DIFFICULTY_LABEL[d]}
+                    </span>
+                    <span className='block font-mono text-[8px] tabular-nums text-white/40'>
+                      {b ? `${b.duels} duels · ${b.gen} gens` : 'seed'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
       <button
         onClick={create}

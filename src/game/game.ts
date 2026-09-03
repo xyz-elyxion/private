@@ -721,10 +721,24 @@ export class Game {
     }
   }
 
-  // The pilot's target: in a Duel-the-AI match it's the enemy learning bot
-  // (self-play); otherwise the nearest alive enemy bot (FFA/TDM — teammates are
-  // never targeted, matching the no-friendly-fire rules).
+  // The pilot's target: the enemy learning bot in an offline AI duel, the nearest
+  // enemy bot in other offline modes, or the nearest visible remote player online.
+  // Teammates are never targeted in TDM, matching the server's friendly-fire rule.
   private pilotTarget(): PilotTarget | null {
+    if (this.net) {
+      let best: { id: string; pos: { x: number; y: number; z: number } } | null = null;
+      let bestD = Infinity;
+      for (const remote of this.net.remotes.values()) {
+        if (remote.invulnMs > 0) continue;
+        if (this.net.mode === 'tdm' && this.net.localTeam != null && remote.team === this.net.localTeam) continue;
+        const d = Math.hypot(remote.pos.x - this.player.pos.x, remote.pos.z - this.player.pos.z);
+        if (d < bestD) {
+          best = { id: remote.id, pos: remote.pos };
+          bestD = d;
+        }
+      }
+      return best;
+    }
     if (!this.bots) return null;
     if (this.learningBot && this.learningBot.state.alive) {
       return { id: this.learningBot.state.id, pos: { ...this.learningBot.state.pos } };
@@ -2706,6 +2720,9 @@ export class Game {
       if (!this.reducedEffects) this.damageFlash = 1;
       this.medals.onDeath();
       this.playerDeaths += 1;
+      // Keep the online pilot's recent-death feature in sync with offline
+      // autopilot so it can adapt after being fragged by a remote player.
+      if (this.pilot) this.pilot.onDeath();
       const killer = this.remotePlayers.get(ev.killerId);
       this.killcam = {
         killerId: ev.killerId,
