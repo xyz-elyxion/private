@@ -19,12 +19,21 @@ import {
   type RankedRoom,
   type RankedResult,
 } from './game/net';
-import { ONLINE_MAP_POOL } from './game/arena-data';
+import { mapPoolForMode, ONLINE_MAP_POOL } from './game/arena-data';
+import {
+  RL_DIFFICULTIES,
+  RL_DIFFICULTY_LABEL,
+  seedRlBrain,
+  type RlBrain,
+  type RlDifficulty,
+  type RlReport,
+} from './game/rl-brain';
 import { startUpdateChecker, type UpdateInfo } from './update-checker';
 import {
   AIR_JUMPS,
   cm360,
   DASH_COOLDOWN,
+  DUEL_FRAG_LIMIT,
   DEFAULT_BOT_DIFFICULTY,
   DEFAULT_GAME_MODE,
   DEFAULT_KEYBINDS,
@@ -302,6 +311,13 @@ export type MatchConfig =
       training?: boolean; // endless practice — no frag-limit match end
       gameMode?: GameMode; // ffa (default) / duel / tdm for Solo vs Bots
       challenge?: boolean; // weekly-challenge run (8p FFA speedrun vs easy bots → weekly board, not career)
+      // Duel the AI: run the offline duel bot on this learned policy (rl-brain.ts).
+      // autopilot (admin spectate) → the SAME brain also drives your slot: a
+      // self-play duel the admin just watches.
+      rl?: { brain: RlBrain; autopilot?: boolean };
+      // Admin autopilot in any Solo vs Bots mode (FFA/TDM/duel): the AI plays
+      // the match for you using this brain — you just watch.
+      autopilot?: { brain: RlBrain };
     }
   | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
@@ -789,6 +805,12 @@ function applyMatchConfig(game: Game, config: MatchConfig) {
     game.setBotCount(config.botCount);
     game.setBotsEnabled(true);
     game.setBotMode(config.gameMode ?? 'ffa'); // after the bots exist (sets teams in TDM)
+    // Duel the AI: install the stored learned policy before the model-backed bot
+    // spawn in start() — the duel bot then runs that policy as a training episode.
+    game.setRlBrain(config.rl?.brain ?? null);
+    // Admin autopilot: the pilot brain is the solo-mode autopilot's own choice,
+    // or (Duel the AI) the same brain as the duel bot (self-play spectate).
+    game.setAutopilot(config.autopilot?.brain ?? (config.rl?.autopilot ? config.rl.brain : null));
     // Weekly challenge: a fixed-map FFA speedrun whose whole run is recorded for a
     // rewatchable replay (and a dedicated frag cap). Marks the run on the engine.
     if (config.challenge) game.setChallenge(config.mapId);
@@ -1169,6 +1191,12 @@ function GameView({
           if (p) setEndProgression(p);
         });
       }
+      // Duel the AI: the duel is a training episode — hand the engine's computed
+      // policy gradient to the shared brain store so the bot learns from it.
+      if (config.mode === 'local' && config.rl) {
+        const rep = game.takeRlReport();
+        if (rep) void submitRlDuelReport(rep);
+      }
       // Any finished match → temporary shareable replay (competition recap:
       // action feed + watch button + /replay/<code> link). Best-effort: a
       // failed upload just means no share link this match.
@@ -1313,8 +1341,15 @@ function GameView({
     if (!isChallenge && r && game?.hasRecordableStats()) {
       void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
     }
+    // Duel the AI: leaving early still counts as a (partial) training episode.
+    if (config.mode === 'local' && config.rl && game) {
+      const rep = game.takeRlReport();
+      if (rep) void submitRlDuelReport(rep);
+    }
     onExit(r);
-  }, [onExit, offlineMatch, isChallenge]);
+    // config is immutable for the life of a match (GameView is keyed by playId),
+    // so depending on it never recreates leave mid-duel.
+  }, [onExit, offlineMatch, isChallenge, config]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
   // buttons (copy invite / leave) are clickable, and so the player isn't stuck
@@ -4596,6 +4631,23 @@ async function submitMatchStats(
   }
 }
 
+// Duel the AI: POST the finished duel's training episode (the REINFORCE
+// gradient the engine computed from the bot's logged decisions) to the shared
+// brain store in the game's server data. Best-effort like stats — a failed
+// upload just means this one duel's lesson isn't folded into the shared brain.
+async function submitRlDuelReport(report: RlReport): Promise<void> {
+  try {
+    await fetch('/api/ai/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(report),
+    });
+  } catch {
+    // ignore — never block the results screen on a training report
+  }
+}
+
 // ── Weekly Challenge ─────────────────────────────────────────────────────────
 type WeeklyChallengeEntry = {
   id: string;
@@ -5478,6 +5530,7 @@ function Lobby({
   onLogout: () => void;
 }) {
   const [soloOpen, setSoloOpen] = useState(false);
+  const [aiDuelOpen, setAiDuelOpen] = useState(false);
   const [createOnlineOpen, setCreateOnlineOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
   const [challengesOpen, setChallengesOpen] = useState(false);
@@ -5806,6 +5859,11 @@ function Lobby({
                   Weekly Challenge
                 </DeckButton>
               </div>
+              <div className='col-span-2'>
+                <DeckButton onClick={() => setAiDuelOpen(true)} disabled={playDisabled} sub='1v1 · the bot trains on every duel'>
+                  Duel the AI
+                </DeckButton>
+              </div>
             </div>
 
             {/* Utility row — meta surfaces kept visually subordinate to the ways
@@ -5875,6 +5933,19 @@ function Lobby({
             setSoloOpen(false);
             onStart(c);
           }}
+          isAdmin={account?.isAdmin ?? false}
+        />
+      )}
+      {aiDuelOpen && (
+        <AiDuelModal
+          settings={settings}
+          onChangeSettings={onChangeSettings}
+          onClose={() => setAiDuelOpen(false)}
+          onStart={(c) => {
+            setAiDuelOpen(false);
+            onStart(c);
+          }}
+          isAdmin={account?.isAdmin ?? false}
         />
       )}
       {createOnlineOpen && (
@@ -6607,19 +6678,46 @@ function CreateMatchModal({
   onChangeSettings,
   onClose,
   onStart,
+  isAdmin,
 }: {
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
   onClose: () => void;
   onStart: (config: MatchConfig) => void;
+  isAdmin: boolean;
 }) {
   const [players, setPlayers] = useState(MAX_PLAYERS);
   const [mapId, setMapId] = useState(settings.mapId);
   const [difficulty, setDifficulty] = useState<BotDifficulty>(settings.difficulty);
   const [gameMode, setGameMode] = useState<GameMode>('ffa');
+  // Admin autopilot: the AI plays this match for you (any mode). The brain tier
+  // defaults to the match's bot difficulty (the tiers line up 1:1).
+  const [autopilot, setAutopilot] = useState(false);
+  const [brainTier, setBrainTier] = useState<RlDifficulty>(settings.difficulty);
+  const [brains, setBrains] = useState<Record<RlDifficulty, RlBrain> | null>(null);
 
   // Duel is always 1v1 (1 bot); FFA/TDM use the slider.
   const effPlayers = gameMode === 'duel' ? 2 : players;
+
+  // Live brains + training stats (best-effort — offline clients use the seed).
+  useEffect(() => {
+    if (!isAdmin) return;
+    let active = true;
+    fetch('/api/ai/brain', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ai'))))
+      .then((d: { brains?: RlBrain[] }) => {
+        if (!active || !d.brains) return;
+        const by = {} as Record<RlDifficulty, RlBrain>;
+        for (const b of d.brains) {
+          if ((RL_DIFFICULTIES as readonly string[]).includes(b.difficulty)) by[b.difficulty] = b;
+        }
+        if (by.easy || by.medium || by.hard) setBrains(by);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [isAdmin]);
 
   const start = () => {
     onChangeSettings({ ...settings, mapId, difficulty });
@@ -6629,6 +6727,7 @@ function CreateMatchModal({
       botCount: Math.max(1, effPlayers - 1),
       difficulty,
       gameMode,
+      ...(autopilot ? { autopilot: { brain: brains?.[brainTier] ?? seedRlBrain(brainTier) } } : {}),
     });
   };
 
@@ -6675,6 +6774,56 @@ function CreateMatchModal({
         />
       </label>
       <DifficultyPicker value={difficulty} onChange={setDifficulty} />
+      {isAdmin && (
+        <div className='flex flex-col gap-1.5 border-t border-amber-300/15 pt-3'>
+          <label className='flex cursor-pointer items-center justify-between gap-2'>
+            <span className='text-[10px] uppercase tracking-[0.16em] text-amber-200/80'>
+              Let the AI play for me
+            </span>
+            <input
+              type='checkbox'
+              checked={autopilot}
+              onChange={(e) => setAutopilot(e.target.checked)}
+              className='accent-amber-300'
+            />
+          </label>
+          {autopilot && (
+            <>
+              <div className='text-[10px] leading-relaxed text-white/45'>
+                The AI plays this {gameMode.toUpperCase()} match for you — you just
+                watch. The bots fight back as usual.
+              </div>
+              <span className='text-[9px] uppercase tracking-[0.18em] text-white/50'>
+                AI brain
+              </span>
+              <div className='grid grid-cols-3 gap-2'>
+                {RL_DIFFICULTIES.map((d) => {
+                  const b = brains?.[d];
+                  const active = brainTier === d;
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => setBrainTier(d)}
+                      className={`rounded-md border px-2 py-1.5 text-left transition ${
+                        active
+                          ? 'border-amber-300/80 bg-amber-300/15 text-amber-100'
+                          : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className='block text-[10px] font-semibold uppercase tracking-[0.12em]'>
+                        {RL_DIFFICULTY_LABEL[d]}
+                      </span>
+                      <span className='block font-mono text-[8px] tabular-nums text-white/40'>
+                        {b ? `${b.duels} duels · ${b.gen} gens` : 'seed'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <button
         onClick={start}
         className='mt-1 rounded-md bg-emerald-400 px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
@@ -6712,6 +6861,168 @@ function DifficultyPicker({
         ))}
       </div>
     </div>
+  );
+}
+
+// ── Duel the AI (1v1 a reinforcement-learning bot) ──────────────────────────
+// An offline 1v1 against a bot whose combat brain is a learned policy (see
+// rl-brain.ts). Every duel is a training episode: at match end the policy is
+// updated from frags/deaths and saved to the game's server data as one shared
+// global brain per tier — so the bot gets sharper the more it is dueled. The
+// picker pulls the live brains so you can see how far each tier has come.
+function AiDuelModal({
+  settings,
+  onChangeSettings,
+  onClose,
+  onStart,
+  isAdmin,
+}: {
+  settings: Settings;
+  onChangeSettings: (s: Settings) => void;
+  onClose: () => void;
+  onStart: (config: MatchConfig) => void;
+  isAdmin: boolean;
+}) {
+  const [tier, setTier] = useState<RlDifficulty>(settings.difficulty);
+  const [mapId, setMapId] = useState('');
+  const [brains, setBrains] = useState<Record<RlDifficulty, RlBrain> | null>(null);
+  // The AI duel uses the tight 1v1 arenas only (like online Duel).
+  const duelMaps = useMemo(
+    () => MAPS.filter((m) => (mapPoolForMode('duel') as readonly string[]).includes(m.id)),
+    [],
+  );
+  useEffect(() => {
+    if (mapId === '' && duelMaps.length > 0) setMapId(duelMaps[0].id);
+  }, [mapId, duelMaps]);
+  // Live brains + training stats (best-effort — offline clients duel the seed).
+  useEffect(() => {
+    let active = true;
+    fetch('/api/ai/brain', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ai'))))
+      .then((d: { brains?: RlBrain[] }) => {
+        if (!active || !d.brains) return;
+        const by = {} as Record<RlDifficulty, RlBrain>;
+        for (const b of d.brains) {
+          if ((RL_DIFFICULTIES as readonly string[]).includes(b.difficulty)) by[b.difficulty] = b;
+        }
+        if (by.easy || by.medium || by.hard) setBrains(by);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const start = () => {
+    // The brain snapshot rides in the config so the in-match bot runs exactly
+    // the policy we dueled (the server folds the result's gradient back in).
+    onChangeSettings({ ...settings, mapId, difficulty: tier });
+    onStart({
+      mode: 'local',
+      mapId: mapId || duelMaps[0]?.id || settings.mapId,
+      botCount: 1,
+      difficulty: tier,
+      gameMode: 'duel',
+      rl: { brain: brains?.[tier] ?? seedRlBrain(tier) },
+    });
+  };
+  // Admin spectate: the SAME brain also drives the player slot, so the admin
+  // just watches a self-play duel — which still trains the brain as an episode.
+  const startAutopilot = () => {
+    onChangeSettings({ ...settings, mapId, difficulty: tier });
+    onStart({
+      mode: 'local',
+      mapId: mapId || duelMaps[0]?.id || settings.mapId,
+      botCount: 1,
+      difficulty: tier,
+      gameMode: 'duel',
+      rl: { brain: brains?.[tier] ?? seedRlBrain(tier), autopilot: true },
+    });
+  };
+  const brain = brains?.[tier] ?? null;
+
+  return (
+    <ModalShell title='Duel the AI' onClose={onClose}>
+      <div className='text-[10px] leading-relaxed text-white/50'>
+        A 1v1 against a bot that learns. Every duel is a training episode — the
+        policy is updated from frags &amp; deaths when it ends and saved to the
+        game’s server data as one shared brain per tier, so it sharpens the more
+        it is dueled.
+      </div>
+      <div className='flex flex-col gap-1.5'>
+        <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Brain</span>
+        <div className='flex flex-col gap-1.5'>
+          {RL_DIFFICULTIES.map((d) => {
+            const b = brains?.[d];
+            const active = tier === d;
+            return (
+              <button
+                key={d}
+                onClick={() => setTier(d)}
+                className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition ${
+                  active
+                    ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-100'
+                    : 'border-white/15 bg-white/5 text-white/70 hover:bg-white/10'
+                }`}
+              >
+                <span className='flex flex-col'>
+                  <span className='font-display text-[12px] font-semibold uppercase tracking-[0.14em]'>
+                    {RL_DIFFICULTY_LABEL[d]}
+                  </span>
+                  <span className='font-mono text-[9px] uppercase tracking-[0.18em] text-white/40'>
+                    {d} tier
+                  </span>
+                </span>
+                <span className='text-right font-mono text-[10px] tabular-nums text-white/55'>
+                  {b ? (
+                    <>
+                      {b.gen} gens · {b.duels} duels
+                      <span className='block text-white/35'>
+                        {b.botFrags}–{b.humanFrags} frags
+                      </span>
+                    </>
+                  ) : (
+                    'untrained seed'
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <SelectField
+        label='Arena'
+        value={mapId || duelMaps[0]?.id || ''}
+        options={duelMaps}
+        onChange={setMapId}
+      />
+      <div className='text-[10px] leading-relaxed text-white/40'>
+        {brain
+          ? `First to ${DUEL_FRAG_LIMIT} frags. This tier has trained across ${brain.duels} duel${brain.duels === 1 ? '' : 's'} (${brain.gen} policy updates).`
+          : `First to ${DUEL_FRAG_LIMIT} frags. No server reach — you'll duel an untrained seed and this duel won't be saved.`}
+      </div>
+      <button
+        onClick={start}
+        className='mt-1 rounded-md bg-cyan-300 px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-200'
+      >
+        Start Duel
+      </button>
+      {isAdmin && (
+        <div className='mt-3 border-t border-amber-300/15 pt-3'>
+          <div className='text-[10px] leading-relaxed text-amber-200/80'>
+            Admin: let the AI play for you. The shared brain controls both sides
+            in a self-play duel — you just watch. Each match still trains the
+            brain (shows up as gens/duels in /admin).
+          </div>
+          <button
+            onClick={startAutopilot}
+            className='mt-1.5 w-full rounded-md border border-amber-300/40 px-5 py-2 text-[11px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:bg-amber-300/10'
+          >
+            Watch the AI play
+          </button>
+        </div>
+      )}
+    </ModalShell>
   );
 }
 

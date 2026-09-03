@@ -19,6 +19,7 @@
     "src/game/types.ts",
     "src/game/cosmetics.ts",
     "src/game/progression.ts",
-    "src/game/challenges.ts"
+    "src/game/challenges.ts",
+    "src/game/rl-brain.ts"
   ]
 }

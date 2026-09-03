@@ -20,6 +20,7 @@ import {
   GRAVITY,
   JUMP_SPEED,
   MAX_HORIZONTAL_SPEED,
+  RAIL_COOLDOWN,
   WALK_SPEED,
   type BotDifficulty,
 } from './constants';
@@ -29,6 +30,21 @@ import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
 import { WornHat } from './hats';
 import { HATS, UNUSUALS } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
+import {
+  AIM_SPAN,
+  AIM_SPAN_V,
+  computeRlGradient,
+  RL_BOT_NAMES,
+  RL_DECIDE_INTERVAL,
+  RL_MISS_DIST_REF,
+  RL_MISS_PENALTY,
+  RL_TRAJ_MAX,
+  rlDecide,
+  type RlBrain,
+  type RlEvents,
+  type RlReport,
+  type RlTrajectory,
+} from './rl-brain';
 
 // Bots wear a random (non-bare) hat — and sometimes an unusual effect — so the
 // cosmetics show up in solo play.
@@ -311,29 +327,29 @@ export class Bot {
   private fallbackBody: THREE.Mesh | null = null;
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
-  private target: Vec3;
+  protected target: Vec3;
   private roamStuckTimer = 0; // accrues while a roaming bot makes no progress → forces an unstick
-  private team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color
+  protected team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color
   private nameColor = '#ffd1d8'; // current nameplate color (team-tinted in TDM)
-  private facing = 0;
+  protected facing = 0;
   private dyingTimer = 0;
   // Vertical physics so bots obey gravity (fall off ledges) and auto-step up
   // ramps/cover instead of being glued to the ground plane (#7).
-  private vel: Vec3 = { x: 0, y: 0, z: 0 };
-  private onGround = false;
+  protected vel: Vec3 = { x: 0, y: 0, z: 0 };
+  protected onGround = false;
   // ── Human-like movement state (jump / double-jump / dash / boost) ──
-  private mv: BotMove;
-  private airJumpsLeft = AIR_JUMPS;     // reset to AIR_JUMPS on ground contact
+  protected mv: BotMove;
+  protected airJumpsLeft = AIR_JUMPS;   // reset to AIR_JUMPS on ground contact
   private decideTimer = 0;              // movement re-decision clock
-  private dashTimer = 0;                // >0 while a dash burst is active
-  private dashCooldown = 0;
+  protected dashTimer = 0;              // >0 while a dash burst is active
+  protected dashCooldown = 0;
   private dashDir: Vec3 = { x: 0, y: 0, z: 0 };
-  private boostCooldown = 0;
+  protected boostCooldown = 0;
   private jumping = false;              // true between takeoff and landing (drives the jump anim)
   private wasOnGround = true;           // for landing-edge detection
   private shotAtTimer = 0;              // counts down after the bot is recently shot near; raises dodge reactivity
   // Combat state
-  private diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
+  protected diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
   private engagedId: string | null = null; // current target id, null = roaming
   private seenForSec = 0; // how long the current target has been visible (reaction gate)
   private shootCooldown = 0;
@@ -386,7 +402,13 @@ export class Bot {
   // Returns a fire intent when the bot decides to shoot this tick, else null.
   // `enemies` is every targetable entity (player + other bots); the bot filters
   // itself out by id.
-  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
+  // Shared per-tick bookkeeping (animation, timers, death/respawn) used by every
+  // bot brain. Returns false when the tick ended here — the bot is frozen in the
+  // pre-match countdown, mid-death-anim, or respawning, so no brain decisions or
+  // fire should happen this tick. Returns true when the bot is alive and active.
+  // (Extracted from step() so a policy-driven brain (LearningBot) can reuse the
+  // exact same lifecycle without duplicating it.)
+  protected stepShell(dt: number, map: ArenaMap, frozen: boolean): boolean {
     if (this.mixer) this.mixer.update(dt);
     // Pin the gun-carry pose over the animated arms while alive; let the death
     // clip flail freely when dead.
@@ -395,7 +417,7 @@ export class Bot {
     // put — no movement, decisions, or fire until the match goes live.
     if (frozen) {
       this.vel = { x: 0, y: 0, z: 0 };
-      return null;
+      return false;
     }
     if (this.shootCooldown > 0) this.shootCooldown = Math.max(0, this.shootCooldown - dt);
     // Movement timers (run while alive; harmless while dead since velocity is zeroed).
@@ -409,7 +431,7 @@ export class Bot {
       if (this.dyingTimer > 0) {
         this.dyingTimer -= dt;
         if (this.dyingTimer <= 0) this.group.visible = false;
-        return null;
+        return false;
       }
       this.state.respawnTimer -= dt;
       if (this.state.respawnTimer <= 0) {
@@ -437,8 +459,13 @@ export class Bot {
         this.actions.death?.stop(); // clear the clamped death pose
         this.loco?.start();
       }
-      return null;
+      return false;
     }
+    return true;
+  }
+
+  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
+    if (!this.stepShell(dt, map, frozen)) return null;
 
     // ── Acquire the nearest enemy that's in range AND in line of sight ──
     const eye = this.eyePos();
@@ -555,7 +582,7 @@ export class Bot {
   // of stopping dead; and a positive vel.y (from a jump/double-jump/boost) lofts
   // the bot up before gravity reclaims it. Landing resets the air-jump budget
   // and drops out of the jump animation.
-  private integrate(dt: number, map: ArenaMap, desired: { x: number; z: number }): { blocked: boolean } {
+  protected integrate(dt: number, map: ArenaMap, desired: { x: number; z: number }): { blocked: boolean } {
     const size: Vec3 = { x: BOT_RADIUS * 2, y: BOT_HEIGHT, z: BOT_RADIUS * 2 };
 
     // Resolve the horizontal displacement to actually apply this tick.
@@ -643,7 +670,7 @@ export class Bot {
 
   // Ground jump (or wall-clearing hop). Launches straight up at JUMP_SPEED and
   // plays the jump clip un-blended for the airtime.
-  private doJump() {
+  protected doJump() {
     this.vel.y = JUMP_SPEED;
     this.onGround = false;
     this.startJumpAnim();
@@ -651,7 +678,7 @@ export class Bot {
 
   // Mid-air second hop — spends an air jump. Optionally redirect horizontal
   // momentum toward `dir` so a double-jump can also be a sideways dodge.
-  private doAirJump(dir?: { x: number; z: number }) {
+  protected doAirJump(dir?: { x: number; z: number }) {
     if (this.airJumpsLeft <= 0) return false;
     this.airJumpsLeft -= 1;
     this.vel.y = JUMP_SPEED;
@@ -666,7 +693,7 @@ export class Bot {
   }
 
   // Start a ground dash burst in the given horizontal direction.
-  private doDash(dirX: number, dirZ: number) {
+  protected doDash(dirX: number, dirZ: number) {
     const len = Math.hypot(dirX, dirZ);
     if (len < 1e-4) return;
     this.dashDir = { x: dirX / len, y: 0, z: dirZ / len };
@@ -678,7 +705,7 @@ export class Bot {
   // current heading) like the player's floor-boost, used to gain height or bail.
   // Bots take NO self-damage. Cancels downward velocity first so a falling bot
   // still gets the full launch.
-  private doBoost(headX: number, headZ: number) {
+  protected doBoost(headX: number, headZ: number) {
     if (this.vel.y < 0) this.vel.y = 0;
     const len = Math.hypot(headX, headZ) || 1;
     const fx = headX / len;
@@ -812,12 +839,12 @@ export class Bot {
   }
 
   // Drive the locomotion blend from how far the bot actually moved this tick.
-  private updateLoco(prevX: number, prevZ: number, dt: number) {
+  protected updateLoco(prevX: number, prevZ: number, dt: number) {
     const moved = Math.hypot(this.state.pos.x - prevX, this.state.pos.z - prevZ);
     this.loco?.update(dt > 0 ? moved / dt : 0, dt);
   }
 
-  private eyePos(): Vec3 {
+  protected eyePos(): Vec3 {
     return {
       x: this.state.pos.x,
       y: this.state.pos.y + BOT_HEIGHT * BOT_EYE_FRAC,
@@ -827,7 +854,7 @@ export class Bot {
 
   // Raycast eye → target center against the map; blocked if a box is hit before
   // reaching the target.
-  private hasLineOfSight(eye: Vec3, targetPos: Vec3, map: ArenaMap): boolean {
+  protected hasLineOfSight(eye: Vec3, targetPos: Vec3, map: ArenaMap): boolean {
     const tc = { x: targetPos.x, y: targetPos.y + BOT_HEIGHT * 0.5, z: targetPos.z };
     const dx = tc.x - eye.x;
     const dy = tc.y - eye.y;
@@ -873,7 +900,7 @@ export class Bot {
     return { x: mx * step, z: mz * step };
   }
 
-  private roam(dt: number, map: ArenaMap) {
+  protected roam(dt: number, map: ArenaMap) {
     const dx = this.target.x - this.state.pos.x;
     const dz = this.target.z - this.state.pos.z;
     const distSq = dx * dx + dz * dz;
@@ -1101,7 +1128,7 @@ export class Bot {
     this.group.add(this.fallbackHead);
   }
 
-  private applyFacing() {
+  protected applyFacing() {
     if (this.modelRoot) {
       // Always set ALL axes — don't leave .x / .z dangling.
       this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);
@@ -1128,6 +1155,461 @@ export class Bot {
   }
 }
 
+// ── RL learning bot ("Duel the AI") ──────────────────────────────────────────
+// A Bot whose combat brain is a LEARNED policy (rl-brain.ts) instead of the
+// hand-tuned difficulty tables above. Every 1v1 duel is a training episode:
+// the bot outputs LOW-LEVEL inputs — continuous forward/strafe movement axes
+// plus jump / fire / dash / boost presses and an aim point, the same controls
+// a player has — samples them from its policy weights at a fixed cadence,
+// logs what it did, and receives rewards: +1 it fragged the human, −1 it
+// died, and −RL_MISS_PENALTY for every rail shot that lands on nobody (dense
+// per-shot feedback so the aim head can learn where to point). No behaviour
+// (retreat, strafe, dodge…) and no aiming skill is pre-programmed: it must
+// emerge from the gradient. At match end Game finalizes the episode into a
+// policy-gradient report that the server folds into the shared stored brain —
+// so the agent genuinely gets stronger the more it is dueled.
+const RL_ENGAGE_RANGE = 55; // acquire + engage distance (top of the classic tiers)
+const RL_FIRE_COOLDOWN = RAIL_COOLDOWN; // a learning bot obeys the rail's cadence too
+const RL_AIM_NOISE = 0.02; // radians of angular jitter per shot (the skill floor)
+const RL_FACING_LERP = 10; // how fast the model turns to face the target (1/s)
+
+const clampF = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+export class LearningBot extends Bot {
+  private brain: RlBrain; // the policy snapshot this duel runs on (fixed mid-duel)
+  private epTime = 0; // sim seconds the brain has been live — the reward timebase
+  private actTimer = 0; // countdown to the next policy decision
+  private curF = 0; // the forward axis being held between decisions (−1..1)
+  private curS = 0; // the strafe axis being held between decisions (−1..1)
+  private curAimX = 0; // learned aim-point offset, lateral (held between decisions)
+  private curAimY = 0; // learned aim-point offset, vertical
+  private pitch = 0; // vertical aim — shots resolve along facing + pitch
+  private fireCd = 0;
+  private recentDeath = 0; // 1 for ~1s after dying (lets the policy "feel" pain)
+  private pendingShot = false; // the policy pressed fire this decision → resolve a shot
+  private traj: RlTrajectory = {
+    feats: [],
+    f: [],
+    s: [],
+    aimX: [],
+    aimY: [],
+    jump: [],
+    fire: [],
+    dash: [],
+    boost: [],
+    allowJump: [],
+    allowFire: [],
+    allowDash: [],
+    allowBoost: [],
+    times: [],
+  };
+  private events: RlEvents = [];
+  private frags = 0;
+  private deaths = 0;
+  private finalized = false;
+  private lastTgtId: string | null = null;
+  private lastTgtPos: Vec3 = { x: 0, y: 0, z: 0 };
+  private tgtSpeed = 0;
+  // Geometry of the most recent fired shot (set in makeFireIntent, consumed by
+  // onShotMissed to measure how far the miss was from the target's chest).
+  private lastShot: { origin: Vec3; dir: Vec3; chest: Vec3 } | null = null;
+
+  constructor(
+    id: EntityId,
+    name: string,
+    spawn: Vec3,
+    scene: THREE.Scene,
+    model: BotModel | null,
+    difficulty: BotDifficulty,
+    brain: RlBrain,
+  ) {
+    super(id, name, spawn, scene, model, difficulty);
+    this.brain = brain;
+    this.actTimer = rand(0.05, RL_DECIDE_INTERVAL); // desync the first decision
+  }
+
+  override step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
+    // Frozen / dying / respawning: shared lifecycle — no brain decisions.
+    if (!this.stepShell(dt, map, frozen)) return null;
+    this.epTime += dt;
+    if (this.recentDeath > 0) this.recentDeath = Math.max(0, this.recentDeath - dt);
+    if (this.fireCd > 0) this.fireCd = Math.max(0, this.fireCd - dt);
+    if (this.actTimer > 0) this.actTimer -= dt;
+
+    const eye = this.eyePos();
+    // Acquire the nearest VISIBLE enemy (never a teammate).
+    let target: BotTarget | null = null;
+    let bestD = Infinity;
+    for (const e of enemies) {
+      if (e.id === this.state.id) continue;
+      if (this.team != null && e.team != null && e.team === this.team) continue;
+      const d = Math.hypot(e.pos.x - this.state.pos.x, e.pos.z - this.state.pos.z);
+      if (d >= bestD || d > RL_ENGAGE_RANGE) continue;
+      if (this.hasLineOfSight(eye, e.pos, map)) {
+        target = e;
+        bestD = d;
+      }
+    }
+    // No target: the bot can't act on anything it sees, so it just searches the
+    // arena (wayfinding — not a learned behaviour). Movement axes relax.
+    if (!target) {
+      this.curF = 0;
+      this.curS = 0;
+      const px = this.state.pos.x;
+      const pz = this.state.pos.z;
+      this.roam(dt, map);
+      this.updateLoco(px, pz, dt);
+      return null;
+    }
+
+    const feats = this.combatFeatures(target, dt);
+    // Every policy cadence the brain samples a fresh low-level input set
+    // (forward/strafe axes + jump/fire/dash/boost presses). Between decisions
+    // the bot keeps holding the last axes — like a player holding WASD.
+    if (this.actTimer <= 0) {
+      this.actTimer = RL_DECIDE_INTERVAL * (0.75 + Math.random() * 0.5);
+      this.makeDecision(feats);
+    }
+    const prevX = this.state.pos.x;
+    const prevZ = this.state.pos.z;
+    this.steer(dt, map);
+    // Turn toward the policy's chosen AIM POINT — not straight at the enemy.
+    // The shot resolves along this exact facing, so hitting REQUIRES the
+    // learned aim to be on the chest: there is no re-aim at the target and no
+    // baked-in "only fire when on target" gate. A fresh brain points off the
+    // enemy and misses — each miss (dense −penalty at shot time) drags the aim
+    // onto the chest, and only aligned shots score the +1 frag reward.
+    const ap = this.learnedAimPoint(target);
+    const want = Math.atan2(ap.x - this.state.pos.x, ap.z - this.state.pos.z);
+    const wantPitch = Math.atan2(
+      ap.y - this.eyePos().y,
+      Math.hypot(ap.x - this.state.pos.x, ap.z - this.state.pos.z) || 1,
+    );
+    const lerpT = 1 - Math.exp(-RL_FACING_LERP * dt);
+    this.facing = lerpAngle(this.facing, want, lerpT);
+    this.pitch += clampF(wantPitch - this.pitch, -3 * dt, 3 * dt);
+    this.pitch = clampF(this.pitch, -1.3, 1.3);
+    this.applyFacing();
+    this.updateLoco(prevX, prevZ, dt);
+
+    // The policy's fire press armed a shot this decision; Game resolves it like
+    // any bot shot (hitscan against the world — reward comes from the kill it
+    // causes). Between decisions the rail cools down before the next press.
+    if (this.pendingShot) {
+      this.pendingShot = false;
+      return this.makeFireIntent(eye);
+    }
+    return null;
+  }
+
+  // The point the policy chose to look at: the enemy's chest plus the sampled
+  // aim offsets (lateral metres perpendicular to the sightline + vertical
+  // metres). The gradient pulls these offsets onto the chest over duels.
+  // (Named to avoid clashing with the base Bot's private aimPoint field.)
+  private learnedAimPoint(target: BotTarget): Vec3 {
+    const dx = target.pos.x - this.state.pos.x;
+    const dz = target.pos.z - this.state.pos.z;
+    const horiz = Math.hypot(dx, dz) || 1;
+    const rx = -dz / horiz; // right of the sightline (sign is just convention)
+    const rz = dx / horiz;
+    return {
+      x: target.pos.x + rx * this.curAimX * AIM_SPAN,
+      y: target.pos.y + BOT_HEIGHT * 0.5 + this.curAimY * AIM_SPAN_V,
+      z: target.pos.z + rz * this.curAimX * AIM_SPAN,
+    };
+  }
+
+  // One policy decision: sample the low-level inputs (move axes + trigger
+  // presses) from the brain, try them against the game state, and log the row
+  // for the episode gradient. A press the game state blocked (off the ground,
+  // on cooldown) is marked not-allowed — the gradient later skips it, because
+  // it was never a real choice the policy got to make.
+  private makeDecision(feats: number[]) {
+    const d = rlDecide(this.brain.weights, feats, Math.random);
+    this.curF = d.f;
+    this.curS = d.s;
+    this.curAimX = d.aimX;
+    this.curAimY = d.aimY;
+    // Jump — only from the ground, or as an air jump while the budget remains.
+    const allowJump = this.onGround || this.airJumpsLeft > 0 ? 1 : 0;
+    const jump = d.jump && allowJump === 1;
+    if (jump) {
+      if (this.onGround) this.doJump();
+      else this.doAirJump();
+    }
+    // Fire — only while the rail is off cooldown.
+    const allowFire = this.fireCd <= 0 ? 1 : 0;
+    const fire = d.fire && allowFire === 1;
+    if (fire) {
+      this.fireCd = RL_FIRE_COOLDOWN;
+      this.pendingShot = true;
+    }
+    // Dash — a grounded burst, off cooldown, not already mid-dash.
+    const allowDash =
+      this.onGround && this.dashCooldown <= 0 && this.dashTimer <= 0 ? 1 : 0;
+    const dash = d.dash && allowDash === 1;
+    if (dash) this.tryDash();
+    // Boost — off cooldown.
+    const allowBoost = this.boostCooldown <= 0 ? 1 : 0;
+    const boost = d.boost && allowBoost === 1;
+    if (boost) this.tryBoost();
+    this.logRow(feats, {
+      f: d.f,
+      s: d.s,
+      aimX: d.aimX,
+      aimY: d.aimY,
+      jump: jump ? 1 : 0,
+      fire: fire ? 1 : 0,
+      dash: dash ? 1 : 0,
+      boost: boost ? 1 : 0,
+      allowJump,
+      allowFire,
+      allowDash,
+      allowBoost,
+    });
+  }
+
+  // Dash along the current movement input (the direction the bot is trying to
+  // go), falling back to facing forward — the same as a player pressing Q while
+  // holding a direction.
+  private tryDash() {
+    const len = Math.hypot(this.curF, this.curS);
+    let dx: number;
+    let dz: number;
+    if (len > 0.3) {
+      const fx = Math.sin(this.facing);
+      const fz = Math.cos(this.facing);
+      const rx = Math.cos(this.facing);
+      const rz = -Math.sin(this.facing);
+      dx = (fx * this.curF + rx * this.curS) / len;
+      dz = (fz * this.curF + rz * this.curS) / len;
+    } else {
+      dx = Math.sin(this.facing);
+      dz = Math.cos(this.facing);
+    }
+    this.doDash(dx, dz);
+  }
+
+  // Boost-launch up-and-forward, mirroring a player hitting right-mouse at the
+  // floor to gain height.
+  private tryBoost() {
+    const fx = Math.sin(this.facing);
+    const fz = Math.cos(this.facing);
+    this.doBoost(fx, fz);
+  }
+
+  // Hold the policy's last movement axes as a raw "stick" input translated to
+  // world space in the bot's local frame, then let the shared physics integrate
+  // it (grounded accel, air control, dash overrides, collision…). There is no
+  // behaviour layer here — the AI picks a movement direction and speed, and
+  // anything strategic (strafing, backing off) must be learned.
+  private steer(dt: number, map: ArenaMap) {
+    const fx = Math.sin(this.facing);
+    const fz = Math.cos(this.facing);
+    const rx = Math.cos(this.facing);
+    const rz = -Math.sin(this.facing);
+    const stick = Math.min(1, Math.hypot(this.curF, this.curS)); // analog clamp
+    let wx = fx * this.curF + rx * this.curS;
+    let wz = fz * this.curF + rz * this.curS;
+    const mag = Math.hypot(wx, wz);
+    if (mag > 1e-4) {
+      wx /= mag;
+      wz /= mag;
+    }
+    const step = this.diff.moveSpeed * stick * dt;
+    this.integrate(dt, map, { x: wx * step, z: wz * step });
+  }
+
+  // The state snapshot the policy sees: exactly RL_FEATURE_COUNT normalized
+  // numbers, in the order documented in rl-brain.ts.
+  private combatFeatures(target: BotTarget, dt: number): number[] {
+    const dx = target.pos.x - this.state.pos.x;
+    const dz = target.pos.z - this.state.pos.z;
+    const dist = Math.hypot(dx, dz) || 1;
+    const grounded = this.onGround ? 1 : 0;
+    // Bearing to the target in the bot's LOCAL frame (aligned with its facing),
+    // so a given bearing reads the same no matter which way the bot looks.
+    const ux = dx / dist;
+    const uz = dz / dist;
+    const cosB = ux * Math.sin(this.facing) + uz * Math.cos(this.facing); // 1 = dead ahead
+    const sinB = ux * Math.cos(this.facing) - uz * Math.sin(this.facing); // ±1 = off to a side
+    let tSpeed = this.tgtSpeed;
+    if (this.lastTgtId === target.id && dt > 1e-4) {
+      tSpeed = Math.hypot(target.pos.x - this.lastTgtPos.x, target.pos.z - this.lastTgtPos.z) / dt;
+    }
+    this.lastTgtId = target.id;
+    this.lastTgtPos = { x: target.pos.x, y: target.pos.y, z: target.pos.z };
+    this.tgtSpeed = clampF(tSpeed / 15, 0, 1);
+    const want = Math.atan2(dx, dz);
+    let err = want - this.facing;
+    while (err > Math.PI) err -= Math.PI * 2;
+    while (err < -Math.PI) err += Math.PI * 2;
+    const boostTotal = this.mv.boostCooldown || 2.4;
+    return [
+      clampF(dist / 25, 0, 1), // dist
+      clampF(cosB, -1, 1), // cosB
+      clampF(sinB, -1, 1), // sinB
+      clampF((target.pos.y - this.state.pos.y) / 8, -1, 1), // elev
+      grounded, // grounded
+      clampF(Math.hypot(this.vel.x, this.vel.z) / 20, 0, 1), // speed
+      this.tgtSpeed, // enemySpeed
+      clampF(Math.abs(err) / Math.PI, 0, 1), // aimErr
+      clampF(this.recentDeath, 0, 1), // recentDeath
+      clampF(this.fireCd / RL_FIRE_COOLDOWN, 0, 1), // fireCd (0 = ready)
+      clampF(this.dashCooldown / DASH_COOLDOWN, 0, 1), // dashCd (0 = ready)
+      clampF(this.boostCooldown / boostTotal, 0, 1), // boostCd (0 = ready)
+      1, // bias
+    ];
+  }
+
+  private logRow(
+    feats: number[],
+    d: {
+      f: number;
+      s: number;
+      aimX: number;
+      aimY: number;
+      jump: number;
+      fire: number;
+      dash: number;
+      boost: number;
+      allowJump: number;
+      allowFire: number;
+      allowDash: number;
+      allowBoost: number;
+    },
+  ) {
+    this.traj.feats.push(feats);
+    this.traj.f.push(d.f);
+    this.traj.s.push(d.s);
+    this.traj.aimX.push(d.aimX);
+    this.traj.aimY.push(d.aimY);
+    this.traj.jump.push(d.jump);
+    this.traj.fire.push(d.fire);
+    this.traj.dash.push(d.dash);
+    this.traj.boost.push(d.boost);
+    this.traj.allowJump.push(d.allowJump);
+    this.traj.allowFire.push(d.allowFire);
+    this.traj.allowDash.push(d.allowDash);
+    this.traj.allowBoost.push(d.allowBoost);
+    this.traj.times.push(this.epTime);
+    if (this.traj.feats.length > RL_TRAJ_MAX) {
+      this.traj.feats.shift();
+      this.traj.f.shift();
+      this.traj.s.shift();
+      this.traj.aimX.shift();
+      this.traj.aimY.shift();
+      this.traj.jump.shift();
+      this.traj.fire.shift();
+      this.traj.dash.shift();
+      this.traj.boost.shift();
+      this.traj.allowJump.shift();
+      this.traj.allowFire.shift();
+      this.traj.allowDash.shift();
+      this.traj.allowBoost.shift();
+      this.traj.times.shift();
+    }
+  }
+
+  // Reward events (called by Game as the sim resolves shots). +1 = the bot
+  // fragged the human; −1 = the bot died; a miss = a negative reward scaled by
+  // HOW FAR the shot was from the target's chest (see rl-brain.ts — the
+  // distance scaling is what gives the aim a direction to move). The misses
+  // are the dense, well-timed signal that lets the AIM head learn.
+  onScored() {
+    this.frags += 1;
+    this.events.push({ t: this.epTime, r: 1 });
+  }
+  onDied() {
+    this.deaths += 1;
+    this.recentDeath = 1;
+    this.events.push({ t: this.epTime, r: -1 });
+  }
+  // Game resolved this bot's last rail shot and it landed on nobody (wall /
+  // out of range). Measure how far the shot ray passed from the target's chest
+  // (perpendicular miss distance) and penalize proportionally: −RL_MISS_PENALTY
+  // per RL_MISS_DIST_REF of miss, capped. Far misses hurt more than near ones,
+  // so the aim head learns to walk its aim point onto the chest.
+  onShotMissed() {
+    const s = this.lastShot;
+    if (!s) return;
+    const ox = s.origin.x - s.chest.x;
+    const oy = s.origin.y - s.chest.y;
+    const oz = s.origin.z - s.chest.z;
+    const cx = oy * s.dir.z - oz * s.dir.y;
+    const cy = oz * s.dir.x - ox * s.dir.z;
+    const cz = ox * s.dir.y - oy * s.dir.x;
+    const missM = Math.sqrt(cx * cx + cy * cy + cz * cz); // |(chest−origin) × dir|
+    const units = Math.min(4, missM / RL_MISS_DIST_REF);
+    this.events.push({ t: this.epTime, r: -RL_MISS_PENALTY * units });
+  }
+
+  // A rail shot along where the bot is ACTUALLY looking (the learned aim point)
+  // with a small fixed angular jitter. If the policy aimed off the enemy, the
+  // shot misses — aim and fire are coupled, so the gradient has to drag the aim
+  // onto the chest before frags happen. No re-aiming at the target here.
+  private makeFireIntent(eye: Vec3): BotFireIntent {
+    const spread = RL_AIM_NOISE;
+    const jitter = () => (Math.random() + Math.random() + Math.random() - 1.5) * 2 * spread;
+    const fy = this.pitch + jitter();
+    const fx = this.facing + jitter();
+    const cy = Math.cos(fy);
+    const dir = {
+      x: Math.sin(fx) * cy,
+      y: Math.sin(fy),
+      z: Math.cos(fx) * cy,
+    };
+    // Remember where this shot was fired from / toward so a miss can be
+    // measured against the target's chest (onShotMissed).
+    this.lastShot = {
+      origin: { ...eye },
+      dir: { ...dir },
+      chest: {
+        x: this.lastTgtPos.x,
+        y: this.lastTgtPos.y + BOT_HEIGHT * 0.5,
+        z: this.lastTgtPos.z,
+      },
+    };
+    return {
+      botId: this.state.id,
+      botName: this.state.name,
+      origin: { ...eye },
+      dir,
+      team: this.team,
+    };
+  }
+
+  // End the duel's episode: compute the REINFORCE gradient from the logged
+  // decisions + reward events, then clear the buffers so a second call returns
+  // null (each duel reports once). humanFrags is filled in by Game.
+  finalizeRlReport(): RlReport | null {
+    if (this.finalized) return null;
+    this.finalized = true;
+    const rows = this.traj.feats.length;
+    if (rows === 0 || this.events.length === 0) return null;
+    const { movGrad, buttonsGrad } = computeRlGradient(this.brain.weights, this.traj, this.events);
+    let fired = 0;
+    for (const b of this.traj.fire) fired += b;
+    const report: RlReport = {
+      difficulty: this.brain.difficulty,
+      movGrad,
+      buttonsGrad,
+      decided: rows,
+      fired,
+      botFrags: this.frags,
+      botDeaths: this.deaths,
+      humanFrags: 0, // Game fills this with the player's frag count
+      durationSec: Math.round(this.epTime * 100) / 100,
+    };
+    this.traj = {
+      feats: [], f: [], s: [], aimX: [], aimY: [], jump: [], fire: [], dash: [],
+      boost: [], allowJump: [], allowFire: [], allowDash: [], allowBoost: [], times: [],
+    };
+    this.events = [];
+    return report;
+  }
+}
+
 export class BotManager {
   bots: Bot[] = [];
 
@@ -1138,7 +1620,26 @@ export class BotManager {
     playerSpawn: Vec3,
     model: BotModel | null,
     difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
+    // A stored learned policy → the (single) bot is a LearningBot whose duel is
+    // a training episode for that brain (see rl-brain.ts). Duel-the-AI always
+    // spawns exactly one bot.
+    brain: RlBrain | null = null,
   ) {
+    if (brain) {
+      const spawn = pickFreeSpot(map, playerSpawn);
+      this.bots.push(
+        new LearningBot(
+          'bot-0',
+          RL_BOT_NAMES[brain.difficulty],
+          spawn,
+          scene,
+          model,
+          brain.difficulty,
+          brain,
+        ),
+      );
+      return;
+    }
     const names = pickN(BOT_NAMES, count);
     for (let i = 0; i < count; i++) {
       const spawn = pickFreeSpot(map, playerSpawn);
