@@ -260,6 +260,13 @@ export default function MyReplaysPage() {
                     >
                       Watch
                     </Link>
+                    <Link
+                      to={`${r.url}/edit`}
+                      title='Open the replay editor'
+                      className="rounded border border-cyan-400/40 bg-cyan-400/10 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-cyan-200 transition hover:bg-cyan-400/20"
+                    >
+                      Edit
+                    </Link>
                     <button
                       onClick={() => void copyLink(r.code, r.url)}
                       className="rounded border border-white/15 bg-white/5 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition hover:bg-white/10"

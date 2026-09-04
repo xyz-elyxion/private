@@ -15,6 +15,7 @@ const LockerLab = lazy(() => import('./LockerLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
 const ReplayPage = lazy(() => import('./pages/ReplayPage'));
 const MyReplaysPage = lazy(() => import('./pages/MyReplaysPage'));
+const ReplayEditorPage = lazy(() => import('./pages/ReplayEditorPage'));
 
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
@@ -77,6 +78,14 @@ createRoot(document.getElementById('root')!).render(
         element={
           <Suspense fallback={<Loading />}>
             <MyReplaysPage />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/replay/:code/edit"
+        element={
+          <Suspense fallback={<Loading />}>
+            <ReplayEditorPage />
           </Suspense>
         }
       />

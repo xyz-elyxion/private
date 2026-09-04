@@ -17,6 +17,7 @@ import { accountId } from './auth';
 import {
   deleteTempReplayForUser,
   getTempReplayBlob,
+  getTempReplayBlobForUser,
   getTempReplayMeta,
   listTempReplaysForUser,
   storeTempReplay,
@@ -248,6 +249,27 @@ tempReplaysRouter.delete('/replays/:code', (req: Request, res: Response) => {
     return;
   }
   res.json({ ok: true, code });
+});
+
+// Owner-only source download for the replay editor. Public share links remain
+// read-only; this route prevents one account from editing another's recording.
+tempReplaysRouter.get('/replays/:code/edit-source', (req: Request, res: Response) => {
+  const id = accountId(req);
+  if (!id) {
+    res.status(401).json({ error: 'login_required' });
+    return;
+  }
+  const code = String(req.params.code ?? '');
+  const source = getTempReplayBlobForUser(code, id);
+  if (!source) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Encoding', 'gzip');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Elyxion-Mode', source.mode);
+  res.send(source.data);
 });
 
 // Share-link metadata (header info for the recap page — no blob download).

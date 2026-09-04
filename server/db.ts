@@ -2917,6 +2917,9 @@ const trGetMetaStmt = sqlite.prepare(
   `SELECT map_id, won, duration_ms, runner, stats_json, created_at, expires_at FROM elyxion_temp_replays WHERE code = ?`,
 );
 const trGetBlobStmt = sqlite.prepare(`SELECT data FROM elyxion_temp_replays WHERE code = ? AND expires_at > ?`);
+const trGetEditStmt = sqlite.prepare(
+  `SELECT data, mode FROM elyxion_temp_replays WHERE code = ? AND user_id = ? AND expires_at > ?`,
+);
 const trDeleteStmt = sqlite.prepare(`DELETE FROM elyxion_temp_replays WHERE code = ?`);
 const trSweepStmt = sqlite.prepare(`DELETE FROM elyxion_temp_replays WHERE expires_at < ?`);
 const trTrimStmt = sqlite.prepare(
@@ -3073,6 +3076,18 @@ export function getTempReplayMeta(code: string, now: number = Date.now()): TempR
 export function getTempReplayBlob(code: string, now: number = Date.now()): Buffer | null {
   const row = trGetBlobStmt.get(code, now) as { data: Buffer } | undefined;
   return row ? row.data : null;
+}
+
+// Owner-scoped source for the replay editor. The mode travels alongside the blob
+// so a saved edit remains grouped with the original match type in My Replays.
+export function getTempReplayBlobForUser(
+  code: string,
+  userId: string,
+  now: number = Date.now(),
+): { data: Buffer; mode: string } | null {
+  if (!code || !userId) return null;
+  const row = trGetEditStmt.get(code, userId, now) as { data: Buffer; mode: string } | undefined;
+  return row ? { data: row.data, mode: row.mode } : null;
 }
 
 // Expired rows → deleted. Returns how many were removed (0 when idle).
