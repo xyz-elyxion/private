@@ -3,7 +3,7 @@ import { RemotePlayer } from './remote-player';
 import type { BotModel } from './bots';
 import type { RemotePlayerSnapshot } from './net';
 import type { Vec3 } from './types';
-import { EYE_HEIGHT, MULTIKILL_WINDOW_SEC, TEAM_COLORS } from './constants';
+import { EYE_HEIGHT, MAX_HEALTH, MULTIKILL_WINDOW_SEC, TEAM_COLORS } from './constants';
 import {
   REPLAY_VERSION,
   type ReplayActorProfile,
@@ -603,6 +603,7 @@ function seedSnapshot(profile: ReplayActorProfile, pose: ReplayPose): RemotePlay
     pitch: pose.pitch,
     frags: 0,
     deaths: 0,
+    health: MAX_HEALTH,
     invulnMs: 0,
     crouched: false,
     team: profile.team,

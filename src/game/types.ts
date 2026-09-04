@@ -32,6 +32,7 @@ export type BotState = {
   id: EntityId;
   name: string;
   pos: Vec3;
+  health: number;
   alive: boolean;
   respawnTimer: number;
   moveTimer: number;
@@ -225,6 +226,7 @@ export type NetDebugStats = {
 
 export type HudState = {
   frags: number;
+  health: number;
   railCooldown: number;
   dashCooldown: number;
   airJumpsLeft: number;

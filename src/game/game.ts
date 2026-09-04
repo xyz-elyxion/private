@@ -11,6 +11,9 @@ import {
 import {
   BANNER_DURATION_SEC,
   BOT_HEADSHOT_THRESHOLD,
+  MAX_HEALTH,
+  RAIL_DAMAGE,
+  RAIL_HEADSHOT_DAMAGE,
   BOT_HEIGHT,
   DEFAULT_BOT_DIFFICULTY,
   DUEL_FRAG_LIMIT,
@@ -206,8 +209,7 @@ const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
 // banner that flickers to whichever medal happened to be last, we pick ONE
 // "headline" — the most significant — to drive the banner + the announcer voice;
 // the rest still show as stacked toasts. Higher number = more headline-worthy.
-// Deploy/encouragement announcer line on respawn: min seconds between lines + the
-// chance one fires when off cooldown (kept sparse — you respawn a lot in instagib).
+// Deploy/encouragement announcer line on respawn: min seconds between lines + the      // chance one fires when off cooldown (kept sparse so incoming fire stays readable).
 const SPAWN_LINE_COOLDOWN_SEC = 18;
 const SPAWN_LINE_CHANCE = 0.55;
 
@@ -260,6 +262,7 @@ export class Game {
   private lastSpawnLine = -999; // elapsed-seconds of the last deploy/encouragement line
 
   private playerName = PLAYER_NAME_DEFAULT;
+  private playerHealth = MAX_HEALTH;
   private playerFrags = 0;
   private playerDeaths = 0;
   private playerHeadshots = 0;
@@ -1166,6 +1169,8 @@ export class Game {
     const desired = mapById(info.mapId);
     if (desired !== this.map) this.setMap(desired);
     this.player.pos = { x: info.spawn.x, y: info.spawn.y, z: info.spawn.z };
+    this.player.health = MAX_HEALTH;
+    this.playerHealth = MAX_HEALTH;
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
     this.killcam = null;
@@ -1210,6 +1215,8 @@ export class Game {
 
   // Server forced a respawn (we fell out of the world) — snap to the new spot.
   private handleNetRespawn(pos: { x: number; y: number; z: number }) {
+    this.player.health = MAX_HEALTH;
+    this.playerHealth = MAX_HEALTH;
     this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
@@ -1329,6 +1336,8 @@ export class Game {
     // Use the server-assigned spawn (distributed per player) so everyone doesn't
     // land on the same default spot. Fall back to a local pick only if the server
     // didn't send one (e.g. an older server).
+    this.player.health = MAX_HEALTH;
+    this.playerHealth = MAX_HEALTH;
     this.player.pos = r.spawn
       ? { x: r.spawn.x, y: r.spawn.y, z: r.spawn.z }
       : { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
@@ -1756,6 +1765,8 @@ export class Game {
         p.x < b.min.x - 4 || p.x > b.max.x + 4 ||
         p.z < b.min.z - 4 || p.z > b.max.z + 4;
       if (!finite || voided) {
+        this.player.health = MAX_HEALTH;
+        this.playerHealth = MAX_HEALTH;
         this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
         this.player.vel = { x: 0, y: 0, z: 0 };
         this.player.onGround = false;
@@ -2020,7 +2031,7 @@ export class Game {
         this.predictedHitMs = performance.now();
         this.hitMarker = {
           id: this.nextEventId++,
-          kind: pred.headshot ? 'headshot' : 'kill',
+          kind: pred.headshot ? 'headshot' : 'hit',
           remaining: HIT_MARKER_KILL_DURATION_SEC,
           total: HIT_MARKER_KILL_DURATION_SEC,
         };
@@ -2035,6 +2046,8 @@ export class Game {
     // the server via the shot above and arrive through handleNetKill.)
     let firstHitHeadshot = false;
     let anyHit = false;
+    let anyKill = false;
+    let firstKillName = '';
 
     for (const hit of result.hits) {
       if (hit.target.kind !== 'bot') continue;
@@ -2042,10 +2055,16 @@ export class Game {
       if (!firstHitHeadshot && hit === result.hits[0]) {
         firstHitHeadshot = hit.headshot;
       }
-      this.effects.spawnHitFlash(this.scene, hit.point, 0xffd1d8);
-
       const bot = bots.find((b) => b.state.id === hit.target.id);
       if (!bot) continue;
+      const damage = hit.headshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE;
+      bot.state.health = Math.max(0, bot.state.health - damage);
+      this.effects.spawnHitFlash(this.scene, hit.point, 0xffd1d8);
+      this.audio.play(hit.headshot ? 'headshot' : 'hit', 0.45);
+      if (bot.state.health > 0) continue;
+
+      anyKill = true;
+      if (!firstKillName) firstKillName = hit.target.name;
       const midAir = this.fireWasAirborne;
       const special = hit.headshot ? 'headshot' : midAir ? 'mid-air' : null;
       this.spawnKillEffect(
@@ -2088,21 +2107,23 @@ export class Game {
       this.playerShotsHit += 1;
       this.hitMarker = {
         id: this.nextEventId++,
-        kind: firstHitHeadshot ? 'headshot' : 'kill',
-        remaining: HIT_MARKER_KILL_DURATION_SEC,
-        total: HIT_MARKER_KILL_DURATION_SEC,
+        kind: anyKill ? (firstHitHeadshot ? 'headshot' : 'kill') : 'hit',
+        remaining: anyKill ? HIT_MARKER_KILL_DURATION_SEC : HIT_MARKER_KILL_DURATION_SEC * 0.65,
+        total: anyKill ? HIT_MARKER_KILL_DURATION_SEC : HIT_MARKER_KILL_DURATION_SEC * 0.65,
       };
-      // Prominent kill confirmation on EVERY frag (offline path — the online
-      // path sets this in handleNetKill). result.hits[0] is the nearest victim.
-      this.killConfirm = {
-        id: this.nextEventId++,
-        victimName: result.hits[0].target.name,
-        headshot: firstHitHeadshot,
-        remaining: KILL_CONFIRM_DURATION_SEC,
-        total: KILL_CONFIRM_DURATION_SEC,
-      };
-      this.fireKillFeedback(firstHitHeadshot);
-      this.checkMatchEnd();
+      if (anyKill) {
+        this.killConfirm = {
+          id: this.nextEventId++,
+          victimName: firstKillName || result.hits[0].target.name,
+          headshot: firstHitHeadshot,
+          remaining: KILL_CONFIRM_DURATION_SEC,
+          total: KILL_CONFIRM_DURATION_SEC,
+        };
+        this.fireKillFeedback(firstHitHeadshot);
+        this.checkMatchEnd();
+      } else {
+        this.emitHud();
+      }
     }
   }
 
@@ -2127,6 +2148,7 @@ export class Game {
     let victimId = '';
     let victimName = '';
     let victimPos: { x: number; y: number; z: number } | null = null;
+    let victimHeadshot = false;
     let bestT = wallT;
     // TDM: a bot never hits its own team — skip the player (if same team) and any
     // same-team bot when resolving the shot (friendly fire is off).
@@ -2139,6 +2161,8 @@ export class Game {
         victimId = 'player';
         victimName = this.playerName;
         victimPos = { ...this.player.pos };
+        const hitY = o.y + d.y * t;
+        victimHeadshot = hitY >= this.player.pos.y + this.player.height * BOT_HEADSHOT_THRESHOLD;
       }
     }
     if (this.bots) {
@@ -2152,6 +2176,8 @@ export class Game {
           victimId = b.state.id;
           victimName = b.state.name;
           victimPos = { ...b.state.pos };
+          const hitY = o.y + d.y * t;
+          victimHeadshot = hitY >= b.state.pos.y + BOT_HEIGHT * BOT_HEADSHOT_THRESHOLD;
         }
       }
     }
@@ -2169,33 +2195,64 @@ export class Game {
     if (!victimKind || !victimPos) {
       return;
     }
-    // A bot scoring the match's first kill consumes First Blood, so the local
-    // player can't later claim it for what is really the second kill.
-    this.claimFirstBlood();
-
-    // Landed on someone (instagib = every hit is a kill) → count for accuracy.
+    // Every confirmed hit counts for bot accuracy and applies the same shared
+    // rail damage model as player shots. Only lethal damage enters the existing
+    // kill/respawn/score flow.
     this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
     this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
-    this.recorder.logKill({
-      killerId: intent.botId,
-      victimId: victimKind === 'player' ? 'you' : victimId,
-      headshot: false,
-      killerName: intent.botName,
-      victimName,
-    });
     if (victimKind === 'player') {
+      this.player.health = Math.max(
+        0,
+        this.player.health - (victimHeadshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE),
+      );
+      this.playerHealth = this.player.health;
+      this.audio.play('hit', 0.5);
+      if (this.player.health > 0) {
+        if (!this.reducedEffects) this.damageFlash = Math.max(this.damageFlash, 0.65);
+        this.hitMarker = {
+          id: this.nextEventId++,
+          kind: 'hit',
+          remaining: HIT_MARKER_KILL_DURATION_SEC * 0.65,
+          total: HIT_MARKER_KILL_DURATION_SEC * 0.65,
+        };
+        this.emitHud();
+        return;
+      }
+      // A bot scoring the match's first kill consumes First Blood, so the local
+      // player can't later claim it for what is really the second kill.
+      this.claimFirstBlood();
+      this.recorder.logKill({
+        killerId: intent.botId,
+        victimId: 'you',
+        headshot: victimHeadshot,
+        killerName: intent.botName,
+        victimName,
+      });
       this.handleLocalDeath(intent.botName, intent.botId);
     } else {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
-      if (victim) {
-        this.spawnKillEffect(
-          new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
-          false,
-          DEFAULT_KILL_EFFECT,
-        );
-        victim.kill();
-        this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
-      }
+      if (!victim) return;
+      victim.state.health = Math.max(
+        0,
+        victim.state.health - (victimHeadshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE),
+      );
+      this.audio.play(victimHeadshot ? 'headshot' : 'hit', 0.45);
+      if (victim.state.health > 0) return;
+      this.claimFirstBlood();
+      this.recorder.logKill({
+        killerId: intent.botId,
+        victimId,
+        headshot: victimHeadshot,
+        killerName: intent.botName,
+        victimName,
+      });
+      this.spawnKillEffect(
+        new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
+        false,
+        DEFAULT_KILL_EFFECT,
+      );
+      victim.kill();
+      this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
       this.pushKillfeed({
         killer: intent.botName,
         killerLocal: false,
@@ -2229,6 +2286,8 @@ export class Game {
     const avoid = [this.player.pos];
     if (this.bots) for (const b of this.bots.bots) if (b.state.alive) avoid.push(b.state.pos);
     const spot = pickFreeSpot(this.map, avoid, PLAYER_RADIUS);
+    this.player.health = MAX_HEALTH;
+    this.playerHealth = MAX_HEALTH;
     this.player.pos = { x: spot.x, y: spot.y, z: spot.z };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
@@ -2768,7 +2827,7 @@ export class Game {
   // Play the local player's spawn-in effect at their feet. Suppressed under
   // reduced-effects (it's a particle burst). Called when you (re)materialize.
   // Occasional deploy/encouragement announcer line on respawn — cooldown + chance
-  // gated so it's flair, not spam (you respawn often in instagib). Only packs that
+  // gated so it's flair, not spam (you respawn often in the arena). Only packs that
   // define spawn lines voice it; the legacy pack stays silent.
   private maybeAnnounceSpawn() {
     if (this.matchOver) return;
@@ -2841,6 +2900,12 @@ export class Game {
       // because emitHud re-raised it from a stale snapshot value.
       this.playerFrags = this.net.localFrags;
       this.playerDeaths = this.net.localDeaths;
+      const nextHealth = Math.max(0, Math.min(MAX_HEALTH, this.net.localHealth));
+      if (nextHealth < this.player.health && nextHealth > 0 && !this.killcam && !this.reducedEffects) {
+        this.damageFlash = Math.max(this.damageFlash, 0.65);
+      }
+      this.player.health = nextHealth;
+      this.playerHealth = nextHealth;
       scores[0].frags = this.playerFrags;
       scores[0].deaths = this.playerDeaths;
       // Online, the name is server-authoritative (your account username, or the
@@ -2962,6 +3027,7 @@ export class Game {
 
     this.onHud({
       frags: this.playerFrags,
+      health: this.player.health,
       railCooldown: this.weapon.cooldown,
       dashCooldown: this.player.dashCooldown,
       airJumpsLeft: this.player.airJumpsLeft,

@@ -20,6 +20,7 @@ import {
   GRAVITY,
   JUMP_SPEED,
   MAX_HORIZONTAL_SPEED,
+  MAX_HEALTH,
   WALK_SPEED,
   type BotDifficulty,
 } from './constants';
@@ -362,6 +363,7 @@ export class Bot {
       id,
       name,
       pos: { ...spawn },
+      health: MAX_HEALTH,
       alive: true,
       respawnTimer: 0,
       moveTimer: rand(BOT_MOVE_INTERVAL_MIN, BOT_MOVE_INTERVAL_MAX),
@@ -420,6 +422,7 @@ export class Bot {
       if (this.state.respawnTimer <= 0) {
         const spot = pickFreeSpot(map, null);
         this.state.pos = spot;
+        this.state.health = MAX_HEALTH;
         this.target = { ...spot };
         this.vel = { x: 0, y: 0, z: 0 };
         this.onGround = false;

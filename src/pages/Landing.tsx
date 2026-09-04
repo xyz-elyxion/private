@@ -196,11 +196,11 @@ export default function Landing() {
               className="deck-rise mt-6 font-display text-sm font-semibold uppercase tracking-[0.24em] text-white/80"
               style={{ animationDelay: '120ms' }}
             >
-              One railgun. One shot. One kill.
+              One railgun. Every shot matters.
             </p>
             <p className="deck-rise mt-3 max-w-md text-[15px] leading-relaxed text-white/55" style={{ animationDelay: '150ms' }}>
-              Quake-style instagib, free in the browser. The railgun always kills —
-              so the whole game is <span className="text-white/85">aim and movement</span>.
+              Quake-style rail combat, free in the browser. Manage your health,
+              land precise shots, and master <span className="text-white/85">aim and movement</span>.
               Strafe, dash, double-jump, wall-jump.
             </p>
 

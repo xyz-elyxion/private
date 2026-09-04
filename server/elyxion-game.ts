@@ -19,6 +19,9 @@
 import type { WebSocketServer, WebSocket, RawData } from 'ws';
 import {
   MATCH_FRAG_LIMIT,
+  MAX_HEALTH,
+  RAIL_DAMAGE,
+  RAIL_HEADSHOT_DAMAGE,
   RAIL_COOLDOWN,
   MAX_HORIZONTAL_SPEED,
   EYE_HEIGHT,
@@ -126,11 +129,10 @@ const RESPAWN_HIDE_MS = KILLCAM_DURATION_SEC * 1000;
 // Both reshape pickSpawn's distance score (values are in "metres of safety").
 const SPAWN_VIEW_RANGE = 50; // m: a threat's aim endangers a spawn within this (covers the maps)
 const SPAWN_VIEW_DOT = 0.55; // cos(~57°): past this, the spawn is "in their crosshair"
-// Safety cost (m-equiv) for a dead-centre aim. This is INSTAGIB — the rail is
-// hitscan, so a crosshair-line spawn is just as lethal at 40m as at 5m. So the
-// penalty barely falls off with range (mild 0.5 floor), and it's set ABOVE the
-// max recent-spawn penalty so the anti-camp avoidance can't be out-voted by the
-// variety term (i.e. we never rotate a player INTO a held sightline for variety).
+// Safety cost (m-equiv) for a dead-centre aim. The rail is hitscan, so a
+// crosshair-line spawn is dangerous at 40m as well as 5m. The penalty barely
+// falls off with range (mild 0.5 floor), and stays ABOVE the max recent-spawn
+// penalty so variety cannot rotate a player INTO a held sightline.
 const SPAWN_VIEW_PENALTY = 34;
 const SPAWN_RECENT_MS = 5_000; // remember each chosen spawn spot for this long
 const SPAWN_RECENT_RADIUS = 6; // m: a candidate within this of a recent spawn counts as reuse
@@ -213,6 +215,7 @@ type ClientRecord = {
   crouched: boolean;
   frags: number;
   deaths: number;
+  health: number;
   invulnUntilMs: number;
   respawnAt: number; // >0 and in the future → hidden + untargetable (killcam window); 0 = live
   connectedAt: number;
@@ -761,7 +764,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
   // Anti-aimbot heuristic: feed each resolved shot (hit/miss + headshot) into a
   // rolling, decayed window and flag a shooter whose accuracy is statistically
-  // impossible for a human in one-shot instagib. Thresholds are deliberately
+  // impossible for a human in a high-accuracy rail arena. Thresholds are deliberately
   // extreme (no real player sustains >95% hit-rate or >90% headshots) so legit
   // aces are never flagged; a flagged shooter has frags throttled (see below).
   const recordAim = (s: ClientRecord, hit: boolean, headshot: boolean) => {
@@ -914,6 +917,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     record.pitch = 0;
     record.frags = 0;
     record.deaths = 0;
+    record.health = MAX_HEALTH;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS;
     record.history.length = 0;
     sendRaw(record.socket, {
@@ -963,6 +967,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     record.pitch = old.pitch;
     record.frags = old.frags;
     record.deaths = old.deaths;
+    record.health = old.health;
     record.hat = old.hat;
     record.unusual = old.unusual;
     record.emote = old.emote;
@@ -1506,6 +1511,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
         pitch: c.pitch,
         frags: c.frags,
         deaths: c.deaths,
+        health: c.health,
         invulnMs: Math.max(0, c.invulnUntilMs - now),
         ping: Math.round(c.rttMs),
         crouched: c.crouched,
@@ -1697,6 +1703,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       if (!c) continue;
       c.frags = 0;
       c.deaths = 0;
+      c.health = MAX_HEALTH;
       c.history.length = 0;
       c.pos = { ...pickSpawn(room, c, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + POST_MATCH_RESET_SEC * 1000;
@@ -1856,7 +1863,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
       bestId = id;
       bestPos = pp;
       const hitY = msg.oy + dy * t;
-      bestHeadshot = hitY >= pp.y + PLAYER_HEIGHT * HEADSHOT_FRAC;
+      const targetHeight = victim.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
+      bestHeadshot = hitY >= pp.y + targetHeight * HEADSHOT_FRAC;
     }
 
     // Broadcast the rail beam to the rest of the room (the shooter already drew
@@ -1893,9 +1901,9 @@ export function attachElyxionWs(wss: WebSocketServer) {
       return;
     }
     recordAim(shooter, true, bestHeadshot);
-    // Throttle a flagged aimbot: the shot landed but we drop the frag (the stat
-    // window keeps decaying, so a legit player who dips back under the threshold
-    // un-flags within a window or two).
+    // Throttle a flagged aimbot before applying damage as well as before awarding
+    // a frag; flagged shots are fully suppressed rather than creating invisible
+    // health loss that can never resolve into a kill.
     if (shooter.aimFlagged) {
       acThrottledLog(`aim:${shooter.id}`, {
         kind: 'reject',
@@ -1905,7 +1913,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
       }, 30_000);
       return;
     }
-
+    victim.health = Math.max(
+      0,
+      victim.health - (bestHeadshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE),
+    );
+    // A nonlethal hit is still a successful shot, but it does not award a frag
+    // or trigger the respawn/killcam flow. Health is visible in the next state
+    // snapshot, so clients get authoritative hitpoint updates without a new
+    // high-frequency message type.
+    if (victim.health > 0) return;
     shooter.frags += 1;
     victim.deaths += 1;
     const respawnPos = pickSpawn(room, victim, shooter.pos);
@@ -1930,6 +1946,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       t: now,
     });
     victim.pos = { ...respawnPos };
+    victim.health = MAX_HEALTH;
     victim.history.length = 0;
     victim.posSamples.length = 0; // reappear cleanly at the spawn (no resample slide)
     // Hide the victim (snapshot + targeting) for their killcam, so nobody can see
@@ -1973,6 +1990,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     const spawn = pickSpawn(room, c, null);
     c.pos = { ...spawn };
     c.deaths += 1;
+    c.health = MAX_HEALTH;
     c.history.length = 0;
     c.invulnUntilMs = now + SPAWN_INVULN_MS;
     sendRaw(c.socket, { type: 'respawn', x: spawn.x, y: spawn.y, z: spawn.z, reason: 'void' });
@@ -2014,6 +2032,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       crouched: false,
       frags: 0,
       deaths: 0,
+      health: MAX_HEALTH,
       invulnUntilMs: 0,
       respawnAt: 0,
       connectedAt: now,

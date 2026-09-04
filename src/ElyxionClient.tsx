@@ -41,6 +41,7 @@ import {
   HIT_MARKER_KILL_DURATION_SEC,
   M_YAW_DEG,
   MATCH_FRAG_LIMIT,
+  MAX_HEALTH,
   MAX_DPI,
   MAX_FOV,
   MAX_ZOOM_FOV,
@@ -812,6 +813,7 @@ const EMPTY_MINIMAP: MinimapState = {
 
 const INITIAL_HUD: HudState = {
   frags: 0,
+  health: MAX_HEALTH,
   railCooldown: 0,
   dashCooldown: 0,
   airJumpsLeft: AIR_JUMPS,
@@ -1068,7 +1070,7 @@ function OnboardingModal({
           >
             Welcome to the Arena
           </h2>
-          <p className='mt-1 text-[12px] text-white/50'>One railgun. One shot. Pure movement.</p>
+          <p className='mt-1 text-[12px] text-white/50'>One railgun. Every shot matters. Pure movement.</p>
         </div>
         <div className='px-7 py-5'>
           <div className='text-[10px] uppercase tracking-[0.24em] text-white/45'>Controls</div>
@@ -3210,6 +3212,7 @@ function HudOverlay({
         />
       )}
       {!dead && <Crosshair cfg={settings.crosshair} />}
+      {!dead && <HealthBar health={hud.health} />}
       {!dead && <ReloadBar railCooldown={hud.railCooldown} />}
       {!dead && <HitMarkerLayer marker={hud.hitMarker} />}
       <Killfeed entries={hud.killfeed} />
@@ -3544,6 +3547,26 @@ function Crosshair({ cfg }: { cfg: CrosshairConfig }) {
       style={{ filter: `drop-shadow(0 0 3px ${cfg.color}66)` }}
     >
       <CrosshairGraphic cfg={cfg} />
+    </div>
+  );
+}
+
+function HealthBar({ health }: { health: number }) {
+  const value = Math.max(0, Math.min(MAX_HEALTH, health));
+  const pct = value / MAX_HEALTH;
+  const color = pct <= 0.25 ? '#fb7185' : pct <= 0.5 ? '#facc15' : '#67e8f9';
+  return (
+    <div className='absolute bottom-28 left-6 w-44 font-mono'>
+      <div className='mb-1 flex items-center justify-between text-[10px] uppercase tracking-[0.2em]'>
+        <span className='text-white/55'>Health</span>
+        <span className='tabular-nums' style={{ color }}>{value}/{MAX_HEALTH}</span>
+      </div>
+      <div className='h-2 overflow-hidden rounded-full bg-white/15'>
+        <div
+          className='h-full rounded-full transition-[width,background-color] duration-100'
+          style={{ width: `${pct * 100}%`, backgroundColor: color, boxShadow: `0 0 8px ${color}88` }}
+        />
+      </div>
     </div>
   );
 }
@@ -5742,8 +5765,7 @@ function Lobby({
         <main className='grid min-h-0 flex-1 gap-4 overflow-y-auto lg:grid-cols-[1.15fr_0.85fr] lg:overflow-visible'>
           {/* Left — mode + actions */}
           <section className='deck-scroll flex min-h-0 flex-col gap-3 pr-1 lg:overflow-y-auto'>
-            <p className='deck-rise max-w-md text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>
-              One railgun. One shot. One kill — the whole game is aim and movement.
+            <p className='deck-rise max-w-md text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>               One railgun. Every shot matters — the whole game is aim, movement, and health management.
             </p>
 
             {touchOnly && (

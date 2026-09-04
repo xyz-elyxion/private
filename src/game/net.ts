@@ -1,4 +1,4 @@
-import type { GameMode } from './constants';
+import { MAX_HEALTH, type GameMode } from './constants';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, toView } from './netcodec';
 
@@ -12,6 +12,7 @@ export type RemotePlayerSnapshot = {
   pitch: number;
   frags: number;
   deaths: number;
+  health: number;
   invulnMs: number; // remaining spawn-protection ms, 0 = killable
   crouched: boolean; // current crouched/slide stance
   team: number | null; // team index in TDM; null otherwise
@@ -74,6 +75,7 @@ type StatePlayer = {
   pitch: number;
   frags: number;
   deaths: number;
+  health: number;
   invulnMs: number;
   ping?: number;
   crouched: boolean;
@@ -354,6 +356,7 @@ export class NetClient {
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
   localFrags = 0;
   localDeaths = 0;
+  localHealth = MAX_HEALTH;
   localInvulnMs = 0;
   localName = ''; // your SERVER-ASSIGNED name (account username, or "Guest N"); from snapshots
   localAdmin = false; // your staff badge (server-authoritative; from snapshots)
@@ -770,7 +773,7 @@ export class NetClient {
     let s = this.remotes.get(b.id);
     if (!s) {
       s = { id: b.id, name: m?.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
-        frags: 0, deaths: 0, invulnMs: 0, crouched: false, team: null,
+        frags: 0, deaths: 0, health: MAX_HEALTH, invulnMs: 0, crouched: false, team: null,
         hat: 'hat.none', unusual: 'unusual.none',
         emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', title: 'title.none',
         railColor: 'rail.cyan', railgunFinish: 'gun.stock', crosshair: '',
@@ -785,6 +788,7 @@ export class NetClient {
     s.pitch = b.pitch ?? 0;
     s.frags = b.frags ?? 0;
     s.deaths = b.deaths ?? 0;
+    s.health = b.health ?? MAX_HEALTH;
     s.invulnMs = b.invulnMs ?? 0;
     s.crouched = b.crouched ?? false;
     s.ping = b.ping ?? 0;
@@ -895,6 +899,7 @@ export class NetClient {
           // on the `meta` channel instead — see the 'meta' handler.
           this.localFrags = p.frags ?? 0;
           this.localDeaths = p.deaths ?? 0;
+          this.localHealth = p.health ?? MAX_HEALTH;
           this.localInvulnMs = p.invulnMs ?? 0;
         } else {
           // Retain each remote's latest score so their scoreboard row survives

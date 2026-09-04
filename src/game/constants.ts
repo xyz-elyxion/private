@@ -86,6 +86,9 @@ export const BOOST_AIRCTRL_TIME = 0.4;
 export const BOOST_COOLDOWN = 0.3;
 
 export const RAIL_COOLDOWN = 1.2;
+export const MAX_HEALTH = 100;
+export const RAIL_DAMAGE = 35;
+export const RAIL_HEADSHOT_DAMAGE = 50;
 // Longer than a stock hitscan flash so the beam lingers and "reveals
 // positions" Quake/ratz-style — the trail is the primary shot indicator.
 export const RAIL_BEAM_DURATION = 0.9;

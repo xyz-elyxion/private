@@ -26,6 +26,7 @@ import {
   GROUND_ACCEL,
   JUMP_SPEED,
   MAX_HORIZONTAL_SPEED,
+  MAX_HEALTH,
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
   STOP_SPEED,
@@ -36,6 +37,7 @@ import {
 } from './constants';
 
 export class Player {
+  health = MAX_HEALTH;
   pos: Vec3;
   vel: Vec3 = { x: 0, y: 0, z: 0 };
   yaw = 0;
