@@ -35,4 +35,7 @@ EXPOSE 8787
 # survives container churn. On Railway, attach a Railway Volume at /app/data
 # (the platform rejects a Dockerfile `VOLUME`); for plain Docker, bind-mount it:
 # `docker run -v "$PWD/data:/app/data" …`.
+RUN groupadd --system appgroup && useradd --system --gid appgroup appuser \
+    && mkdir -p /app/data && chown -R appuser:appgroup /app
+USER appuser
 CMD ["npm", "start"]
