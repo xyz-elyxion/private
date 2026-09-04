@@ -1,13 +1,13 @@
 const TICK_HZ = 64;
 export const TICK_DT = 1 / TICK_HZ;
 
-export const PLAYER_RADIUS = 0.4;
-export const PLAYER_HEIGHT = 1.8;
-export const EYE_HEIGHT = 1.6;
+export const PLAYER_RADIUS = 0.9;
+export const PLAYER_HEIGHT = 2.3;
+export const EYE_HEIGHT = 2.1;
 // Stance movement. Crouching lowers the collision capsule and camera; sliding
 // briefly carries a fast ground burst and automatically uses the crouched stance.
-export const CROUCH_HEIGHT = 1.1;
-export const CROUCH_EYE_HEIGHT = 0.98;
+export const CROUCH_HEIGHT = 1.6;
+export const CROUCH_EYE_HEIGHT = 1.48;
 export const CROUCH_SPEED = 5.5;
 export const SLIDE_DURATION = 0.65;
 export const SLIDE_SPEED = 18;

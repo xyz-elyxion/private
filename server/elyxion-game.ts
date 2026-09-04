@@ -190,8 +190,8 @@ const CHAT_RATE_WINDOW_MS = 10_000; // rolling per-sender window
 const CHAT_RATE_LIMIT = 6; // messages per window before we drop + notify
 const CHAT_HISTORY_MAX = 50; // recent messages replayed to a client on open
 // Hitbox dims (must match the client's PLAYER_RADIUS / PLAYER_HEIGHT).
-const PLAYER_RADIUS = 0.4;
-const PLAYER_HEIGHT = 1.8;
+const PLAYER_RADIUS = 0.9;
+const PLAYER_HEIGHT = 2.3;
 const HEADSHOT_FRAC = 0.72;
 
 type Vec = Vec3;
