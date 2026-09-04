@@ -32,7 +32,7 @@ server.on('upgrade', elyxionUpgrade);
 
 server.listen(port, host, () => {
   console.log(`> Elyxion server ready on http://${host}:${port}`);
-  console.log(`>   game socket:  ws://${host}:${port}${ELYXION_WS_PATH}`);
+  console.log(`>   game socket:  ${dev ? 'ws' : 'wss'}://${host}:${port}${ELYXION_WS_PATH}`);
   console.log(`>   stats api:    http://${host}:${port}/api/stats`);
   console.log(
     `>   metrics api:  http://${host}:${port}/api/admin/metrics/report ` +
