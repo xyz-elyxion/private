@@ -604,6 +604,7 @@ function seedSnapshot(profile: ReplayActorProfile, pose: ReplayPose): RemotePlay
     frags: 0,
     deaths: 0,
     invulnMs: 0,
+    crouched: false,
     team: profile.team,
     hat: profile.hat,
     unusual: profile.unusual,

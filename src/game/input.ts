@@ -39,6 +39,8 @@ export class InputManager {
     fire: false,
     firePressed: false,
     zoom: false,
+    crouch: false,
+    slidePressed: false,
     scoreboard: false,
     chatPressed: false,
     yawDelta: 0,
@@ -51,6 +53,7 @@ export class InputManager {
   private prevDash = false;
   private prevBoost = false;
   private prevFire = false;
+  private prevSlide = false;
   private accumYaw = 0;
   private accumPitch = 0;
   private locked = false;
@@ -168,12 +171,14 @@ export class InputManager {
     s.dashPressed = !this.prevDash && this.state.dash;
     s.boostPressed = !this.prevBoost && this.state.boost;
     s.firePressed = !this.prevFire && this.state.fire;
+    s.slidePressed = !this.prevSlide && this.state.slidePressed;
     s.chatPressed = this.chatQueued; // one-shot: the chat key was tapped this frame
     this.chatQueued = false;
     this.prevJump = this.state.jump;
     this.prevDash = this.state.dash;
     this.prevBoost = this.state.boost;
     this.prevFire = this.state.fire;
+    this.prevSlide = this.state.slidePressed;
     return s;
   }
 
@@ -268,6 +273,8 @@ export class InputManager {
       case 'jump': this.state.jump = down; break;
       case 'dash': this.state.dash = down; break;
       case 'zoom': this.state.zoom = down; break;
+      case 'crouch': this.state.crouch = down; break;
+      case 'slide': this.state.slidePressed = down; break;
       case 'scoreboard': this.state.scoreboard = down; break;
     }
   }
@@ -332,6 +339,8 @@ export class InputManager {
     this.state.boost = false;
     this.state.fire = false;
     this.state.zoom = false;
+    this.state.crouch = false;
+    this.state.slidePressed = false;
     this.accumYaw = 0;
     this.accumPitch = 0;
   }

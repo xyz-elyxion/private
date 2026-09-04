@@ -12,7 +12,7 @@ import {
   titleById,
 } from './cosmetics';
 import type { RemotePlayerSnapshot } from './net';
-import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
+import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS, CROUCH_HEIGHT } from './constants';
 import type { AABB } from './types';
 
 const MODEL_SCALE = 1.0;
@@ -149,6 +149,7 @@ export class RemotePlayer {
   private facing = 0;
   private lastSeenPos = new THREE.Vector3();
   private lastMoveSpeed = 0;
+  private crouched = false;
 
   constructor(id: string, name: string, scene: THREE.Scene, model: BotModel | null) {
     this.id = id;
@@ -241,6 +242,12 @@ export class RemotePlayer {
     // snapshot rate instead of tracking the viewer's framerate. The server clock
     // is slewed (see net.ts) so renderT advances smoothly frame to frame.
     this.group.position.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
+    if (snapshot.crouched !== this.crouched) {
+      this.crouched = snapshot.crouched;
+      this.modelRoot?.scale.set(1, this.crouched ? CROUCH_HEIGHT / BOT_HEIGHT : 1, 1);
+      this.nameSprite.position.y = (this.crouched ? CROUCH_HEIGHT : BOT_HEIGHT) + 0.35 + (this.titleText ? 0.13 : 0);
+      this.shieldMesh.position.y = this.crouched ? CROUCH_HEIGHT * 0.5 : BOT_HEIGHT * 0.55;
+    }
 
     // Ground speed from the per-frame displacement drives the idle/walk/run blend.
     const dx = this.group.position.x - this.lastSeenPos.x;
@@ -394,7 +401,7 @@ export class RemotePlayer {
     smMat.dispose();
     this.group.remove(this.nameSprite);
     this.nameSprite = makeNameSprite(this.name, this.appliedNameColor, this.titleText);
-    this.nameSprite.position.y = BOT_HEIGHT + 0.35 + (this.titleText ? 0.13 : 0);
+    this.nameSprite.position.y = (this.crouched ? CROUCH_HEIGHT : BOT_HEIGHT) + 0.35 + (this.titleText ? 0.13 : 0);
     this.group.add(this.nameSprite);
   }
 

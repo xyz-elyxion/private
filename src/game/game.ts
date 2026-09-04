@@ -23,6 +23,8 @@ import {
   VIEWMODEL_BASE,
   VIEWMODEL_SCALE,
   EYE_HEIGHT,
+  CROUCH_EYE_HEIGHT,
+  CROUCH_HEIGHT,
   HIT_MARKER_KILL_DURATION_SEC,
   MAX_FOV,
   MIN_FOV,
@@ -1931,7 +1933,7 @@ export class Game {
           Math.abs(this.player.pitch - this.lastSentPitch) > YAW_EPSILON;
         const nowMs = performance.now();
         if (moved || nowMs - this.lastPosSentMs >= POS_HEARTBEAT_MS) {
-          this.net.sendPosition(p.x, p.y, p.z, this.player.yaw, this.player.pitch);
+          this.net.sendPosition(p.x, p.y, p.z, this.player.yaw, this.player.pitch, this.player.isCrouching);
           this.lastSentPos.x = p.x;
           this.lastSentPos.y = p.y;
           this.lastSentPos.z = p.z;
@@ -1974,14 +1976,15 @@ export class Game {
       this.tmpAabb.min.y = py;
       this.tmpAabb.min.z = pz - PLAYER_RADIUS;
       this.tmpAabb.max.x = px + PLAYER_RADIUS;
-      this.tmpAabb.max.y = py + PLAYER_HEIGHT;
+      this.tmpAabb.max.y = py + (snap.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT);
       this.tmpAabb.max.z = pz + PLAYER_RADIUS;
       const t = rayAabb(origin, dir, this.tmpAabb);
       if (t == null || t <= 0 || t >= bestT) continue;
       bestT = t;
       hit = true;
       const hitY = origin.y + dir.y * t;
-      headshot = hitY >= py + PLAYER_HEIGHT * BOT_HEADSHOT_THRESHOLD;
+      const targetHeight = snap.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
+      headshot = hitY >= py + targetHeight * BOT_HEADSHOT_THRESHOLD;
     }
     return { hit, headshot };
   }
@@ -1993,7 +1996,7 @@ export class Game {
     this.tmpUp.set(0, 1, 0).applyEuler(this.tmpEuler);
     const eye = new THREE.Vector3(
       this.player.pos.x,
-      this.player.pos.y + EYE_HEIGHT,
+      this.player.pos.y + this.player.eyeHeight,
       this.player.pos.z,
     );
     const muzzle = eye.addScaledVector(this.tmpForward, 0.3);
@@ -2001,7 +2004,7 @@ export class Game {
     // the viewmodel offset) instead of the crosshair, so it never blocks POV.
     // Hits + the server shot still use `muzzle` (eye) so aim stays exact.
     this.tmpBeamOrigin
-      .set(this.player.pos.x, this.player.pos.y + EYE_HEIGHT, this.player.pos.z)
+      .set(this.player.pos.x, this.player.pos.y + this.player.eyeHeight, this.player.pos.z)
       .addScaledVector(this.tmpRight, 0.16 + this.viewmodelOffset.x)
       .addScaledVector(this.tmpUp, -0.16 + this.viewmodelOffset.y)
       .addScaledVector(this.tmpForward, 0.5);
@@ -2323,7 +2326,11 @@ export class Game {
     const p = this.player.pos;
     return {
       min: { x: p.x - PLAYER_RADIUS, y: p.y, z: p.z - PLAYER_RADIUS },
-      max: { x: p.x + PLAYER_RADIUS, y: p.y + PLAYER_HEIGHT, z: p.z + PLAYER_RADIUS },
+      max: {
+        x: p.x + PLAYER_RADIUS,
+        y: p.y + this.player.height,
+        z: p.z + PLAYER_RADIUS,
+      },
     };
   }
 
@@ -3219,7 +3226,7 @@ export class Game {
       // we're not staring at the inside of our own mesh.)
       const snap = this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
       if (snap) {
-        this.camera.position.set(snap.pos.x, snap.pos.y + EYE_HEIGHT, snap.pos.z);
+        this.camera.position.set(snap.pos.x, snap.pos.y + (snap.crouched ? CROUCH_EYE_HEIGHT : EYE_HEIGHT), snap.pos.z);
         this.camera.rotation.set(snap.pitch, snap.yaw, 0, 'YXZ');
       }
     } else if (this.killcam) {
@@ -3294,7 +3301,7 @@ export class Game {
         cy = this.simPrevPos.y + (p.y - this.simPrevPos.y) * a;
         cz = this.simPrevPos.z + (p.z - this.simPrevPos.z) * a;
       }
-      this.camera.position.set(cx, cy + EYE_HEIGHT, cz);
+      this.camera.position.set(cx, cy + (this.player.isCrouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT), cz);
       // viewKick is a transient upward view-punch on fire — visual only, so it
       // never alters the authoritative aim (player.pitch).
       this.camera.rotation.set(this.player.pitch - this.viewKick, this.player.yaw, 0, 'YXZ');

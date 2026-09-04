@@ -20,6 +20,8 @@ export type InputState = {
   fire: boolean;
   firePressed: boolean;
   zoom: boolean; // held → narrow FOV
+  crouch: boolean; // held → lower stance
+  slidePressed: boolean; // edge → start a ground slide
   scoreboard: boolean;
   chatPressed: boolean; // edge: the chat key was just pressed (open the composer)
   yawDelta: number;

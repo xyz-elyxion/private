@@ -13,6 +13,7 @@ export type RemotePlayerSnapshot = {
   frags: number;
   deaths: number;
   invulnMs: number; // remaining spawn-protection ms, 0 = killable
+  crouched: boolean; // current crouched/slide stance
   team: number | null; // team index in TDM; null otherwise
   hat: string; // equipped hat cosmetic id
   unusual: string; // equipped unusual-effect cosmetic id
@@ -75,6 +76,7 @@ type StatePlayer = {
   deaths: number;
   invulnMs: number;
   ping?: number;
+  crouched: boolean;
 };
 
 // The slow-changing per-player profile, delivered on the `meta` channel (sent
@@ -500,11 +502,11 @@ export class NetClient {
     }
   }
 
-  sendPosition(x: number, y: number, z: number, yaw: number, pitch: number) {
+  sendPosition(x: number, y: number, z: number, yaw: number, pitch: number, crouched: boolean) {
     if (this.spectate) return; // observers have no position
     // The hottest client→server message (64Hz) — a compact binary frame across
     // the transport seam (the server decodes it back to a `pos` message).
-    this.sendUnreliable(encodePos(x, y, z, yaw, pitch));
+    this.sendUnreliable(encodePos(x, y, z, yaw, pitch, crouched));
   }
 
   // ── Transport seam (UDP plan Phase 1 — docs/NETCODE-UDP-PLAN.md §4) ────
@@ -768,7 +770,8 @@ export class NetClient {
     let s = this.remotes.get(b.id);
     if (!s) {
       s = { id: b.id, name: m?.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
-        frags: 0, deaths: 0, invulnMs: 0, team: null, hat: 'hat.none', unusual: 'unusual.none',
+        frags: 0, deaths: 0, invulnMs: 0, crouched: false, team: null,
+        hat: 'hat.none', unusual: 'unusual.none',
         emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', title: 'title.none',
         railColor: 'rail.cyan', railgunFinish: 'gun.stock', crosshair: '',
         ping: 0, admin: false, verified: false, receivedAt: now };
@@ -783,6 +786,7 @@ export class NetClient {
     s.frags = b.frags ?? 0;
     s.deaths = b.deaths ?? 0;
     s.invulnMs = b.invulnMs ?? 0;
+    s.crouched = b.crouched ?? false;
     s.ping = b.ping ?? 0;
     // Static (meta channel):
     s.name = m?.name ?? b.id;

@@ -9,7 +9,7 @@
 //      never mutate accounts. If ADMIN_API_TOKEN is unset, token auth is disabled
 //      entirely (session-only). All mutations are audit-logged.
 
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { accountId } from './auth';
 import type { OnlinePlayer } from './elyxion-game';
@@ -34,6 +34,8 @@ import {
   logEvent,
   deleteCommunityMessage,
   setAdmin,
+  setPasswordHash,
+  grantCredits,
   setFeedbackStatus,
   setTicketStatus,
   setVerified,
@@ -197,6 +199,9 @@ function denyToken(req: Request, res: Response): boolean {
 }
 
 const cleanUsername = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+const ACCOUNT_PASSWORD_MIN = 6;
+const ACCOUNT_PASSWORD_MAX = 200;
+const CREDITS_GRANT_MAX = 1_000_000;
 
 // A guest target is the anonymous igpid uuid (an RFC 4122 lowercase hex-uuid
 // minted into the igpid cookie). Validate the shape so junk can't land in the
@@ -264,6 +269,74 @@ adminRouter.get('/lookup', (req, res) => {
     return;
   }
   res.json({ username: target.username, admin: target.isAdmin, verified: target.isVerified });
+});
+
+// Replace an account password. Passwords never enter the database or audit log in
+// plaintext; revoking all sessions also signs the account out everywhere.
+adminRouter.post('/password', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const username = cleanUsername(body.username);
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (password.length < ACCOUNT_PASSWORD_MIN || password.length > ACCOUNT_PASSWORD_MAX) {
+    res.status(400).json({ error: 'bad_password' });
+    return;
+  }
+  const target = findAccountByName(username.toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(password, salt, 64).toString('hex');
+  if (!setPasswordHash(target.id, hash, salt)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  logEvent({
+    event: 'admin.password_reset',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { username: target.username, sessionsRevoked: true },
+    ip: req.ip,
+  });
+  res.json({ ok: true, username: target.username, sessionsRevoked: true });
+});
+
+// Add credits to an account's existing balance. This is deliberately additive,
+// bounded, and whole-number-only so an admin action cannot accidentally replace
+// or create a negative balance.
+adminRouter.post('/credits', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const username = cleanUsername(body.username);
+  const amount = typeof body.amount === 'number' ? body.amount : NaN;
+  if (!Number.isSafeInteger(amount) || amount <= 0 || amount > CREDITS_GRANT_MAX) {
+    res.status(400).json({ error: 'bad_amount' });
+    return;
+  }
+  const target = findAccountByName(username.toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const credits = grantCredits(target.id, amount);
+  if (credits == null) {
+    res.status(500).json({ error: 'server_error' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  logEvent({
+    event: 'admin.credits_grant',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { username: target.username, amount, credits },
+    ip: req.ip,
+  });
+  res.json({ ok: true, username: target.username, amount, credits });
 });
 
 // Update a player feedback row's moderation status (open → ack → resolved /

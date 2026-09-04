@@ -776,6 +776,159 @@ function BanGuestModal({
   );
 }
 
+// Account controls are separate from moderation: admins can grant credits or
+// replace a password for registered accounts. The server revokes all sessions
+// after a password replacement, so the target must log in again everywhere.
+function AccountManageModal({
+  player,
+  onClose,
+  onResult,
+  onCredits,
+}: {
+  player: PlayerRow;
+  onClose: () => void;
+  onResult: (message: string) => void;
+  onCredits: (credits: number) => void;
+}) {
+  const [password, setPassword] = useState('');
+  const [currentCredits, setCurrentCredits] = useState(player.credits);
+  const [passwordAgain, setPasswordAgain] = useState('');
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState<'password' | 'credits' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const resetPassword = async () => {
+    if (busy) return;
+    if (password.length < 6 || password.length > 200) {
+      setError('Password must be 6 to 200 characters.');
+      return;
+    }
+    if (password !== passwordAgain) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setBusy('password');
+    setError(null);
+    const result = await postJSON<{ ok: boolean }>('/api/admin/password', {
+      username: player.userName,
+      password,
+    });
+    setBusy(null);
+    if (!result?.ok) {
+      setError('Password change failed.');
+      return;
+    }
+    setPassword('');
+    setPasswordAgain('');
+    onResult(`Password reset for ${player.userName}; all existing sessions were revoked.`);
+  };
+
+  const grant = async () => {
+    if (busy) return;
+    const value = Number(amount);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 1_000_000) {
+      setError('Enter a whole-number grant from 1 to 1,000,000.');
+      return;
+    }
+    setBusy('credits');
+    setError(null);
+    const result = await postJSON<{ ok: boolean; credits?: number }>('/api/admin/credits', {
+      username: player.userName,
+      amount: value,
+    });
+    setBusy(null);
+    if (!result?.ok || typeof result.credits !== 'number') {
+      setError('Credit grant failed.');
+      return;
+    }
+    setAmount('');
+    setCurrentCredits(result.credits);
+    onCredits(result.credits);
+    onResult(`Granted ${fmt(value)} credits to ${player.userName}; new balance: ${fmt(result.credits)}.`);
+  };
+
+  return (
+    <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4' onClick={onClose}>
+      <div
+        className='w-full max-w-md rounded-lg border border-cyan-400/30 bg-zinc-950 p-4 shadow-2xl'
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className='flex items-start justify-between gap-3'>
+          <div>
+            <h3 className='font-mono text-[13px] font-semibold text-cyan-100'>Manage {player.userName}</h3>
+            <p className='mt-1 font-mono text-[10px] text-white/45'>Account actions are recorded in the admin audit log.</p>
+          </div>
+          <button
+            type='button'
+            onClick={onClose}
+            aria-label='Close account management'
+            className='rounded p-1 text-white/45 transition hover:bg-white/10 hover:text-white'
+          >
+            ×
+          </button>
+        </div>
+        {error && <div className='mt-3 rounded border border-rose-400/35 bg-rose-400/10 px-3 py-2 font-mono text-[11px] text-rose-200'>{error}</div>}
+        <div className='mt-4 border-t border-white/10 pt-3'>
+          <div className='mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/50'>Grant credits</div>
+          <div className='flex gap-2'>
+            <input
+              type='number'
+              min='1'
+              max='1000000'
+              step='1'
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+              placeholder='Amount'
+              className='min-w-0 flex-1 rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60'
+            />
+            <button
+              type='button'
+              onClick={() => void grant()}
+              disabled={busy !== null || !amount}
+              className='rounded-md border border-amber-400/40 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-amber-200 transition hover:bg-amber-400/10 disabled:opacity-40'
+            >
+              {busy === 'credits' ? 'Granting...' : 'Grant'}
+            </button>
+          </div>
+          <div className='mt-1 font-mono text-[10px] text-white/35'>Current balance: {fmt(currentCredits)}</div>
+        </div>
+        <div className='mt-4 border-t border-white/10 pt-3'>
+          <div className='mb-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/50'>Reset password</div>
+          <p className='mb-2 font-mono text-[10px] leading-relaxed text-rose-200/60'>This signs the account out on every device. The player must use the new password to log in again.</p>
+          <div className='flex flex-col gap-2'>
+            <input
+              type='password'
+              minLength={6}
+              maxLength={200}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder='New password'
+              className='w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60'
+            />
+            <input
+              type='password'
+              minLength={6}
+              maxLength={200}
+              value={passwordAgain}
+              onChange={(event) => setPasswordAgain(event.target.value)}
+              placeholder='Repeat new password'
+              className='w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60'
+            />
+            <button
+              type='button'
+              onClick={() => void resetPassword()}
+              disabled={busy !== null || !password || !passwordAgain}
+              className='self-start rounded-md border border-rose-400/40 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-rose-200 transition hover:bg-rose-400/10 disabled:opacity-40'
+            >
+              {busy === 'password' ? 'Resetting...' : 'Reset password'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Moderation actions on the players table + the live online list (accounts AND
 // guests). Bans persist server-side; kick disconnects a live player (must be
 // online to hit). Both are session-only routes — the token/read-only path can't
@@ -793,6 +946,7 @@ function PlayersTab() {
   const [modBusy, setModBusy] = useState<string | null>(null);
   const [modMsg, setModMsg] = useState<string | null>(null);
   const [banTarget, setBanTarget] = useState<BanTarget | null>(null);
+  const [accountTarget, setAccountTarget] = useState<PlayerRow | null>(null);
   const [banReason, setBanReason] = useState('');
   const [banDurationMs, setBanDurationMs] = useState(0);
   // Bans: NAME rows flag the players table (banned chip + Unban toggle); IP and
@@ -985,6 +1139,17 @@ function PlayersTab() {
   );
   return (
     <Panel title="Players" right={controls}>
+      {accountTarget && (
+        <AccountManageModal
+          player={accountTarget}
+          onClose={() => setAccountTarget(null)}
+          onResult={(message) => setModMsg(message)}
+          onCredits={(credits) => {
+            setPlayers((prev) => prev?.map((row) => (row.id === accountTarget.id ? { ...row, credits } : row)) ?? null);
+            setAccountTarget((prev) => (prev ? { ...prev, credits } : prev));
+          }}
+        />
+      )}
       {banTarget && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
@@ -1226,6 +1391,7 @@ function PlayersTab() {
                 <th className="py-1.5 pr-3 font-medium">K/D</th>
                 <th className="py-1.5 pr-3 font-medium">Acc</th>
                 <th className="py-1.5 pr-3 font-medium">XP</th>
+                <th className="py-1.5 pr-3 font-medium">Credits</th>
                 <th className="py-1.5 pr-3 font-medium">Joined</th>
                 <th className="py-1.5 pr-3 font-medium">Last seen</th>
                 <th className="py-1.5 pr-3 font-medium">Moderation</th>
@@ -1257,10 +1423,18 @@ function PlayersTab() {
                   <td className="py-2 pr-3 tabular-nums">{p.kd}</td>
                   <td className="py-2 pr-3 tabular-nums">{Math.round(p.bestAccuracy)}%</td>
                   <td className="py-2 pr-3 tabular-nums text-amber-200">{fmt(p.totalXp)}</td>
+                  <td className="py-2 pr-3 tabular-nums text-emerald-200">{fmt(p.credits)}</td>
                   <td className="py-2 pr-3 text-white/45">{new Date(p.createdAt).toLocaleDateString()}</td>
                   <td className="py-2 pr-3 text-white/45">{ago(p.lastSeen)}</td>
                   <td className="py-2 pr-3">
                     <span className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => setAccountTarget(p)}
+                        title='Manage this account: grant credits or reset password'
+                        className='rounded border border-cyan-400/40 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-cyan-200 transition hover:border-cyan-300/70 hover:text-cyan-100'
+                      >
+                        Manage
+                      </button>
                       <button
                         onClick={() => moderate(p.userName, 'kick')}
                         disabled={modBusy !== null}

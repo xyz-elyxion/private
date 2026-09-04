@@ -10,6 +10,8 @@ export const CONTROLS: ReadonlyArray<readonly [string, string]> = [
   ['Space', 'Jump (double-jump in the air)'],
   ['Q', 'Dash (directional, short cooldown)'],
   ['E', 'Zoom / aim (hold)'],
+  ['L-Ctrl', 'Crouch (hold)'],
+  ['L-Shift', 'Slide while crouching + moving'],
   ['Right click', 'Boost-jump off a nearby surface'],
   ['Wall + Space', 'Wall-jump for height + speed'],
   ['Tab', 'Scoreboard'],

@@ -4,6 +4,14 @@ export const TICK_DT = 1 / TICK_HZ;
 export const PLAYER_RADIUS = 0.4;
 export const PLAYER_HEIGHT = 1.8;
 export const EYE_HEIGHT = 1.6;
+// Stance movement. Crouching lowers the collision capsule and camera; sliding
+// briefly carries a fast ground burst and automatically uses the crouched stance.
+export const CROUCH_HEIGHT = 1.1;
+export const CROUCH_EYE_HEIGHT = 0.98;
+export const CROUCH_SPEED = 5.5;
+export const SLIDE_DURATION = 0.65;
+export const SLIDE_SPEED = 18;
+export const SLIDE_FRICTION = 4.5;
 
 // Quake III / Source-flavored. The accel formula is the Q3 standard:
 //   accelSpeed = ACCEL * wishspeed * dt    (capped at addSpeed = wishspeed - current)
@@ -308,6 +316,8 @@ export type KeybindAction =
   | 'jump'
   | 'dash'
   | 'zoom'
+  | 'crouch'
+  | 'slide'
   | 'scoreboard'
   | 'chat';
 
@@ -319,6 +329,8 @@ export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }
   { id: 'jump', label: 'Jump' },
   { id: 'dash', label: 'Dash' },
   { id: 'zoom', label: 'Zoom (hold)' },
+  { id: 'crouch', label: 'Crouch (hold)' },
+  { id: 'slide', label: 'Slide' },
   { id: 'scoreboard', label: 'Scoreboard' },
   { id: 'chat', label: 'Chat' },
 ];
@@ -331,6 +343,8 @@ export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
   jump: 'Space',
   dash: 'KeyQ',
   zoom: 'KeyE',
+  crouch: 'ControlLeft',
+  slide: 'ShiftLeft',
   scoreboard: 'Tab',
   chat: 'KeyY',
 };

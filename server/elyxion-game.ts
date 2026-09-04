@@ -22,6 +22,8 @@ import {
   RAIL_COOLDOWN,
   MAX_HORIZONTAL_SPEED,
   EYE_HEIGHT,
+  CROUCH_HEIGHT,
+  CROUCH_EYE_HEIGHT,
   DUEL_FRAG_LIMIT,
   RANKED_DUEL_FRAG_LIMIT,
   KILLCAM_DURATION_SEC,
@@ -208,6 +210,7 @@ type ClientRecord = {
   pos: Vec;
   yaw: number;
   pitch: number;
+  crouched: boolean;
   frags: number;
   deaths: number;
   invulnUntilMs: number;
@@ -317,7 +320,7 @@ type ClientMessage =
   | { type: 'crosshair'; code?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'chat'; text?: string }
-  | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
+  | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number; crouched?: boolean }
   | { type: 'ping'; ts: number; rtt?: number }
   | {
       type: 'shoot';
@@ -637,7 +640,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     const data = Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : (raw as Buffer);
     const p = decodePos(toView(data));
     if (!p) return null; // unknown/garbage binary → ignore
-    return { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
+    return { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, crouched: p.crouched };
   };
 
   // Fan one server→client state frame out to a single client. Backpressure: a
@@ -1505,6 +1508,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
         deaths: c.deaths,
         invulnMs: Math.max(0, c.invulnUntilMs - now),
         ping: Math.round(c.rttMs),
+        crouched: c.crouched,
       });
     }
     return { type: 'state' as const, t: now, players, resumeAt: room.resumeAt };
@@ -1805,7 +1809,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // origins implausibly far from the shooter's authoritative server eye. (Lag
     // comp rewinds the victim, not the origin, so honest clients are unaffected.)
     const ex = shooter.pos.x;
-    const ey = shooter.pos.y + EYE_HEIGHT;
+    const ey = shooter.pos.y + (shooter.crouched ? CROUCH_EYE_HEIGHT : EYE_HEIGHT);
     const ez = shooter.pos.z;
     const originDist = Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez);
     if (originDist > SHOT_ORIGIN_MAX_DIST) {
@@ -1845,7 +1849,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       if (victim.disconnectedAt > 0) continue; // dropped player can't be fragged mid-grace
       const pp = rewind(victim, rt);
       const min: Vec = { x: pp.x - PLAYER_RADIUS, y: pp.y, z: pp.z - PLAYER_RADIUS };
-      const max: Vec = { x: pp.x + PLAYER_RADIUS, y: pp.y + PLAYER_HEIGHT, z: pp.z + PLAYER_RADIUS };
+      const max: Vec = { x: pp.x + PLAYER_RADIUS, y: pp.y + (victim.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT), z: pp.z + PLAYER_RADIUS };
       const t = rayAabb(msg.ox, msg.oy, msg.oz, dx, dy, dz, min, max);
       if (t === null || t <= 0 || t >= wallCap || t >= bestT) continue;
       bestT = t;
@@ -2007,6 +2011,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       pos: { x: 0, y: 0, z: 0 },
       yaw: 0,
       pitch: 0,
+      crouched: false,
       frags: 0,
       deaths: 0,
       invulnUntilMs: 0,
@@ -2624,6 +2629,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
             if (typeof msg.pitch === 'number' && Number.isFinite(msg.pitch)) {
               record.pitch = msg.pitch;
             }
+            record.crouched = msg.crouched === true;
             // Buffer the receive-time-stamped sample so the snapshot tick can
             // resample to a consistent instant (anti-alias — see POS_LAG_MS).
             record.posSamples.push({ t: ts, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });

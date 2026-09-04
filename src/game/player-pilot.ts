@@ -68,6 +68,8 @@ const IDLE_INPUT: InputState = {
   fire: false,
   firePressed: false,
   zoom: false,
+  crouch: false,
+  slidePressed: false,
   scoreboard: false,
   chatPressed: false,
   yawDelta: 0,
@@ -157,6 +159,8 @@ export class PlayerPilot {
     let fireP = false;
     let dashP = false;
     let boostP = false;
+    let crouch = false;
+    let slideP = false;
     if (this.actTimer <= 0) {
       this.actTimer = RL_DECIDE_INTERVAL * (0.75 + Math.random() * 0.5);
       const d = rlDecide(this.brain.weights, feats, Math.random);
@@ -168,6 +172,10 @@ export class PlayerPilot {
       fireP = d.fire;
       dashP = d.dash;
       boostP = d.boost;
+      // Keep the learned pilot compatible with the expanded input shape; its
+      // existing policy does not train stance actions yet.
+      crouch = false;
+      slideP = false;
       this.noiseYaw = (Math.random() - 0.5) * 2 * AIM_NOISE;
       this.noisePitch = (Math.random() - 0.5) * 2 * AIM_NOISE;
     }
@@ -186,6 +194,8 @@ export class PlayerPilot {
       fire: fireP,
       firePressed: fireP,
       zoom: false,
+      crouch,
+      slidePressed: slideP,
       scoreboard: false,
       chatPressed: false,
       yawDelta: 0,

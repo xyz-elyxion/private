@@ -2102,6 +2102,10 @@ const insertSessionStmt = sqlite.prepare(
 );
 const sessionStmt = sqlite.prepare(`SELECT user_id FROM elyxion_sessions WHERE token = ?`);
 const deleteSessionStmt = sqlite.prepare(`DELETE FROM elyxion_sessions WHERE token = ?`);
+const deleteUserSessionsStmt = sqlite.prepare(`DELETE FROM elyxion_sessions WHERE user_id = ?`);
+const setPasswordStmt = sqlite.prepare(
+  `UPDATE elyxion_users SET pw_hash = @pwHash, pw_salt = @pwSalt WHERE id = @id`,
+);
 const setVerifiedStmt = sqlite.prepare(`UPDATE elyxion_users SET is_verified = @v WHERE id = @id`);
 const setAdminStmt = sqlite.prepare(`UPDATE elyxion_users SET is_admin = @v WHERE id = @id`);
 
@@ -2140,6 +2144,19 @@ export function setVerified(id: string, value: boolean): boolean {
 export function setAdmin(id: string, value: boolean): boolean {
   return setAdminStmt.run({ id, v: value ? 1 : 0 }).changes > 0;
 }
+
+// Add an administrative credit grant to an account, creating its progression
+// row when the account has not played a match yet. Returns the new balance.
+const grantCreditsStmt = sqlite.prepare(
+  `UPDATE elyxion_stats SET credits = credits + @amount, updated_at = @now WHERE player_id = @playerId`,
+);
+export function grantCredits(playerId: string, amount: number, now: number = Date.now()): number | null {
+  if (!playerId || !Number.isSafeInteger(amount) || amount <= 0) return null;
+  ensureRowStmt.run(playerId, now, now);
+  grantCreditsStmt.run({ playerId, amount, now });
+  const row = progSelectStmt.get(playerId) as ProgRow | undefined;
+  return row?.credits ?? null;
+}
 // Promote the configured ADMIN_USERNAMES to admin on boot (idempotent). Lets you
 // designate your account on Railway via an env var — register first, set the var,
 // redeploy. Returns the number of rows flipped.
@@ -2162,6 +2179,13 @@ export function userIdFromSession(token: string): string {
 }
 export function deleteSession(token: string): void {
   deleteSessionStmt.run(token);
+}
+// Replace a password hash and revoke every active session for the account. The
+// caller is responsible for generating the scrypt hash and salt.
+export function setPasswordHash(id: string, pwHash: string, pwSalt: string): boolean {
+  const changed = setPasswordStmt.run({ id, pwHash, pwSalt }).changes > 0;
+  if (changed) deleteUserSessionsStmt.run(id);
+  return changed;
 }
 
 // ── Admin metrics (dashboard) ────────────────────────────────────────────────
@@ -2437,16 +2461,19 @@ type PlayerTableRow = {
 // Whitelisted sort → ORDER BY clause. The key is validated against this map's
 // own keys, so nothing user-supplied is ever interpolated into the SQL string.
 const PLAYER_SORTS: Record<string, string> = {
-  kills: 's.total_kills DESC',
-  games: 's.total_games DESC',
-  level: 's.level DESC, s.total_xp DESC',
-  accuracy: 's.best_accuracy DESC, s.total_games DESC',
-  xp: 's.total_xp DESC',
-  recent: 's.updated_at DESC',
+  kills: 'COALESCE(s.total_kills, 0) DESC',
+  games: 'COALESCE(s.total_games, 0) DESC',
+  level: 'COALESCE(s.level, 1) DESC, COALESCE(s.total_xp, 0) DESC',
+  accuracy: 'COALESCE(s.best_accuracy, 0) DESC, COALESCE(s.total_games, 0) DESC',
+  xp: 'COALESCE(s.total_xp, 0) DESC',
+  recent: 'COALESCE(s.updated_at, u.created_at) DESC',
 };
-const PLAYER_COLS = `s.player_id, s.user_name, s.level, s.total_games, s.total_kills,
-  s.total_deaths, s.headshots, s.best_accuracy, s.total_xp, s.credits, s.updated_at,
-  COALESCE(u.created_at, s.created_at) AS created_at,
+const PLAYER_COLS = `u.id AS player_id, COALESCE(u.username, s.user_name) AS user_name,
+  COALESCE(s.level, 1) AS level, COALESCE(s.total_games, 0) AS total_games,
+  COALESCE(s.total_kills, 0) AS total_kills, COALESCE(s.total_deaths, 0) AS total_deaths,
+  COALESCE(s.headshots, 0) AS headshots, COALESCE(s.best_accuracy, 0) AS best_accuracy,
+  COALESCE(s.total_xp, 0) AS total_xp, COALESCE(s.credits, 0) AS credits,
+  COALESCE(s.updated_at, u.created_at) AS updated_at, u.created_at AS created_at,
   COALESCE(u.is_admin, 0) AS is_admin, COALESCE(u.is_verified, 0) AS is_verified`;
 
 export function getPlayersTable(opts: {
@@ -2460,8 +2487,8 @@ export function getPlayersTable(opts: {
   const rows = sqlite
     .prepare(
       `SELECT ${PLAYER_COLS}
-         FROM elyxion_stats s LEFT JOIN elyxion_users u ON u.id = s.player_id
-        WHERE s.total_games > 0 AND s.user_name LIKE ?
+         FROM elyxion_users u LEFT JOIN elyxion_stats s ON s.player_id = u.id
+        WHERE u.username LIKE ?
         ORDER BY ${orderBy} LIMIT ?`,
     )
     .all(like, limit) as PlayerTableRow[];
