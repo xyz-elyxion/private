@@ -6,7 +6,7 @@
 # the built client, the server, and the THREE-free shared game modules.
 
 # --- build: compile the client bundle ---------------------------------------
-FROM node:20.19-bookworm-slim AS build
+FROM node:20.20.2-bookworm-slim AS build
 WORKDIR /app
 # Install deps first so this layer caches across source-only changes.
 COPY package*.json ./
@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build
 
 # --- runtime: serve dist/ + the game/stats server ---------------------------
-FROM node:20.19-bookworm-slim AS runtime
+FROM node:20.20.2-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8787
