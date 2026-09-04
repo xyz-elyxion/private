@@ -2,20 +2,18 @@ import * as THREE from 'three';
 import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
 import {
   BotManager,
-  LearningBot,
   loadBotModel,
   pickFreeSpot,
-  type Bot,
   type BotFireIntent,
   type BotModel,
   type BotTarget,
 } from './bots';
-import { type RlBrain, type RlReport } from './rl-brain';
 import {
   BANNER_DURATION_SEC,
   BOT_HEADSHOT_THRESHOLD,
   BOT_HEIGHT,
   DEFAULT_BOT_DIFFICULTY,
+  DUEL_FRAG_LIMIT,
   DEFAULT_FOV,
   DEFAULT_ZOOM_FOV,
   MIN_ZOOM_FOV,
@@ -54,7 +52,6 @@ import {
   TEAM_COLORS,
   TDM_FRIEND_COLOR,
   TDM_FRAG_LIMIT,
-  DUEL_FRAG_LIMIT,
   RANKED_DUEL_FRAG_LIMIT,
   type BotDifficulty,
   type GameMode,
@@ -93,7 +90,6 @@ import {
 } from './cosmetics';
 import { NetClient, type KillEvent, type ChatMessage, type RankedResult } from './net';
 import { Player } from './player';
-import { PlayerPilot, type PilotTarget } from './player-pilot';
 import { RemotePlayer } from './remote-player';
 import {
   MatchRecorder,
@@ -279,16 +275,6 @@ export class Game {
   private botCount = NUM_BOTS;
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
   private botMode: GameMode = 'ffa'; // offline game mode (ffa/duel/tdm) for Solo vs Bots
-  // "Duel the AI": when set, the offline duel bot is a LearningBot running this
-  // stored policy (rl-brain.ts) instead of a scripted bot, and each duel is a
-  // training episode reported to the shared brain store at match end.
-  private rlBrain: RlBrain | null = null;
-  private learningBot: LearningBot | null = null;
-  // "Let the AI play for you" (admin spectate): the shared duel brain also
-  // drives the local player slot (self-play) — the human just watches. No
-  // pointer lock; the pilot owns the camera.
-  private autopilot = false;
-  private pilot: PlayerPilot | null = null;
   // Weekly-challenge run: an 8p FFA speedrun vs easy bots. Uses a dedicated frag
   // cap and exports the whole run as a rewatchable replay (see getChallengeRun).
   private challenge = false;
@@ -698,67 +684,6 @@ export class Game {
     this.emitHud();
   }
 
-  // Duel the AI: install the stored learned policy for the offline duel bot
-  // (see rl-brain.ts). The bot rebuild is lazy — bots spawn once the character
-  // model finishes loading in start(), and read this.rlBrain then. Passing null
-  // returns to classic scripted bots.
-  setRlBrain(brain: RlBrain | null) {
-    this.rlBrain = brain;
-    this.rebuildBots();
-  }
-
-  // "Let the AI play for you" (admin spectate): turn the local player slot over
-  // to the given learned policy — usable in ANY Solo vs Bots mode, not just the
-  // AI duel. In a Duel-the-AI match the same brain runs both sides (self-play,
-  // and the enemy LearningBot's episode still trains it); in FFA/TDM the pilot
-  // fights the nearest enemy bot while the classic bots play as usual. No
-  // pointer lock — the AI owns the camera.
-  setAutopilot(brain: RlBrain | null) {
-    this.autopilot = !!brain;
-    if (brain) {
-      this.locked = true; // no pointer lock — the AI owns the camera
-      this.pilot = new PlayerPilot(brain);
-    } else {
-      this.pilot = null;
-    }
-  }
-
-  // The pilot's target: the enemy learning bot in an offline AI duel, the nearest
-  // enemy bot in other offline modes, or the nearest visible remote player online.
-  // Teammates are never targeted in TDM, matching the server's friendly-fire rule.
-  private pilotTarget(): PilotTarget | null {
-    if (this.net) {
-      let best: { id: string; pos: { x: number; y: number; z: number } } | null = null;
-      let bestD = Infinity;
-      for (const remote of this.net.remotes.values()) {
-        if (remote.invulnMs > 0) continue;
-        if (this.net.mode === 'tdm' && this.net.localTeam != null && remote.team === this.net.localTeam) continue;
-        const d = Math.hypot(remote.pos.x - this.player.pos.x, remote.pos.z - this.player.pos.z);
-        if (d < bestD) {
-          best = { id: remote.id, pos: remote.pos };
-          bestD = d;
-        }
-      }
-      return best;
-    }
-    if (!this.bots) return null;
-    if (this.learningBot && this.learningBot.state.alive) {
-      return { id: this.learningBot.state.id, pos: { ...this.learningBot.state.pos } };
-    }
-    let best: Bot | null = null;
-    let bestD = Infinity;
-    for (const b of this.bots.bots) {
-      if (!b.state.alive) continue;
-      if (this.botMode === 'tdm' && this.localTeam != null && b.getTeam() === this.localTeam) continue;
-      const d = Math.hypot(b.state.pos.x - this.player.pos.x, b.state.pos.z - this.player.pos.z);
-      if (d < bestD) {
-        best = b;
-        bestD = d;
-      }
-    }
-    return best ? { id: best.state.id, pos: { ...best.state.pos } } : null;
-  }
-
   // Mark this offline run as the weekly challenge: a fixed-map FFA speedrun whose
   // whole run is exported to a replay. `mapId` must match the MAPS registry so the
   // rewatch viewer can rebuild the same arena.
@@ -969,10 +894,7 @@ export class Game {
         this.map.spawn,
         this.botModel,
         this.botDifficulty,
-        this.rlBrain,
       );
-      this.learningBot =
-        this.rlBrain && this.bots.bots[0] instanceof LearningBot ? this.bots.bots[0] : null;
       this.botDeathCounts.clear();
       this.botFrags.clear();
       this.botShotsFired.clear();
@@ -1088,19 +1010,6 @@ export class Game {
     this.botModel = model;
     this.applyBotsState();
     this.applyMultiplayerState();
-    // Autopilot spectate: fresh pilot state + a banner so it's clear the human
-    // isn't playing (the AI owns the controls this match).
-    if (this.autopilot && this.pilot) {
-      this.pilot.reset();
-      this.banner = {
-        id: this.nextEventId++,
-        tier: 'special',
-        title: 'AI Autopilot',
-        subtitle: 'the shared brain is playing this duel',
-        remaining: BANNER_DURATION_SEC,
-        total: BANNER_DURATION_SEC,
-      };
-    }
     // Training mode: a target-practice range (no bots, no return fire).
     if (this.training && !this.net && !this.trainingRange) {
       this.trainingRange = new TrainingRange(this.scene, this.map);
@@ -1161,10 +1070,7 @@ export class Game {
         this.map.spawn,
         this.botModel,
         this.botDifficulty,
-        this.rlBrain,
       );
-      this.learningBot =
-        this.rlBrain && this.bots.bots[0] instanceof LearningBot ? this.bots.bots[0] : null;
       for (const b of this.bots.bots) {
         this.botDeathCounts.set(b.state.id, 0);
         this.botFrags.set(b.state.id, 0);
@@ -1178,7 +1084,6 @@ export class Game {
     } else if (!this.wantBots && this.bots) {
       this.bots.dispose(this.scene);
       this.bots = null;
-      this.learningBot = null;
       this.botDeathCounts.clear();
       this.botFrags.clear();
       this.botShotsFired.clear();
@@ -1808,7 +1713,6 @@ export class Game {
     // Always drain the accumulator so a held-but-not-applied delta (dead/paused/
     // match over) can't pile up and snap the view when control resumes.
     const look = this.input.consumeLook();
-    if (this.autopilot) return; // the AI owns the camera in autopilot
     if (!this.locked || this.matchOver || this.killcam !== null || this.replay) return;
     this.player.yaw -= look.yawDelta;
     this.player.pitch -= look.pitchDelta;
@@ -1831,13 +1735,7 @@ export class Game {
     this.elapsed += dt;
 
     const dead = this.killcam !== null;
-    // Autopilot spectate: the pilot samples the duel policy and feeds its inputs
-    // into the SAME Player physics a human uses (dead → the killcam owns the
-    // camera, so the pilot stands down until respawn).
-    const input =
-      this.autopilot && this.pilot && !dead
-        ? this.pilot.tick(dt, this.player, this.pilotTarget(), this.map, this.weapon.cooldown)
-        : this.input.consume();
+    const input = this.input.consume();
     this.wantZoom = input.zoom;
     if (input.chatPressed) this.openChat(); // open the composer (guards inside)
 
@@ -2156,8 +2054,6 @@ export class Game {
         this.killEffectStyle,
       );
       bot.kill();
-      // Duel the AI: the player fragging the learning bot = −1 for its episode.
-      if (this.learningBot && bot === this.learningBot) this.learningBot.onDied();
       this.recorder.logKill({
         killerId: 'you',
         victimId: bot.state.id,
@@ -2271,14 +2167,6 @@ export class Game {
     // Spatialized so you can hear which direction a bot is firing from.
     this.audio.playAt('fire', origin.x, origin.y, origin.z, 0.4);
     if (!victimKind || !victimPos) {
-      // Duel the AI: a learning-bot rail shot that lands on nobody (wall / out
-      // of range) is a MISS — dense per-shot feedback that penalizes the aim
-      // which produced it, so the gradient drags the learned aim onto the
-      // target (rl-brain.ts). Hits are rewarded separately: scoring on the
-      // player → onScored, killing another bot → its own death handling.
-      if (this.learningBot && intent.botId === this.learningBot.state.id) {
-        this.learningBot.onShotMissed();
-      }
       return;
     }
     // A bot scoring the match's first kill consumes First Blood, so the local
@@ -2297,8 +2185,6 @@ export class Game {
     });
     if (victimKind === 'player') {
       this.handleLocalDeath(intent.botName, intent.botId);
-      // Duel the AI: the learning bot fragging the player = +1 for its episode.
-      if (this.learningBot && intent.botId === this.learningBot.state.id) this.learningBot.onScored();
     } else {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
       if (victim) {
@@ -2338,9 +2224,6 @@ export class Game {
   // victim branch of handleNetKill but for a bot killer.
   private handleLocalDeath(killerName: string, killerId: string) {
     if (this.killcam) return;
-    // Autopilot: the pilot "feels" the death (recentDeath feature) so the policy
-    // can learn to avoid the situation that just killed it.
-    if (this.pilot) this.pilot.onDeath();
     const deathPos = { ...this.player.pos };
     // Respawn away from where we died AND from every live bot (not just one).
     const avoid = [this.player.pos];
@@ -2641,16 +2524,6 @@ export class Game {
     return this.ranked ? 'ranked' : this.netMode;
   }
 
-  // Duel the AI: finalize the finished duel's training episode (the REINFORCE
-  // gradient over its logged decisions) so the client can report it to the
-  // shared brain store. Returns null unless this was an RL duel that actually
-  // fought (the buffers are cleared by the bot, so each duel reports once).
-  takeRlReport(): RlReport | null {
-    const rep = this.learningBot?.finalizeRlReport() ?? null;
-    if (rep) rep.humanFrags = this.playerFrags;
-    return rep;
-  }
-
   // Server `kill` broadcast — drives the same effect set as a local bot kill
   // but works for every client in the match (including the victim).
   private handleNetKill(ev: KillEvent) {
@@ -2727,9 +2600,6 @@ export class Game {
       if (!this.reducedEffects) this.damageFlash = 1;
       this.medals.onDeath();
       this.playerDeaths += 1;
-      // Keep the online pilot's recent-death feature in sync with offline
-      // autopilot so it can adapt after being fragged by a remote player.
-      if (this.pilot) this.pilot.onDeath();
       const killer = this.remotePlayers.get(ev.killerId);
       this.killcam = {
         killerId: ev.killerId,

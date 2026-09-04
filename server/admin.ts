@@ -47,8 +47,6 @@ import {
   type FeedbackStatus,
   type TicketStatus,
 } from './db';
-import { listRlBrains, resetRlBrain } from './ai-brain';
-import { RL_DIFFICULTIES } from '../src/game/rl-brain';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 import {
   ANNOUNCEMENT_MAX_LEN,
@@ -562,38 +560,6 @@ adminRouter.delete('/announcements/:id', (req, res) => {
     ip: req.ip,
   });
   res.json({ ok: true, id });
-});
-
-// ── Duel-the-AI shared brains ──────────────────────────────────────────────
-// The reinforcement-learning duel brains persist server-side (data/*.sqlite, one
-// shared global brain per tier — see server/ai-brain.ts). The list is read-only
-// → token-readable; resetting a brain mutates shared state → session-only
-// (denyToken) + audit-logged, mirroring the other moderation mutations.
-adminRouter.get('/ai/brains', (_req, res) => {
-  res.json({ brains: listRlBrains() });
-});
-
-// Wipe one tier back to its never-trained seed policy (gen/duels/frags zeroed).
-// Useful when a brain has been farmed into something silly — everyone duels the
-// fresh seed again and the tier relearns from zero.
-adminRouter.post('/ai/brains/reset', (req, res) => {
-  if (denyToken(req, res)) return;
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const difficulty = typeof body.difficulty === 'string' ? body.difficulty : '';
-  if (!(RL_DIFFICULTIES as readonly string[]).includes(difficulty)) {
-    res.status(400).json({ error: 'bad_difficulty' });
-    return;
-  }
-  const admin = (req as AdminRequest).admin;
-  const brain = resetRlBrain(difficulty as (typeof RL_DIFFICULTIES)[number]);
-  logEvent({
-    event: 'admin.ai_brain_reset',
-    actorId: admin.id,
-    actorName: admin.username,
-    detail: { difficulty, gen: brain.gen, duels: brain.duels },
-    ip: req.ip,
-  });
-  res.json({ ok: true, brain });
 });
 
 // ── Moderation: kick / ban / unban ─────────────────────────────────────────

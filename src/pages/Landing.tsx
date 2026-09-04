@@ -24,7 +24,6 @@ const MODES: Array<[string, string]> = [
   ['Practice', 'Offline range + bots. Warm up aim and movement.'],
   ['Quick match', 'Drop into an open public arena instantly.'],
   ['Custom / private', 'Host a lobby or share an invite code.'],
-  ['AI duel', '1v1 a bot that learns — every match is a training episode saved to the game’s data.'],
 ];
 
 // Active server announcements (posted by admins from /admin) — one-shot fetch on

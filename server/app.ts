@@ -29,7 +29,6 @@ import { feedbackRouter } from './feedback';
 import { supportRouter } from './support';
 import { communityRouter } from './community';
 import { tempReplaysRouter } from './tempReplays';
-import { aiBrainRouter } from './ai-brain';
 import { announcementsRouter } from './announcements';
 import {
   accountIdFromCookieHeader,
@@ -192,7 +191,6 @@ app.use('/api', feedbackRouter);
 app.use('/api', supportRouter);
 app.use('/api', communityRouter);
 app.use('/api', tempReplaysRouter);
-app.use('/api', aiBrainRouter);
 app.use('/api', announcementsRouter);
 app.use('/api/admin', adminRouter);
 

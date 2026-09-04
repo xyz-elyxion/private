@@ -6,12 +6,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './auth';
-import {
-  RL_DIFFICULTIES,
-  RL_DIFFICULTY_LABEL,
-  seedRlBrain,
-  type RlBrain,
-} from './game/rl-brain';
 
 // ── API shapes (mirror server/db.ts) ─────────────────────────────────────────
 type MetricsWindow = { matches: number; activePlayers: number; newAccounts: number; logins: number };
@@ -298,7 +292,7 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat' | 'support' | 'community' | 'ai' | 'announcements';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat' | 'support' | 'community' | 'announcements';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
@@ -309,7 +303,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'anticheat', label: 'Anticheat' },
   { id: 'support', label: 'Support' },
   { id: 'community', label: 'Community' },
-  { id: 'ai', label: 'AI brains' },
   { id: 'announcements', label: 'Announcements' },
 ];
 
@@ -2413,193 +2406,11 @@ function AnnouncementsTab() {
   );
 }
 
-// ── Tab: Duel-the-AI brains ─────────────────────────────────────────────────
-// The reinforcement-learning duel brains (see src/game/rl-brain.ts + server/
-// ai-brain.ts): one SHARED global brain per tier, trained by every "Duel the
-// AI" match and persisted in data/*.sqlite. This tab inspects their training
-// progress and can reset a tier back to its untrained seed (session-only + audit
-// logged server-side) when it has been farmed into something silly.
-
-// How far a brain's current weights have drifted from its untrained seed (L2
-// over the whole policy) — a read-only "how much has this tier actually moved"
-// signal, alongside the gen/duel/frag tallies.
-function weightDriftOf(b: RlBrain): number {
-  const seed = seedRlBrain(b.difficulty);
-  let sum = 0;
-  for (const [key, arr] of (
-    [
-      ['mov', b.weights.mov],
-      ['buttons', b.weights.buttons],
-    ] as const
-  )) {
-    const seedArr = key === 'mov' ? seed.weights.mov : seed.weights.buttons;
-    for (let i = 0; i < arr.length; i++) {
-      const d = arr[i] - seedArr[i];
-      sum += d * d;
-    }
-  }
-  return Math.sqrt(sum);
-}
-
-function AiBrainsTab() {
-  const [brains, setBrains] = useState<RlBrain[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ kind: 'err' | 'ok'; text: string } | null>(null);
-
-  const load = useCallback(async () => {
-    const d = await getJSON<{ brains: RlBrain[] }>('/api/admin/ai/brains');
-    if (!d) {
-      setBrains([]);
-      return;
-    }
-    // Fixed tier order (easy → hard), never trusting the wire order.
-    const ordered = RL_DIFFICULTIES.map((t) => d.brains.find((b) => b.difficulty === t)).filter(
-      (b): b is RlBrain => b != null,
-    );
-    setBrains(ordered);
-  }, []);
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const flash = (kind: 'err' | 'ok', text: string) => {
-    setMsg({ kind, text });
-    window.setTimeout(() => setMsg(null), 5000);
-  };
-
-  const reset = async (b: RlBrain) => {
-    if (busy) return;
-    const label = RL_DIFFICULTY_LABEL[b.difficulty];
-    const trained =
-      b.duels > 0 ? `${b.duels} duel${b.duels === 1 ? '' : 's'} (${b.gen} policy updates)` : 'no recorded duels';
-    if (!window.confirm(`Reset the shared ${label} (${b.difficulty}) brain to its untrained seed?\n\n${trained} of training is wiped for EVERYONE dueling that tier.`)) return;
-    setBusy(true);
-    setMsg(null);
-    const r = await postJSON<{ ok: boolean; brain?: RlBrain }>('/api/admin/ai/brains/reset', {
-      difficulty: b.difficulty,
-    });
-    setBusy(false);
-    if (!r?.ok || !r.brain) {
-      flash('err', 'Reset failed — brain resets need an admin session login.');
-      return;
-    }
-    flash('ok', `${label} brain reset to its untrained seed.`);
-    setBrains((prev) => prev?.map((x) => (x.difficulty === r.brain?.difficulty ? r.brain! : x)) ?? null);
-  };
-
-  return (
-    <Panel
-      title="AI duel brains"
-      right={
-        <span className='font-mono text-[10px] uppercase tracking-[0.16em] text-white/35'>
-          shared per tier · trained by every duel
-        </span>
-      }
-    >
-      <div className='mb-4 rounded-lg border border-cyan-400/20 bg-cyan-400/5 p-3 text-[11px] leading-relaxed text-white/55'>
-        Each “Duel the AI” match is a training episode: at match end the tier’s
-        policy is updated from frags &amp; deaths and saved here. Drift is how far
-        the weights have moved from the untrained seed — a rough “how much this
-        tier has learned” meter.
-      </div>
-
-      {msg && (
-        <div
-          className={`mb-2 rounded-md border px-3 py-2 text-[11px] ${
-            msg.kind === 'err'
-              ? 'border-rose-400/40 bg-rose-400/10 text-rose-200'
-              : 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200'
-          }`}
-        >
-          {msg.text}
-        </div>
-      )}
-
-      {!brains ? (
-        <Loading />
-      ) : brains.length === 0 ? (
-        <Empty label='No brains found — duel an AI once to seed a tier.' />
-      ) : (
-        <div className='flex flex-col gap-2'>
-          {brains.map((b) => {
-            const totalFrags = b.botFrags + b.humanFrags;
-            const botShare = totalFrags > 0 ? Math.round((b.botFrags / totalFrags) * 100) : 0;
-            const drift = weightDriftOf(b);
-            const trained = b.duels > 0;
-            return (
-              <div key={b.difficulty} className='rounded-lg border border-white/10 bg-black/30 p-3'>
-                <div className='flex flex-wrap items-center justify-between gap-3'>
-                  <div className='flex items-center gap-3'>
-                    <span
-                      className={`rounded-md border px-2.5 py-1 font-display text-[12px] font-bold uppercase tracking-[0.12em] ${
-                        b.difficulty === 'easy'
-                          ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200'
-                          : b.difficulty === 'medium'
-                            ? 'border-amber-400/40 bg-amber-400/10 text-amber-200'
-                            : 'border-rose-400/40 bg-rose-400/10 text-rose-200'
-                      }`}
-                    >
-                      {RL_DIFFICULTY_LABEL[b.difficulty]}
-                    </span>
-                    <span className='font-mono text-[11px] text-white/45'>{b.difficulty}</span>
-                    {!trained && (
-                      <span className='rounded border border-white/15 px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.14em] text-white/40'>
-                        untrained seed
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => void reset(b)}
-                    disabled={busy}
-                    className='rounded-md border border-rose-400/30 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-rose-300 transition hover:bg-rose-400/10 disabled:opacity-40'
-                  >
-                    {busy ? '…' : 'Reset'}
-                  </button>
-                </div>
-
-                <div className='mt-3 grid grid-cols-2 gap-3 font-mono text-[12px] sm:grid-cols-4'>
-                  <div>
-                    <div className='text-[9px] uppercase tracking-[0.16em] text-white/35'>Policy updates</div>
-                    <div className='mt-0.5 tabular-nums text-cyan-200'>{fmt(b.gen)}</div>
-                  </div>
-                  <div>
-                    <div className='text-[9px] uppercase tracking-[0.16em] text-white/35'>Duels</div>
-                    <div className='mt-0.5 tabular-nums text-white/85'>{fmt(b.duels)}</div>
-                  </div>
-                  <div>
-                    <div className='text-[9px] uppercase tracking-[0.16em] text-white/35'>Frags (bot–human)</div>
-                    <div className='mt-0.5 tabular-nums text-white/85'>
-                      {fmt(b.botFrags)}–{fmt(b.humanFrags)}
-                      <span className='text-white/35'> · {botShare}% bot</span>
-                    </div>
-                  </div>
-                  <div>
-                    <div className='text-[9px] uppercase tracking-[0.16em] text-white/35'>Last trained</div>
-                    <div className='mt-0.5 tabular-nums text-white/85'>{trained ? ago(b.updatedAt) : '—'}</div>
-                  </div>
-                </div>
-
-                <div className='mt-2 text-[10px] text-white/35'>
-                  <span className='uppercase tracking-[0.14em]'>Weight drift vs seed:</span>{' '}
-                  <span className='font-mono tabular-nums text-white/60'>{drift.toFixed(2)}</span>
-                  {trained && drift < 0.05 && (
-                    <span className='text-amber-300/70'> — duels recorded but the policy barely moved (learning signal is weak)</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Panel>
-  );
-}
-
 // ── Admin navigation chrome ───────────────────────────────────────────────────
 type AdminNavItem = {
   id: Tab;
   title: string;
-  icon: 'grid' | 'activity' | 'trend' | 'reticle' | 'users' | 'chat' | 'shield' | 'support' | 'globe' | 'chip' | 'megaphone';
+  icon: 'grid' | 'activity' | 'trend' | 'reticle' | 'users' | 'chat' | 'shield' | 'support' | 'globe' | 'megaphone';
   badge?: number | string;
 };
 
@@ -2630,7 +2441,6 @@ const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
     heading: 'Systems',
     items: [
       { id: 'anticheat', title: 'Anticheat', icon: 'shield' },
-      { id: 'ai', title: 'AI brains', icon: 'chip' },
       { id: 'announcements', title: 'Announcements', icon: 'megaphone' },
     ],
   },
@@ -2647,7 +2457,6 @@ function AdminGlyph({ name, size = 17 }: { name: AdminNavItem['icon'] | 'search'
     shield: 'M12 3l8 3v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-3zM9 12l2 2 4-4',
     support: 'M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v5H5a1 1 0 0 1-1-1v-4zM20 13h-3v5h2a1 1 0 0 0 1-1v-4zM12 20h3',
     globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
-    chip: 'M8 8h8v8H8zM5 9H3M5 12H3M5 15H3M21 9h-2M21 12h-2M21 15h-2M9 5V3M12 5V3M15 5V3M9 21v-2M12 21v-2M15 21v-2',
     megaphone: 'M3 11v2l12 4V7L3 11zM15 9l4-2v10l-4-2M6 14l1 5h3l-1-4',
     search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM17 17l4 4',
     chevron: 'M9 5l7 7-7 7',
@@ -3002,7 +2811,6 @@ export default function AdminDashboard() {
             {tab === 'anticheat' && <AnticheatTab />}
             {tab === 'support' && <SupportTab />}
             {tab === 'community' && <CommunityTab />}
-            {tab === 'ai' && <AiBrainsTab />}
             {tab === 'announcements' && <AnnouncementsTab />}
           </div>
         </div>
