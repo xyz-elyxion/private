@@ -52,6 +52,8 @@ export class InputManager {
   private prevJump = false;
   private prevDash = false;
   private prevBoost = false;
+  // Queue RMB clicks so a quick press cannot be lost between fixed simulation ticks.
+  private boostQueued = false;
   private prevFire = false;
   private prevSlide = false;
   private accumYaw = 0;
@@ -169,7 +171,8 @@ export class InputManager {
     s.pitchDelta = 0;
     s.jumpPressed = !this.prevJump && this.state.jump;
     s.dashPressed = !this.prevDash && this.state.dash;
-    s.boostPressed = !this.prevBoost && this.state.boost;
+    s.boostPressed = this.boostQueued || (!this.prevBoost && this.state.boost);
+    this.boostQueued = false;
     s.firePressed = !this.prevFire && this.state.fire;
     s.slidePressed = !this.prevSlide && this.state.slidePressed;
     s.chatPressed = this.chatQueued; // one-shot: the chat key was tapped this frame
@@ -304,7 +307,10 @@ export class InputManager {
   private onMousedown = (e: MouseEvent) => {
     if (!this.locked || this.chatting) return;
     if (e.button === 0) this.state.fire = true;
-    else if (e.button === 2) this.state.boost = true; // RMB → boost jump
+    else if (e.button === 2) {
+      this.state.boost = true;
+      this.boostQueued = true; // RMB → the equipped ability
+    }
   };
 
   private onMouseup = (e: MouseEvent) => {
@@ -341,6 +347,12 @@ export class InputManager {
     this.state.zoom = false;
     this.state.crouch = false;
     this.state.slidePressed = false;
+    this.prevJump = false;
+    this.prevDash = false;
+    this.prevBoost = false;
+    this.boostQueued = false;
+    this.prevFire = false;
+    this.prevSlide = false;
     this.accumYaw = 0;
     this.accumPitch = 0;
   }

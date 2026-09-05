@@ -85,10 +85,67 @@ export const BOOST_AIRCTRL_BONUS = 0.4;
 export const BOOST_AIRCTRL_TIME = 0.4;
 export const BOOST_COOLDOWN = 0.3;
 
+// Ability cooldowns. Teleport is a short combat reposition; Bodyguard is a
+// timed summon so it cannot permanently fill the arena with extra bots.
+export const TELEPORT_COOLDOWN = 8;
+export const TELEPORT_RANGE = 14;
+export const BODYGUARD_COOLDOWN = 28;
+export const BODYGUARD_DURATION = 18;
+export const BODYGUARD_DAMAGE = 12;
+export const BODYGUARD_FIRE_COOLDOWN = 0.8;
+export const BODYGUARD_RANGE = 36;
+export const BODYGUARD_SPEED = 7;
+
+export type AbilityType = 'teleport' | 'bodyguard';
+export type AbilitySpec = {
+  id: AbilityType;
+  label: string;
+  blurb: string;
+  cooldown: number;
+};
+export const DEFAULT_ABILITY: AbilityType = 'bodyguard';
+export const ABILITY_SPECS: Readonly<Record<AbilityType, AbilitySpec>> = {
+  teleport: { id: 'teleport', label: 'Teleport', blurb: 'Blink forward through open space.', cooldown: TELEPORT_COOLDOWN },
+  bodyguard: { id: 'bodyguard', label: 'Bodyguard', blurb: 'Summon an allied fighter to cover you.', cooldown: BODYGUARD_COOLDOWN },
+};
+export function abilitySpec(type: string | undefined): AbilitySpec {
+  return ABILITY_SPECS[(type as AbilityType) ?? DEFAULT_ABILITY] ?? ABILITY_SPECS[DEFAULT_ABILITY];
+}
+
 export const RAIL_COOLDOWN = 1.2;
 export const MAX_HEALTH = 100;
 export const RAIL_DAMAGE = 35;
 export const RAIL_HEADSHOT_DAMAGE = 50;
+
+// Playable weapons. These values are shared by the browser and authoritative
+// server so every weapon has the same fire rate, range, spread, and damage on
+// both sides of the connection. Damage is deliberately below MAX_HEALTH for a
+// full body/head hit, keeping combat multi-hit instead of reverting to one-shot.
+export type WeaponType = 'railgun' | 'sniper' | 'shotgun' | 'smg' | 'assault';
+export type WeaponSpec = {
+  id: WeaponType;
+  label: string;
+  blurb: string;
+  cooldown: number;
+  range: number;
+  damage: number;
+  headshotDamage: number;
+  pellets: number;
+  spread: number;
+  automatic: boolean;
+  accent: number;
+};
+export const DEFAULT_WEAPON: WeaponType = 'railgun';
+export const WEAPON_SPECS: Readonly<Record<WeaponType, WeaponSpec>> = {
+  railgun: { id: 'railgun', label: 'Railgun', blurb: 'Precise energy shot with high damage.', cooldown: 1.2, range: 200, damage: 35, headshotDamage: 50, pellets: 1, spread: 0, automatic: false, accent: 0x67e8f9 },
+  sniper: { id: 'sniper', label: 'Sniper', blurb: 'Long-range precision rifle with heavy damage.', cooldown: 1.8, range: 260, damage: 72, headshotDamage: 92, pellets: 1, spread: 0, automatic: false, accent: 0xfbbf24 },
+  shotgun: { id: 'shotgun', label: 'Shotgun', blurb: 'Eight-pellet spread for brutal close-range pressure.', cooldown: 1.05, range: 55, damage: 8, headshotDamage: 10, pellets: 8, spread: 0.095, automatic: false, accent: 0xfb923c },
+  smg: { id: 'smg', label: 'SMG', blurb: 'Fast automatic fire with light recoil.', cooldown: 0.12, range: 70, damage: 9, headshotDamage: 12, pellets: 1, spread: 0.035, automatic: true, accent: 0xa78bfa },
+  assault: { id: 'assault', label: 'Assault Rifle', blurb: 'Balanced automatic weapon for medium range.', cooldown: 0.2, range: 120, damage: 15, headshotDamage: 22, pellets: 1, spread: 0.018, automatic: true, accent: 0x4ade80 },
+};
+export function weaponSpec(type: string | undefined): WeaponSpec {
+  return WEAPON_SPECS[(type as WeaponType) ?? DEFAULT_WEAPON] ?? WEAPON_SPECS[DEFAULT_WEAPON];
+}
 // Longer than a stock hitscan flash so the beam lingers and "reveals
 // positions" Quake/ratz-style — the trail is the primary shot indicator.
 export const RAIL_BEAM_DURATION = 0.9;
@@ -309,8 +366,8 @@ export function cm360(sensitivity: number, dpi: number): number {
   return (360 / (sensitivity * M_YAW_DEG * dpi)) * 2.54;
 }
 
-// Rebindable keyboard actions (fire/boost stay on the mouse). Values are
-// KeyboardEvent.code strings.
+// Rebindable keyboard actions. Fire and the single equipped ability stay on the mouse;
+// the ability is always triggered by RMB and cannot be rebound.
 export type KeybindAction =
   | 'forward'
   | 'back'

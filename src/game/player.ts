@@ -1,5 +1,5 @@
 import type { InputState, Vec3 } from './types';
-import { movePlayer, rayAabbNormal, type ArenaMap } from './map';
+import { movePlayer, type ArenaMap } from './map';
 import {
   AIR_ACCEL,
   AIR_CONTROL,
@@ -11,12 +11,6 @@ import {
   SLIDE_FRICTION,
   SLIDE_SPEED,
   AIR_WISHSPEED_CAP,
-  BOOST_AIRCTRL_BONUS,
-  BOOST_AIRCTRL_TIME,
-  BOOST_COOLDOWN,
-  BOOST_FORWARD_BIAS,
-  BOOST_IMPULSE,
-  BOOST_RANGE,
   DASH_COOLDOWN,
   DASH_DURATION,
   DASH_SPEED,
@@ -51,14 +45,6 @@ export class Player {
   private slideDir: Vec3 = { x: 0, y: 0, z: 0 };
   dashCooldown = 0;
   dashTimer = 0;
-  // Ratz-style boost jump (RMB). `boostInRange` drives the HUD range ring;
-  // `didBoost` is a one-shot flag the game reads to fire SFX/FX, then clears.
-  boostCooldown = 0;
-  boostInRange = false;
-  didBoost = false;
-  boostContact: Vec3 = { x: 0, y: 0, z: 0 };
-  // Post-boost window of extra air-control (the Soldier "rocket then carve").
-  private boostAirCtrlTimer = 0;
   private dashDir: Vec3 = { x: 0, y: 0, z: 0 };
   private wallNormal: Vec3 | null = null;
   private wallTimer = 0;
@@ -85,7 +71,12 @@ export class Player {
     return !check.blocked.y;
   }
 
-  step(input: InputState, dt: number, map: ArenaMap, frozen = false) {
+  step(
+    input: InputState,
+    dt: number,
+    map: ArenaMap,
+    frozen = false,
+  ) {
     // NOTE: yaw/pitch are applied per render frame in Game.applyLook(), not here,
     // so aim stays smooth above the fixed sim rate. step() only reads the current
     // yaw for movement direction below.
@@ -133,21 +124,8 @@ export class Player {
       this.isCrouching = false;
     }
 
-    // Boost-jump surface probe: raycast the full 3D look direction (pitch +
-    // yaw) against the map and find the nearest surface. Drives both the HUD
-    // range ring and the boost impulse below. Look dir for YXZ(pitch,yaw):
-    //   (-cos p·sin y, sin p, -cos p·cos y) = (fx·cos p, sin p, fz·cos p)
-    const cp = Math.cos(this.pitch);
-    const eye: Vec3 = { x: this.pos.x, y: this.pos.y + this.eyeHeight, z: this.pos.z };
-    const look: Vec3 = { x: fx * cp, y: Math.sin(this.pitch), z: fz * cp };
-    let boostProbe: { t: number; normal: Vec3 } | null = null;
-    for (const b of map.boxes) {
-      const hit = rayAabbNormal(eye, look, b);
-      if (hit && hit.t > 1e-3 && (!boostProbe || hit.t < boostProbe.t)) {
-        boostProbe = hit;
-      }
-    }
-    this.boostInRange = boostProbe !== null && boostProbe.t <= BOOST_RANGE;
+    // The active RMB ability is dispatched by Game; normal Space jumping,
+    // including the built-in air jump, stays independent of the Locker.
 
     // Bunny-hop preservation: when the player will jump THIS tick, skip
     // ground friction. Q3-style bhop — landing+jumping in the same frame
@@ -184,8 +162,7 @@ export class Player {
         // Air: the velocity-along-wishdir BUDGET is capped (this is what makes
         // strafe-jumping a skill), but the accel RATE uses full wishspeed so it
         // saturates the budget every tick — instant, forgiving steering (TF2).
-        const capBonus = this.boostAirCtrlTimer > 0 ? BOOST_AIRCTRL_BONUS : 0;
-        const cap = Math.min(wishspeed, AIR_WISHSPEED_CAP + capBonus);
+        const cap = Math.min(wishspeed, AIR_WISHSPEED_CAP);
         this.accelerate(wx, wz, wishspeed, cap, AIR_ACCEL, dt);
         // Magnitude-preserving carve toward wishdir — lets you steer the arc
         // by holding a direction, on top of the strafe-jump speed gain.
@@ -222,52 +199,13 @@ export class Player {
         this.wallTimer = 0;
         this.airJumpsLeft = AIR_JUMPS;
       } else if (this.airJumpsLeft > 0) {
+        // Air jump is built into the normal Space jump control, not a loadout ability.
         this.vel.y = JUMP_SPEED;
         this.airJumpsLeft -= 1;
       }
     }
 
-    // Boost jump (RMB): shove the player along the aimed surface's normal —
-    // a damage-free rocket-jump. Cancel any velocity going INTO the surface
-    // first so a fast approach doesn't eat the launch, then add the impulse.
-    if (
-      input.boostPressed &&
-      this.boostCooldown <= 0 &&
-      boostProbe &&
-      boostProbe.t <= BOOST_RANGE
-    ) {
-      const n = boostProbe.normal;
-      const into = this.vel.x * n.x + this.vel.y * n.y + this.vel.z * n.z;
-      if (into < 0) {
-        this.vel.x -= n.x * into;
-        this.vel.y -= n.y * into;
-        this.vel.z -= n.z * into;
-      }
-      // Launch dir = surface normal blended toward look-horizontal, so a floor
-      // boost arcs up+forward (distance) like an at-feet rocket. Aiming straight
-      // down (no look-horizontal) stays a pure straight-up launch (max height).
-      const lh = Math.hypot(look.x, look.z) || 1;
-      let dx = n.x + BOOST_FORWARD_BIAS * (look.x / lh);
-      let dy = n.y;
-      let dz = n.z + BOOST_FORWARD_BIAS * (look.z / lh);
-      const dl = Math.hypot(dx, dy, dz) || 1;
-      dx /= dl;
-      dy /= dl;
-      dz /= dl;
-      this.vel.x += dx * BOOST_IMPULSE;
-      this.vel.y += dy * BOOST_IMPULSE;
-      this.vel.z += dz * BOOST_IMPULSE;
-      this.onGround = false;
-      this.airJumpsLeft = AIR_JUMPS;
-      this.boostCooldown = BOOST_COOLDOWN;
-      this.boostAirCtrlTimer = BOOST_AIRCTRL_TIME;
-      this.didBoost = true;
-      this.boostContact = {
-        x: eye.x + look.x * boostProbe.t,
-        y: eye.y + look.y * boostProbe.t,
-        z: eye.z + look.z * boostProbe.t,
-      };
-    }
+
 
     // Dash is ground-only: an airborne dash zeroed vel.y and skipped gravity,
     // giving a free mid-air hover / fall-cancel. Gating on onGround keeps dash a
@@ -294,8 +232,6 @@ export class Player {
     }
     if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
-    if (this.boostCooldown > 0) this.boostCooldown = Math.max(0, this.boostCooldown - dt);
-    if (this.boostAirCtrlTimer > 0) this.boostAirCtrlTimer = Math.max(0, this.boostAirCtrlTimer - dt);
     if (this.wallTimer > 0) {
       this.wallTimer = Math.max(0, this.wallTimer - dt);
       if (this.wallTimer === 0) this.wallNormal = null;

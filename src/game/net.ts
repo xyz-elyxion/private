@@ -29,6 +29,8 @@ export type RemotePlayerSnapshot = {
   ping: number; // this player's reported round-trip ping (ms)
   admin: boolean; // staff badge
   verified: boolean; // verified blue check
+  bodyguard?: boolean;
+  ownerId?: string;
   receivedAt: number;
 };
 
@@ -55,11 +57,13 @@ export type KillEvent = {
   killerName: string;
   victimId: string;
   victimName: string;
+  weapon: import('./constants').WeaponType;
   headshot: boolean;
   firstBlood: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
+  ownerId?: string;
   t: number;
 };
 
@@ -79,6 +83,7 @@ type StatePlayer = {
   invulnMs: number;
   ping?: number;
   crouched: boolean;
+  bodyguard?: boolean;
 };
 
 // The slow-changing per-player profile, delivered on the `meta` channel (sent
@@ -100,6 +105,8 @@ type PlayerMeta = {
   crosshair: string;
   admin: boolean;
   verified: boolean;
+  bodyguard?: boolean;
+  ownerId?: string;
 };
 
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
@@ -109,6 +116,7 @@ type KillBroadcast = {
   type: 'kill';
   killerId: string;
   killerName: string;
+  weapon?: import('./constants').WeaponType;
   victimId: string;
   victimName: string;
   headshot: boolean;
@@ -116,6 +124,7 @@ type KillBroadcast = {
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
+  ownerId?: string;
   t: number;
 };
 type JoinedMessage = {
@@ -184,6 +193,8 @@ type VoteStartMessage = {
 type VoteUpdateMessage = { type: 'vote-update'; counts: Record<string, number> };
 type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number; spawn?: Vec3 };
 type RespawnMessage = { type: 'respawn'; x: number; y: number; z: number; reason?: string };
+type AbilityTeleportMessage = { type: 'ability-teleport'; x: number; y: number; z: number };
+type AbilityBodyguardMessage = { type: 'ability-bodyguard'; cooldownMs: number; durationMs: number };
 // In-game (room) chat broadcast — same shape as the lobby ChatMessage.
 type ChatBroadcastMessage = { type: 'chat' } & ChatMessage;
 // A rail beam fired by another player (origin → end), so we can render + sound it.
@@ -205,6 +216,8 @@ type ServerMessage =
   | VoteResultMessage
   | RankedResultMessage
   | RespawnMessage
+  | AbilityTeleportMessage
+  | AbilityBodyguardMessage
   | BeamMessage
   | ChatBroadcastMessage
   | { type: 'join-failed'; reason: string }
@@ -245,6 +258,8 @@ export type NetEvents = {
   // The watched match ended / the room was reaped → return to the lobby.
   onSpectateEnded?: () => void;
   onRespawn?: (pos: Vec3, reason: string) => void;
+  onTeleport?: (pos: Vec3) => void;
+  onBodyguard?: (cooldownMs: number, durationMs: number) => void;
   onVoteStart?: (v: {
     options: string[];
     endsAtClient: number;
@@ -263,7 +278,7 @@ export type NetEvents = {
     id: string;
     ox: number; oy: number; oz: number;
     ex: number; ey: number; ez: number;
-  }) => void; // another player's rail beam → render + sound it
+  }) => void; // another player's weapon beam → render + sound it
 };
 
 const RECONNECT_DELAY_MS = 1500;
@@ -352,8 +367,12 @@ export class NetClient {
   localTitleText = ''; // server-resolved flair for our own title (dynamic ranked → "#N"/tier)
   localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
   localRailgunFinish = 'gun.stock'; // equipped railgun finish id (echoed for the 3rd-person gun)
+  localWeapon: import('./constants').WeaponType = 'railgun'; // selected gameplay weapon
+  localAbility: import('./constants').AbilityType = 'bodyguard'; // selected RMB ability
   localCrosshair = ''; // equipped crosshair share-code (echoed so spectators can render it)
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
+  bodyguardCooldownMs = 0;
+  bodyguardDurationMs = 0;
   localFrags = 0;
   localDeaths = 0;
   localHealth = MAX_HEALTH;
@@ -419,10 +438,14 @@ export class NetClient {
     spectate?: boolean;
     listener?: NetListener;
     events: NetEvents;
+    weapon?: import('./constants').WeaponType;
+    ability?: import('./constants').AbilityType;
   }) {
     this.url = opts.url;
     this.name = opts.name;
     this.roomId = opts.roomId;
+    this.localWeapon = opts.weapon ?? 'railgun';
+    this.localAbility = opts.ability ?? 'bodyguard';
     this.spectate = opts.spectate ?? false;
     this.listener = opts.listener ?? (() => {});
     this.events = opts.events;
@@ -537,6 +560,11 @@ export class NetClient {
     this.send({ type: 'vote', mapId });
   }
 
+  sendTeleport(pos: Vec3) {
+    if (this.spectate) return;
+    this.send({ type: 'teleport', x: pos.x, y: pos.y, z: pos.z });
+  }
+
   // In-game chat to the match room. Server sanitizes/profanity-filters/rate-limits
   // and stamps the authoritative sender identity, then broadcasts to the room
   // (sender included), so we render our own line from the echo.
@@ -547,17 +575,15 @@ export class NetClient {
   // Server-authoritative, lag-compensated shot. We send the ray + the wall
   // distance cap (so the server needn't own the geometry) + the server-clock
   // render time we were displaying others at, so the server rewinds to match.
-  sendShot(origin: Vec3, dir: Vec3, maxDist: number) {
+  sendShot(origin: Vec3, rays: { dir: Vec3; maxDist: number }[], weapon: import('./constants').WeaponType) {
     if (this.spectate) return; // observers can't fire
     this.send({
       type: 'shoot',
       ox: origin.x,
       oy: origin.y,
       oz: origin.z,
-      dx: dir.x,
-      dy: dir.y,
-      dz: dir.z,
-      maxDist,
+      rays: rays.map((ray) => ({ ...ray.dir, maxDist: ray.maxDist })),
+      weapon,
       // The EXACT delay we're currently rendering remotes at, so the server
       // rewinds targets to precisely what was on our screen (favor-the-shooter).
       renderTime: this.estimatedServerNow() - this.interpDelayMs,
@@ -625,6 +651,21 @@ export class NetClient {
   setLocalRailgunFinish(id: string): void {
     this.localRailgunFinish = id;
     this.send({ type: 'railgunFinish', id });
+  }
+
+  setLocalWeapon(type: import('./constants').WeaponType): void {
+    this.localWeapon = type;
+    this.send({ type: 'weapon', id: type });
+  }
+
+  setLocalAbility(type: import('./constants').AbilityType): void {
+    this.localAbility = type;
+    this.send({ type: 'ability', id: type });
+  }
+
+  sendBodyguard() {
+    if (this.spectate) return;
+    this.send({ type: 'bodyguard' });
   }
 
   setLocalCrosshair(code: string): void {
@@ -777,7 +818,7 @@ export class NetClient {
         hat: 'hat.none', unusual: 'unusual.none',
         emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', title: 'title.none',
         railColor: 'rail.cyan', railgunFinish: 'gun.stock', crosshair: '',
-        ping: 0, admin: false, verified: false, receivedAt: now };
+        ping: 0, admin: false, verified: false, bodyguard: m?.bodyguard, ownerId: m?.ownerId, receivedAt: now };
       this.remotes.set(b.id, s);
     }
     // Dynamic (per-tick snapshot):
@@ -807,6 +848,8 @@ export class NetClient {
     s.crosshair = m?.crosshair ?? '';
     s.admin = m?.admin ?? false;
     s.verified = m?.verified ?? false;
+    s.bodyguard = m?.bodyguard ?? b.bodyguard ?? false;
+    s.ownerId = m?.ownerId;
     s.receivedAt = now;
   }
 
@@ -851,6 +894,8 @@ export class NetClient {
       this.send({ type: 'title', id: this.localTitle });
       this.send({ type: 'railColor', id: this.localRailColor });
       this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
+      this.send({ type: 'weapon', id: this.localWeapon });
+      this.send({ type: 'ability', id: this.localAbility });
       this.send({ type: 'crosshair', code: this.localCrosshair });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
@@ -941,8 +986,8 @@ export class NetClient {
       if (this.metaById.size === 0) this.interpDelayMs = this.interpDelayTargetMs;
       const seen = new Set<string>();
       for (const p of msg.players) {
-        seen.add(p.id);
-        this.metaById.set(p.id, p);
+        seen.add(p.id);          this.metaById.set(p.id, p);
+
         if (p.id === this.clientId) {
           if (p.name) this.localName = p.name; // server's authoritative name for us
           this.localAdmin = !!p.admin;
@@ -966,11 +1011,13 @@ export class NetClient {
         killerName: msg.killerName,
         victimId: msg.victimId,
         victimName: msg.victimName,
+        weapon: msg.weapon ?? 'railgun',
         headshot: msg.headshot,
         firstBlood: !!msg.firstBlood,
         victimPos: msg.victimPos,
         respawnPos: msg.respawnPos,
         killerCard: msg.killerCard,
+        ownerId: msg.ownerId,
         t: msg.t,
       });
       return;
@@ -1025,6 +1072,16 @@ export class NetClient {
     }
     if (msg.type === 'respawn') {
       this.events.onRespawn?.({ x: msg.x, y: msg.y, z: msg.z }, msg.reason ?? 'void');
+      return;
+    }
+    if (msg.type === 'ability-teleport') {
+      this.events.onTeleport?.({ x: msg.x, y: msg.y, z: msg.z });
+      return;
+    }
+    if (msg.type === 'ability-bodyguard') {
+      this.bodyguardCooldownMs = msg.cooldownMs;
+      this.bodyguardDurationMs = msg.durationMs;
+      this.events.onBodyguard?.(msg.cooldownMs, msg.durationMs);
       return;
     }
     if (msg.type === 'vote-start') {
@@ -1117,7 +1174,7 @@ export class NetClient {
   otherPeers(): number {
     let n = 0;
     for (const id of this.metaById.keys()) {
-      if (id !== this.clientId) n++;
+      if (id !== this.clientId && !this.metaById.get(id)?.bodyguard) n++;
     }
     return n;
   }
@@ -1129,7 +1186,7 @@ export class NetClient {
   roster(): RosterEntry[] {
     const out: RosterEntry[] = [];
     for (const [id, m] of this.metaById) {
-      if (id === this.clientId) continue;
+      if (id === this.clientId || m.bodyguard) continue;
       const s = this.lastStatsById.get(id);
       out.push({
         id,
@@ -1152,6 +1209,13 @@ export class NetClient {
   private setStatus(s: NetStatus) {
     this.status = s;
     this.emit();
+  }
+
+  bodyguardActive(ownerId = this.clientId): boolean {
+    for (const [id, meta] of this.metaById) {
+      if (meta.bodyguard && meta.ownerId === ownerId && this.remotes.has(id)) return true;
+    }
+    return false;
   }
 
   private emit() {

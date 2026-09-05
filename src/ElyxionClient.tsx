@@ -22,7 +22,9 @@ import {
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import { startUpdateChecker, type UpdateInfo } from './update-checker';
 import {
+  ABILITY_SPECS,
   AIR_JUMPS,
+  DEFAULT_ABILITY,
   cm360,
   DASH_COOLDOWN,
   DEFAULT_BOT_DIFFICULTY,
@@ -56,7 +58,6 @@ import {
   MIN_SENSITIVITY,
   MIN_VERT_SCALE,
   KEYBIND_ACTIONS,
-  RAIL_COOLDOWN,
   SENSITIVITY_STEP,
   TEAM_COLORS,
   TEAM_NAMES,
@@ -68,9 +69,13 @@ import {
   WEEKLY_CHALLENGE_DIFFICULTY,
   WEEKLY_CHALLENGE_MODE,
   WEEKLY_CHALLENGE_FRAG_LIMIT,
+  WEAPON_SPECS,
+  DEFAULT_WEAPON,
+  type AbilityType,
   type BotDifficulty,
   type GameMode,
   type KeybindAction,
+  type WeaponType,
 } from './game/constants';
 import type {
   BannerState,
@@ -209,6 +214,10 @@ function encodeSettings(s: Settings): string {
   return `IGS-${b64}`;
 }
 
+function normalizeAbilityType(value: unknown): AbilityType {
+  return value === 'teleport' || value === 'bodyguard' ? value : DEFAULT_ABILITY;
+}
+
 function decodeSettings(code: string): Settings | null {
   try {
     const body = code.trim().replace(/^IGS-/i, '').replace(/-/g, '+').replace(/_/g, '/');
@@ -223,6 +232,7 @@ function decodeSettings(code: string): Settings | null {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      abilityType: normalizeAbilityType(parsed.abilityType),
       crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
       keybinds,
       viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
@@ -267,6 +277,8 @@ type Settings = {
   enemyColor: string; // hex highlight applied to enemies when enemyBright is on
   enemyBright: boolean; // make enemies glow bright for visibility (Ratz-style)
   killEffect: KillEffectStyle; // equipped kill-effect cosmetic (the frag explosion)
+  weaponType: WeaponType; // selected gameplay weapon
+  abilityType: AbilityType; // one equipped RMB ability
   railColor: string; // equipped rail-beam color cosmetic
   railgunFinish: string; // equipped railgun finish (first-person gun skin)
   hat: string; // equipped hat cosmetic (worn on the player model)
@@ -371,6 +383,8 @@ const DEFAULT_SETTINGS: Settings = {
   enemyColor: '#ff2bd6',
   enemyBright: false,
   killEffect: DEFAULT_KILL_EFFECT,
+  weaponType: DEFAULT_WEAPON,
+  abilityType: DEFAULT_ABILITY,
   railColor: DEFAULT_RAIL_COLOR,
   railgunFinish: DEFAULT_RAILGUN_FINISH,
   hat: DEFAULT_HAT,
@@ -659,9 +673,7 @@ function PlayerCard({
       )}
     </div>
   );
-}
-
-// The default layout moved zoom → E and dash → Q. Players who still have the
+}  // The default layout uses E for zoom and Q for dash. Players who still have the
 // OLD default values stored (i.e. never customized those binds) are carried to
 // the new layout; a player who deliberately rebinds keeps their own key.
 const LEGACY_DEFAULT_BINDS: Partial<Record<KeybindAction, string>> = {
@@ -705,6 +717,7 @@ function loadSettings(): Settings {
       keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
       viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
     };
+    merged.abilityType = normalizeAbilityType(merged.abilityType);
     // Migrate legacy sensitivity: the old model stored radians/pixel (~0.0022).
     // Anything below the new minimum is a legacy value → convert to the
     // Source-style sens number so people keep roughly the same feel.
@@ -763,6 +776,8 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setWorldStyle?.(s.worldColor, s.worldBrightness);
   game.setEnemyStyle?.(s.enemyBright ? s.enemyColor : null);
   game.setKillEffect?.(s.killEffect);
+  game.setWeapon?.(s.weaponType);
+  game.setAbility?.(s.abilityType);
   game.setRailColor?.(s.railColor);
   game.setRailgunFinish?.(s.railgunFinish);
   // Echo the crosshair (as a share-code) so a spectator can render the same
@@ -814,10 +829,14 @@ const EMPTY_MINIMAP: MinimapState = {
 const INITIAL_HUD: HudState = {
   frags: 0,
   health: MAX_HEALTH,
+  weaponType: DEFAULT_WEAPON,
   railCooldown: 0,
   dashCooldown: 0,
   airJumpsLeft: AIR_JUMPS,
-  boostReady: false,
+  abilityReady: false,
+  abilityType: DEFAULT_ABILITY,
+  abilityCooldown: 0,
+  abilityActive: false,
   speed: 0,
   locked: false,
   currentStreak: 0,
@@ -1722,6 +1741,8 @@ type LockerItem = {
 type LockerSlotDef = {
   slot:
     | 'killEffect'
+    | 'weapon'
+    | 'ability'
     | 'railColor'
     | 'railgunFinish'
     | 'hat'
@@ -1743,6 +1764,32 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
     items: KILL_EFFECTS,
     current: (s) => s.killEffect,
     apply: (s, id) => ({ ...s, killEffect: id as KillEffectStyle }),
+  },
+  {
+    slot: 'ability',
+    label: 'Ability',
+    items: Object.values(ABILITY_SPECS).map((spec) => ({
+      id: spec.id,
+      name: spec.label,
+      blurb: spec.blurb,
+      rarity: 'common' as const,
+      source: { type: 'default' as const },
+    })),
+    current: (s) => s.abilityType,
+    apply: (s, id) => ({ ...s, abilityType: id as AbilityType }),
+  },
+  {
+    slot: 'weapon',
+    label: 'Weapon',
+    items: Object.values(WEAPON_SPECS).map((spec) => ({
+      id: spec.id,
+      name: spec.label,
+      blurb: spec.blurb,
+      rarity: 'common' as const,
+      source: { type: 'default' as const },
+    })),
+    current: (s) => s.weaponType,
+    apply: (s, id) => ({ ...s, weaponType: id as WeaponType }),
   },
   {
     slot: 'railColor',
@@ -1816,7 +1863,7 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
 // Per-tab focus → the preview shows ONE thing, framed for that slot:
 //  character = hat + unusual, head-zoomed, slowly turning
 //  emote     = the equipped emote on the whole player model
-//  weapon    = just the railgun firing the rail beam (colour) into a kill burst
+//  weapon    = the selected weapon firing into the arena preview
 type LockerView = 'character' | 'emote' | 'weapon';
 
 // Live 3D preview of the equipped loadout for a single Locker tab. A fresh
@@ -1830,6 +1877,7 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
     emoteId: settings.emote,
     railColor: settings.railColor,
     railgunFinish: settings.railgunFinish,
+    weaponType: settings.weaponType,
     killEffect: settings.killEffect,
     view,
   });
@@ -1862,7 +1910,7 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
   useEffect(() => {
     previewRef.current?.setCosmetics(cosmetics());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.railgunFinish, settings.killEffect, view]);
+  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.railgunFinish, settings.weaponType, settings.killEffect, view]);
   return (
     <div className='relative h-60 w-full shrink-0 overflow-hidden rounded-lg border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
       <canvas ref={ref} className='block h-full w-full' />
@@ -1874,9 +1922,10 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
 }
 
 const LOCKER_TABS = [
-  { id: 'character', label: 'Character', slots: ['hat', 'unusual', 'nameColor', 'title'], view: 'character' as const },
+  { id: 'character', label: 'Character', slots: ['hat', 'unusual', 'nameColor', 'spawnEffect', 'title'], view: 'character' as const },
   { id: 'emote', label: 'Emotes', slots: ['emote'], view: 'emote' as const },
-  { id: 'weapon', label: 'Weapon', slots: ['railColor', 'railgunFinish', 'killEffect', 'spawnEffect'], view: 'weapon' as const },
+  { id: 'weapon', label: 'Weapon', slots: ['weapon', 'railColor', 'killEffect'], view: 'weapon' as const },
+  { id: 'ability', label: 'Ability', slots: ['ability'], view: null },
   { id: 'card', label: 'Card', slots: ['card'], view: null },
 ] as const;
 type LockerTab = (typeof LOCKER_TABS)[number]['id'];
@@ -1936,6 +1985,12 @@ function Locker({
     !profile || profile.unlocked.includes(id) || source.type === 'default';
 
   const equip = async (sl: LockerSlotDef, id: string) => {
+    // Gameplay weapons are available to everyone and are stored in local
+    // settings, not the cosmetic progression API.
+    if (sl.slot === 'weapon' || sl.slot === 'ability') {
+      onChange(sl.apply(settings, id));
+      return;
+    }
     if (!profile) {
       onChange(sl.apply(settings, id)); // local-only fallback
       return;
@@ -2022,10 +2077,10 @@ function Locker({
     <>
     <LockerShell tab={tab} setTab={setTab} credits={profile?.credits ?? null} onClose={onClose}>
       <p className='text-[10px] leading-relaxed text-white/35'>
-        Cosmetics — purely visual, never affect aim, movement, or hits.
+        Equip one weapon and one ability. Your selected ability is always activated with Right click.
       </p>
       {note && <div className='text-[11px] text-rose-300'>{note}</div>}
-      {active.view && <LockerPreview key={active.view} settings={settings} view={active.view} />}
+      {active.view && <LockerPreview key={`${active.view}-${settings.weaponType}`} settings={settings} view={active.view} />}
       {tab === 'card' && <CardStatsEditor settings={settings} onChange={onChange} account={account} />}
       {slots.map((sl) => (
         <div key={sl.slot} className='flex flex-col gap-2'>
@@ -3199,7 +3254,7 @@ function HudOverlay({
         className='absolute left-0 top-0 origin-top-left'
         style={{ width: `${100 / s}%`, height: `${100 / s}%`, transform: `scale(${s})` }}
       >
-        {!dead && <BoostRing active={hud.boostReady} />}
+        {!dead && <AbilityRing active={hud.abilityReady} />}
       <KillFlashLayer flash={hud.killFlash} />
       {hud.damageFlash > 0 && (
         <div
@@ -3213,7 +3268,7 @@ function HudOverlay({
       )}
       {!dead && <Crosshair cfg={settings.crosshair} />}
       {!dead && <HealthBar health={hud.health} />}
-      {!dead && <ReloadBar railCooldown={hud.railCooldown} />}
+      {!dead && <ReloadBar weaponType={hud.weaponType} cooldown={hud.railCooldown} />}
       {!dead && <HitMarkerLayer marker={hud.hitMarker} />}
       <Killfeed entries={hud.killfeed} />
       <ToastStack toasts={hud.toasts} />
@@ -3232,9 +3287,13 @@ function HudOverlay({
       {!dead && <SpeedAndStreak speed={hud.speed} streak={hud.currentStreak} />}
       {!dead && (
         <CooldownCluster
+          weaponType={hud.weaponType}
           railCooldown={hud.railCooldown}
           dashCooldown={hud.dashCooldown}
           airJumpsLeft={hud.airJumpsLeft}
+          abilityType={hud.abilityType}
+          abilityCooldown={hud.abilityCooldown}
+          abilityActive={hud.abilityActive}
         />
       )}
       <Minimap hud={hud} settings={settings} />
@@ -3477,9 +3536,9 @@ function NetDebugOverlay({ s }: { s: NonNullable<HudState['netDebug']> }) {
 /* ───────────────────────── Crosshair + hit marker ───────────────────────── */
 
 // Ratz "Boost Range Indicator": a ring around the crosshair that's a faint
-// dashed hint when no surface is in range, and a bright glowing cyan ring the
-// moment a boostable surface is under your aim (right-click to launch off it).
-function BoostRing({ active }: { active: boolean }) {
+// Dashed when the equipped ability is unavailable, and a bright glowing cyan ring
+// when the single right-click ability is ready.
+function AbilityRing({ active }: { active: boolean }) {
   return (
     <div className='absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2'>
       <svg width='52' height='52' viewBox='0 0 52 52' aria-hidden>
@@ -3571,9 +3630,9 @@ function HealthBar({ health }: { health: number }) {
   );
 }
 
-function ReloadBar({ railCooldown }: { railCooldown: number }) {
-  if (railCooldown <= 0) return null;
-  const pct = clamp01(1 - railCooldown / RAIL_COOLDOWN);
+function ReloadBar({ weaponType, cooldown }: { weaponType: WeaponType; cooldown: number }) {
+  if (cooldown <= 0) return null;
+  const pct = clamp01(1 - cooldown / WEAPON_SPECS[weaponType].cooldown);
   // Full-width row 24px below the viewport center, flex-centered. No
   // translate math, no intrinsic-width gotchas — the bar sits dead
   // under the crosshair regardless of viewport size or DPI.
@@ -3792,6 +3851,7 @@ function Killfeed({ entries }: { entries: KillfeedEntry[] }) {
 
 function KillfeedRow({ entry }: { entry: KillfeedEntry }) {
   const opacity = entry.remaining < 0.8 ? clamp01(entry.remaining / 0.8) : 1;
+  const weaponLabel = WEAPON_SPECS[entry.weapon]?.label ?? entry.weapon;
   const specialBadge =
     entry.special === 'headshot'
       ? { text: 'HS', color: 'bg-amber-400/85 text-amber-950' }
@@ -3811,6 +3871,7 @@ function KillfeedRow({ entry }: { entry: KillfeedEntry }) {
         {entry.killer}
       </span>
       <span className='text-rose-300/85'>◤</span>
+      <span className='text-[9px] uppercase tracking-[0.12em] text-white/35'>{weaponLabel}</span>
       <span className='text-white/65'>{entry.victim}</span>
       {specialBadge && (
         <span
@@ -4055,18 +4116,39 @@ function SpeedAndStreak({ speed, streak }: { speed: number; streak: number }) {
 /* ───────────────────────── Cooldown cluster (bottom-right) ───────────────────────── */
 
 function CooldownCluster({
+  weaponType,
   railCooldown,
   dashCooldown,
   airJumpsLeft,
+  abilityType,
+  abilityCooldown,
+  abilityActive,
 }: {
+  weaponType: WeaponType;
   railCooldown: number;
   dashCooldown: number;
   airJumpsLeft: number;
+  abilityType: AbilityType;
+  abilityCooldown: number;
+  abilityActive: boolean;
 }) {
   return (
     <div className='absolute bottom-6 right-6 flex items-end gap-3'>
-      <CooldownPip label='Rail' value={railCooldown} max={RAIL_COOLDOWN} ready={railCooldown === 0} accent='#67e8f9' />
+      <CooldownPip
+        label={WEAPON_SPECS[weaponType].label}
+        value={railCooldown}
+        max={WEAPON_SPECS[weaponType].cooldown}
+        ready={railCooldown === 0}
+        accent={`#${WEAPON_SPECS[weaponType].accent.toString(16).padStart(6, '0')}`}
+      />
       <CooldownPip label='Dash' value={dashCooldown} max={DASH_COOLDOWN} ready={dashCooldown === 0} accent='#fcd34d' />
+      <CooldownPip
+        label={abilityActive ? `${ABILITY_SPECS[abilityType].label} ✓` : ABILITY_SPECS[abilityType].label}
+        value={abilityCooldown}
+        max={ABILITY_SPECS[abilityType].cooldown || 1}
+        ready={abilityCooldown === 0}
+        accent={abilityType === 'teleport' ? '#c084fc' : '#fb7185'}
+      />
       <AirJumpPip left={airJumpsLeft} max={AIR_JUMPS} />
     </div>
   );
@@ -4245,13 +4327,13 @@ function Minimap({ hud, settings }: { hud: HudState; settings: Settings }) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
-      const ally = inTdm && p.team != null && p.team === hud.localTeam;
+      const ally = p.kind === 'bodyguard' || (inTdm && p.team != null && p.team === hud.localTeam);
       const fill = ally
-        ? MM_FRIEND
+        ? p.kind === 'bodyguard' ? '#43d17a' : MM_FRIEND
         : inTdm && p.team != null
           ? MM_TEAM_COLORS[p.team] ?? MM_HOSTILE
           : MM_HOSTILE;
-      dot(p.x, p.z, p.yaw, p.kind === 'bot' ? 3 : 4, fill);
+      dot(p.x, p.z, p.yaw, p.kind === 'bodyguard' ? 5 : p.kind === 'bot' ? 3 : 4, fill);
     }
 
     // "You" last so your dot sits on top.
@@ -4506,7 +4588,7 @@ function ClickToPlay({
   // Build the controls hint from the actual bindings so it stays correct after a
   // rebind (#26f). Move = the 4 movement keys; the rest follow their bindings.
   const moveKeys = [kb.forward, kb.left, kb.back, kb.right].map(keyLabel).join('');
-  const controls = `${moveKeys} move · ${keyLabel(kb.jump)} jump · ${keyLabel(kb.dash)} dash · RMB boost · LMB fire · ${keyLabel(kb.scoreboard)} scores · Esc menu`;
+  const controls = `${moveKeys} move · ${keyLabel(kb.jump)} jump · ${keyLabel(kb.dash)} dash · RMB equipped ability · LMB fire · ${keyLabel(kb.scoreboard)} scores · Esc menu`;
   return (
     <div className='absolute inset-0 flex flex-col items-center justify-center bg-black/75 text-white backdrop-blur-sm pointer-events-auto'>
       <div className='text-[11px] uppercase tracking-[0.35em] text-white/55'>
@@ -8565,7 +8647,7 @@ function KeybindsSection({
         </div>
       ))}
       <div className='text-[10px] normal-case tracking-normal text-white/40'>
-        Click a slot, then press a key (Esc cancels). Fire = LMB · Boost = RMB.
+        Click a slot, then press a key (Esc cancels).        Fire = LMB · Equipped ability = RMB.
       </div>
     </Section>
   );

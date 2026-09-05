@@ -4,7 +4,8 @@ import { WornHat } from './hats';
 import { loadSoldier, pickClip } from './podium';
 import { applyEmote, buildEmoteRig, type EmoteRig } from './emotes';
 import { EffectsManager } from './effects';
-import { buildRailgun, type RailgunModel } from './weapon-model';
+import { buildWeapon, type RailgunModel } from './weapon-model';
+import { DEFAULT_WEAPON, type WeaponType } from './constants';
 import { emoteById, railColorById, railgunFinishById, type KillEffectStyle } from './cosmetics';
 
 // Live Locker preview, focused per tab so each slot is shown the best way:
@@ -13,8 +14,8 @@ import { emoteById, railColorById, railgunFinishById, type KillEffectStyle } fro
 //   emote     → the whole player model playing the equipped emote, framed head-
 //               to-toe (emotes throw the arms overhead, so the body must be in
 //               frame).
-//   weapon    → NO soldier — just the actual railgun, slowly turning, firing a
-//               beam (equipped colour) into a kill burst (equipped frag effect).
+//   weapon    → NO soldier — just the selected weapon, slowly turning, firing a
+//               showcase beam into a kill burst.
 // One WebGL context, mounted fresh per tab (the `view` is fixed for its life).
 
 export type PreviewView = 'character' | 'emote' | 'weapon';
@@ -24,13 +25,14 @@ export type PreviewCosmetics = {
   unusualId: string;
   emoteId: string;
   railColor: string; // rail cosmetic id
-  railgunFinish: string; // railgun-finish cosmetic id
+  railgunFinish: string; // legacy railgun-finish cosmetic id
+  weaponType?: WeaponType;
   killEffect: KillEffectStyle;
   view: PreviewView;
 };
 
 const FACE_CAMERA = Math.PI; // soldier faces -Z; turn it to face the +Z camera
-const FIRE_PERIOD = 2.2; // seconds between showcase rail shots (weapon view)
+const FIRE_PERIOD = 2.2; // seconds between showcase weapon shots (weapon view)
 
 export class CharacterPreview {
   private renderer: THREE.WebGLRenderer;
@@ -147,7 +149,10 @@ export class CharacterPreview {
   }
 
   private buildGun() {
-    const g = buildRailgun(railgunFinishById(this.cos.railgunFinish).data);
+    const g = buildWeapon(
+      this.cos.weaponType ?? DEFAULT_WEAPON,
+      railgunFinishById(this.cos.railgunFinish).data,
+    );
     this.gun = g;
     g.group.scale.setScalar(1.18);
     // Seat the grip lower-left, barrel pointing toward the impact point (+X /

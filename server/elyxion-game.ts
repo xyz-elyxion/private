@@ -20,9 +20,10 @@ import type { WebSocketServer, WebSocket, RawData } from 'ws';
 import {
   MATCH_FRAG_LIMIT,
   MAX_HEALTH,
-  RAIL_DAMAGE,
-  RAIL_HEADSHOT_DAMAGE,
-  RAIL_COOLDOWN,
+  TELEPORT_COOLDOWN,
+  TELEPORT_RANGE,
+  weaponSpec,
+  type WeaponType,
   MAX_HORIZONTAL_SPEED,
   EYE_HEIGHT,
   CROUCH_HEIGHT,
@@ -32,6 +33,14 @@ import {
   KILLCAM_DURATION_SEC,
   TDM_FRAG_LIMIT,
   TEAM_COUNT,
+  DEFAULT_ABILITY,
+  BODYGUARD_COOLDOWN,
+  BODYGUARD_DURATION,
+  BODYGUARD_DAMAGE,
+  BODYGUARD_FIRE_COOLDOWN,
+  BODYGUARD_RANGE,
+  BODYGUARD_SPEED,
+  type AbilityType,
   modeCapacity,
   rankedTierName,
   type GameMode,
@@ -109,8 +118,7 @@ const STALE_CLIENT_TIMEOUT_MS = 10_000;
 const RESUME_GRACE_MS = 20_000;
 const EMPTY_ROOM_GRACE_MS = 30_000; // post-match grace for a room that HAS been occupied
 const FRESH_ROOM_GRACE_MS = 5 * 60_000; // never-occupied (invite) rooms live longer for slow joins
-const KILL_MAX_RANGE = 220;
-const SPAWN_INVULN_MS = 1_500; // spawn grace once you have control (matches offline LOCAL_RESPAWN_INVULN_SEC)
+const KILL_MAX_RANGE = 220;  const SPAWN_INVULN_MS = 1_500; // spawn grace once you have control (matches offline LOCAL_RESPAWN_INVULN_SEC)
 // A killed player can't act until their client's killcam finishes, so their
 // post-frag invuln must SPAN the killcam and still leave SPAWN_INVULN_MS once
 // they regain control — otherwise it elapses mid-killcam and they spawn exposed
@@ -202,6 +210,16 @@ type RoomId = string;
 type HistorySample = { t: number; x: number; y: number; z: number };
 // Received-pos sample (RECEIVE-time stamped) used to resample to snapshot time.
 type PosSample = { t: number; x: number; y: number; z: number; yaw: number };
+type BodyguardRecord = {
+  id: ClientId;
+  ownerId: ClientId;
+  name: string;
+  pos: Vec;
+  yaw: number;
+  health: number;
+  expiresAt: number;
+  nextShotAt: number;
+};
 
 type ClientRecord = {
   id: ClientId;
@@ -228,6 +246,8 @@ type ClientRecord = {
   ip: string; // resolved client IP (CF-Connecting-IP → X-Forwarded-For → remoteAddress, set in index.ts)
   lastRecoverMs: number; // last void-recovery time (debounces stale OOB positions)
   lastShotMs: number; // server-side fire-rate gate
+  teleportCooldownUntilMs: number;
+  bodyguardCooldownUntilMs: number;
   lastPosMs: number; // for the pos-update speed clamp
   msgWindowStart: number; // inbound message-rate window start
   msgCount: number; // messages seen in the current window
@@ -255,6 +275,8 @@ type ClientRecord = {
   railColor: string; // equipped rail-beam color cosmetic id (echoed so others/spectators see your beam)
   railgunFinish: string; // equipped railgun-finish (gun skin) cosmetic id (echoed for the 3rd-person gun)
   crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
+  weapon: WeaponType; // selected gameplay weapon, validated server-side
+  ability: AbilityType; // selected RMB ability, validated server-side
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
   // Anonymous guest identity (the igpid uuid cookie, minted on the WS upgrade if
@@ -297,6 +319,7 @@ type Room = {
   // Recently-used spawn spots (anti-camp): pickSpawn penalizes candidates near
   // these so a camper can't farm the same spawn. Pruned by age (SPAWN_RECENT_MS).
   recentSpawns: { x: number; z: number; t: number }[];
+  bodyguards: Map<ClientId, BodyguardRecord>;
 };
 
 type ClientMessage =
@@ -320,6 +343,10 @@ type ClientMessage =
   | { type: 'title'; id?: string }
   | { type: 'railColor'; id?: string }
   | { type: 'railgunFinish'; id?: string }
+  | { type: 'weapon'; id?: string }
+  | { type: 'ability'; id?: string }
+  | { type: 'bodyguard' }
+  | { type: 'teleport'; x: number; y: number; z: number }
   | { type: 'crosshair'; code?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'chat'; text?: string }
@@ -330,9 +357,13 @@ type ClientMessage =
       ox: number;
       oy: number;
       oz: number;
-      dx: number;
-      dy: number;
-      dz: number;
+      // New clients send every pellet/ray; the legacy ray fields remain accepted
+      // so an older client can still connect during a rolling deployment.
+      rays?: { x: number; y: number; z: number; maxDist?: number }[];
+      weapon?: WeaponType;
+      dx?: number;
+      dy?: number;
+      dz?: number;
       maxDist?: number;
       renderTime?: number;
     };
@@ -715,6 +746,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       wasEverOccupied: false,
       createdAt: Date.now(),
       recentSpawns: [],
+      bodyguards: new Map(),
     };
     rooms.set(room.id, room);
     return room;
@@ -976,6 +1008,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     record.title = old.title;
     record.railColor = old.railColor;
     record.railgunFinish = old.railgunFinish;
+    record.weapon = old.weapon;
     record.crosshair = old.crosshair;
     record.card = old.card;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS; // brief grace on return
@@ -1021,6 +1054,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     record.roomId = null;
     record.team = null;
     if (!room) return;
+    if (room.bodyguards.delete(record.id)) broadcastMeta(room);
     room.members.delete(record.id);
     broadcastRoom(room, { type: 'peer-left', clientId: record.id });
     broadcastMeta(room); // refresh the roster profile sans the departed player
@@ -1517,6 +1551,24 @@ export function attachElyxionWs(wss: WebSocketServer) {
         crouched: c.crouched,
       });
     }
+    for (const guard of room.bodyguards.values()) {
+      if (guard.expiresAt <= now) continue;
+      players.push({
+        id: guard.id,
+        x: guard.pos.x,
+        y: guard.pos.y,
+        z: guard.pos.z,
+        yaw: guard.yaw,
+        pitch: 0,
+        frags: 0,
+        deaths: 0,
+        health: guard.health,
+        invulnMs: 0,
+        ping: 0,
+        crouched: false,
+        bodyguard: true,
+      });
+    }
     return { type: 'state' as const, t: now, players, resumeAt: room.resumeAt };
   };
 
@@ -1548,12 +1600,36 @@ export function attachElyxionWs(wss: WebSocketServer) {
     verified: c.verified,
   });
 
+  const bodyguardMeta = (g: BodyguardRecord, owner: ClientRecord) => ({
+    id: g.id,
+    name: g.name,
+    team: owner.team,
+    hat: 'hat.none',
+    unusual: 'unusual.none',
+    emote: 'emote.cheer',
+    nameColor: 'name.default',
+    spawnEffect: 'spawn.beam',
+    title: 'title.none',
+    titleText: `ALLY · ${owner.name}`,
+    railColor: DEFAULT_RAIL_COLOR,
+    railgunFinish: DEFAULT_RAILGUN_FINISH,
+    crosshair: '',
+    admin: false,
+    verified: false,
+    bodyguard: true,
+    ownerId: owner.id,
+  });
+
   const roomMeta = (room: Room) => {
     const players: object[] = [];
     for (const id of room.members) {
       const c = clients.get(id);
       if (!c || c.disconnectedAt > 0) continue;
       players.push(playerMeta(c));
+    }
+    for (const guard of room.bodyguards.values()) {
+      const owner = clients.get(guard.ownerId);
+      if (owner && guard.expiresAt > Date.now()) players.push(bodyguardMeta(guard, owner));
     }
     return { type: 'meta' as const, players };
   };
@@ -1690,6 +1766,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     }
     winner = tied[Math.floor(Math.random() * tied.length)] ?? winner;
 
+    room.bodyguards.clear();
     room.mapId = winner;
     room.state = 'active';
     room.vote = null;
@@ -1789,26 +1866,37 @@ export function attachElyxionWs(wss: WebSocketServer) {
     const now = Date.now();
     if (now < room.resumeAt) return; // post-vote breather
 
-    // Fire-rate gate (#2): RAIL_COOLDOWN is only client-enforced, so a modified
-    // client could stream shots. Drop anything faster than the cooldown (minus
-    // a small jitter tolerance) and stamp the accepted shot time.
-    if (now - shooter.lastShotMs < RAIL_COOLDOWN * 1000 - FIRE_RATE_TOLERANCE_MS) {
+    const spec = weaponSpec(shooter.weapon);
+    // Fire-rate gate (#2): the client is not trusted, so validate the selected
+    // weapon's cadence on the server as well.
+    if (now - shooter.lastShotMs < spec.cooldown * 1000 - FIRE_RATE_TOLERANCE_MS) {
       acThrottledLog(`fire:${shooter.id}`, {
         kind: 'reject',
         target: shooter.name,
         detail: 'fire-rate',
-        reason: `shot ${now - shooter.lastShotMs}ms after the last (min ${Math.round(RAIL_COOLDOWN * 1000 - FIRE_RATE_TOLERANCE_MS)}ms)`,
+        reason: `shot ${now - shooter.lastShotMs}ms after the last (min ${Math.round(spec.cooldown * 1000 - FIRE_RATE_TOLERANCE_MS)}ms)`,
       }, 10_000);
       return;
     }
 
-    let { dx, dy, dz } = msg;
-    const dl = Math.hypot(dx, dy, dz);
-    if (!Number.isFinite(dl) || dl < 1e-6) return;
-    dx /= dl;
-    dy /= dl;
-    dz /= dl;
     if (![msg.ox, msg.oy, msg.oz].every(Number.isFinite)) return;
+    const rawRays = Array.isArray(msg.rays) && msg.rays.length > 0
+      ? msg.rays.slice(0, Math.max(1, Math.min(spec.pellets, 16)))
+      : (typeof msg.dx === 'number' && typeof msg.dy === 'number' && typeof msg.dz === 'number'
+        ? [{ x: msg.dx, y: msg.dy, z: msg.dz, maxDist: msg.maxDist }]
+        : []);
+    if (rawRays.length === 0) return;
+    const rays: { dx: number; dy: number; dz: number; wallCap: number }[] = [];
+    for (const ray of rawRays) {
+      const dl = Math.hypot(ray.x, ray.y, ray.z);
+      if (!Number.isFinite(dl) || dl < 1e-6) continue;
+      rays.push({
+        dx: ray.x / dl,
+        dy: ray.y / dl,
+        dz: ray.z / dl,
+        wallCap: Number.isFinite(ray.maxDist) ? Math.min(KILL_MAX_RANGE, Math.max(0, ray.maxDist ?? 0)) : KILL_MAX_RANGE,
+      });
+    }      if (rays.length === 0) return;
 
     // Anti-wallhack (#1): the ray is cast from the CLIENT-supplied origin, but
     // the server owns no geometry to occlude with — so a modified client could
@@ -1833,45 +1921,76 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // Firing ends your own spawn invuln — you can't shoot from behind protection.
     if (shooter.invulnUntilMs > now) shooter.invulnUntilMs = 0;
 
-    const wallCap = Number.isFinite(msg.maxDist)
-      ? Math.min(KILL_MAX_RANGE, Math.max(0, msg.maxDist as number))
-      : KILL_MAX_RANGE;
     const rt = Number.isFinite(msg.renderTime)
       ? Math.max(now - MAX_REWIND_MS, Math.min(now, msg.renderTime as number))
       : now - MAX_REWIND_MS;
 
+    type ShotHit = {
+      id: ClientId;
+      pos: Vec;
+      t: number;
+      headshot: boolean;
+      ray: { dx: number; dy: number; dz: number; wallCap: number };
+      pellets: number;
+    };
+    const hitById = new Map<ClientId, ShotHit>();
     let bestId: ClientId | null = null;
     let bestT = Infinity;
     let bestHeadshot = false;
     let bestPos: Vec | null = null;
+    let bestRay = rays[0];
 
-    for (const id of room.members) {
-      if (id === shooter.id) continue;
-      const victim = clients.get(id);
-      if (!victim) continue;
-      // TDM: no friendly fire — teammates can't be hit.
-      if (room.mode === 'tdm' && victim.team != null && victim.team === shooter.team) continue;
-      if (victim.invulnUntilMs > now) continue;
-      if (victim.respawnAt > now) continue; // hidden during their killcam → untargetable
-      if (victim.disconnectedAt > 0) continue; // dropped player can't be fragged mid-grace
-      const pp = rewind(victim, rt);
-      const min: Vec = { x: pp.x - PLAYER_RADIUS, y: pp.y, z: pp.z - PLAYER_RADIUS };
-      const max: Vec = { x: pp.x + PLAYER_RADIUS, y: pp.y + (victim.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT), z: pp.z + PLAYER_RADIUS };
-      const t = rayAabb(msg.ox, msg.oy, msg.oz, dx, dy, dz, min, max);
-      if (t === null || t <= 0 || t >= wallCap || t >= bestT) continue;
-      bestT = t;
-      bestId = id;
-      bestPos = pp;
-      const hitY = msg.oy + dy * t;
-      const targetHeight = victim.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
-      bestHeadshot = hitY >= pp.y + targetHeight * HEADSHOT_FRAC;
+    for (const ray of rays) {
+      let rayBestId: ClientId | null = null;
+      let rayBestT = Infinity;
+      let rayBestHeadshot = false;
+      let rayBestPos: Vec | null = null;
+      for (const id of room.members) {
+        if (id === shooter.id) continue;
+        const victim = clients.get(id);
+        if (!victim) continue;
+        // TDM: no friendly fire — teammates can't be hit.
+        if (room.mode === 'tdm' && victim.team != null && victim.team === shooter.team) continue;
+        if (victim.invulnUntilMs > now) continue;
+        if (victim.respawnAt > now) continue; // hidden during their killcam → untargetable
+        if (victim.disconnectedAt > 0) continue; // dropped player can't be fragged mid-grace
+        const pp = rewind(victim, rt);
+        const min: Vec = { x: pp.x - PLAYER_RADIUS, y: pp.y, z: pp.z - PLAYER_RADIUS };
+        const max: Vec = { x: pp.x + PLAYER_RADIUS, y: pp.y + (victim.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT), z: pp.z + PLAYER_RADIUS };
+        const t = rayAabb(msg.ox, msg.oy, msg.oz, ray.dx, ray.dy, ray.dz, min, max);
+        if (t === null || t <= 0 || t >= ray.wallCap || t >= rayBestT) continue;
+        rayBestT = t;
+        rayBestId = id;
+        rayBestPos = pp;
+        const hitY = msg.oy + ray.dy * t;
+        const targetHeight = victim.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
+        rayBestHeadshot = hitY >= pp.y + targetHeight * HEADSHOT_FRAC;
+      }
+      if (rayBestId && rayBestPos) {
+        const previous = hitById.get(rayBestId);
+        hitById.set(rayBestId, {
+          id: rayBestId,
+          pos: rayBestPos,
+          t: Math.min(previous?.t ?? Infinity, rayBestT),
+          headshot: (previous?.headshot ?? false) || rayBestHeadshot,
+          ray,
+          pellets: (previous?.pellets ?? 0) + 1,
+        });
+        if (rayBestT < bestT) {
+          bestT = rayBestT;
+          bestId = rayBestId;
+          bestPos = rayBestPos;
+          bestHeadshot = rayBestHeadshot;
+          bestRay = ray;
+        }
+      }
     }
 
-    // Broadcast the rail beam to the rest of the room (the shooter already drew
+    // Broadcast the weapon beam to the rest of the room (the shooter already drew
     // their own) so other players SEE + HEAR the shot, hit or miss. The beam ends
     // at the victim if hit, else at the wall (wallCap). Sent before the miss /
     // aim-throttle returns below so a missed or throttled shot still shows.
-    const beamLen = bestId ? bestT : wallCap;
+    const beamLen = bestId ? bestT : bestRay.wallCap;
     broadcastRoom(
       room,
       {
@@ -1880,9 +1999,9 @@ export function attachElyxionWs(wss: WebSocketServer) {
         ox: msg.ox,
         oy: msg.oy,
         oz: msg.oz,
-        ex: msg.ox + dx * beamLen,
-        ey: msg.oy + dy * beamLen,
-        ez: msg.oz + dz * beamLen,
+        ex: msg.ox + bestRay.dx * beamLen,
+        ey: msg.oy + bestRay.dy * beamLen,
+        ez: msg.oz + bestRay.dz * beamLen,
       },
       shooter.id,
     );
@@ -1913,10 +2032,11 @@ export function attachElyxionWs(wss: WebSocketServer) {
       }, 30_000);
       return;
     }
-    victim.health = Math.max(
-      0,
-      victim.health - (bestHeadshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE),
-    );
+    const confirmed = hitById.get(bestId);
+    if (!confirmed) return;
+    const damage = confirmed.pellets * spec.damage +
+      (confirmed.headshot ? (spec.headshotDamage - spec.damage) : 0);
+    victim.health = Math.max(0, victim.health - damage);
     // A nonlethal hit is still a successful shot, but it does not award a frag
     // or trigger the respawn/killcam flow. Health is visible in the next state
     // snapshot, so clients get authoritative hitpoint updates without a new
@@ -1933,6 +2053,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       killerName: shooter.name,
       victimId: victim.id,
       victimName: victim.name,
+      weapon: spec.id,
       headshot: bestHeadshot,
       firstBlood,
       victimPos: { ...victim.pos },
@@ -2044,6 +2165,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
       moderatedAt: 0,
       lastRecoverMs: 0,
       lastShotMs: 0,
+      teleportCooldownUntilMs: 0,
+      bodyguardCooldownUntilMs: 0,
       lastPosMs: 0,
       msgWindowStart: now,
       msgCount: 0,
@@ -2060,6 +2183,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
       railColor: DEFAULT_RAIL_COLOR,
       railgunFinish: DEFAULT_RAILGUN_FINISH,
       crosshair: '',
+      weapon: 'railgun',
+      ability: DEFAULT_ABILITY,
       card: null,
       playerId,
       guestId,
@@ -2574,6 +2699,23 @@ export function attachElyxionWs(wss: WebSocketServer) {
           break;
         }
 
+        case 'weapon': {
+          const next = typeof msg.id === 'string' && (
+            msg.id === 'railgun' || msg.id === 'sniper' || msg.id === 'shotgun' ||
+            msg.id === 'smg' || msg.id === 'assault'
+          ) ? msg.id as WeaponType : 'railgun';
+          record.weapon = next;
+          break;
+        }
+
+        case 'ability': {
+          const next = typeof msg.id === 'string' && (
+            msg.id === 'teleport' || msg.id === 'bodyguard'
+          ) ? msg.id as AbilityType : DEFAULT_ABILITY;
+          record.ability = next;
+          break;
+        }
+
         case 'crosshair': {
           // Crosshair as an opaque share-code string (the client encodes/decodes
           // it). Not an unlockable, so no ownership check — just length-cap it.
@@ -2590,6 +2732,61 @@ export function attachElyxionWs(wss: WebSocketServer) {
             title: resolveTitleText(record.playerId, record.title),
           });
           break;
+
+        case 'bodyguard': {
+          if (!record.roomId || record.ability !== 'bodyguard') break;
+          const room = rooms.get(record.roomId);
+          if (!room || room.state !== 'active' || ts < room.resumeAt) break;
+          if (ts < record.bodyguardCooldownUntilMs || room.bodyguards.has(record.id)) break;
+          const spawn = {
+            x: record.pos.x + Math.cos(record.yaw) * 2.5,
+            y: record.pos.y,
+            z: record.pos.z - Math.sin(record.yaw) * 2.5,
+          };
+          if (isOutOfBounds(spawn, arenaNet(room.mapId))) break;
+          const guard: BodyguardRecord = {
+            id: `guard-${record.id}`,
+            ownerId: record.id,
+            name: `Bodyguard · ${record.name}`,
+            pos: spawn,
+            yaw: record.yaw,
+            health: MAX_HEALTH,
+            expiresAt: ts + BODYGUARD_DURATION * 1000,
+            nextShotAt: ts + 500,
+          };
+          room.bodyguards.set(record.id, guard);
+          record.bodyguardCooldownUntilMs = ts + BODYGUARD_COOLDOWN * 1000;
+          sendRaw(record.socket, {
+            type: 'ability-bodyguard',
+            cooldownMs: BODYGUARD_COOLDOWN * 1000,
+            durationMs: BODYGUARD_DURATION * 1000,
+          });
+          broadcastMeta(room);
+          break;
+        }
+
+        case 'teleport': {
+          if (!record.roomId || record.ability !== 'teleport') break;
+          const room = rooms.get(record.roomId);
+          if (!room || room.state !== 'active' || ts < room.resumeAt) break;
+          if (ts < record.teleportCooldownUntilMs) break;
+          if (![msg.x, msg.y, msg.z].every(Number.isFinite)) break;
+          const destination = { x: msg.x, y: msg.y, z: msg.z };
+          // The server does not own render geometry, so validate the invariant
+          // it can prove: a teleport is a short, horizontal reposition inside
+          // this arena and cannot be used as a vertical/out-of-bounds warp.
+          const horizontal = Math.hypot(destination.x - record.pos.x, destination.z - record.pos.z);
+          const vertical = Math.abs(destination.y - record.pos.y);
+          if (horizontal < 1 || horizontal > TELEPORT_RANGE + 0.5 || vertical > 2) break;
+          if (isOutOfBounds(destination, arenaNet(room.mapId))) break;
+          record.teleportCooldownUntilMs = ts + TELEPORT_COOLDOWN * 1000;
+          record.pos = destination;
+          record.history.length = 0;
+          record.posSamples.length = 0;
+          record.renderPos = { ...destination, yaw: record.yaw };
+          sendRaw(record.socket, { type: 'ability-teleport', ...destination });
+          break;
+        }
 
         case 'pos':
           if (
@@ -2703,6 +2900,79 @@ export function attachElyxionWs(wss: WebSocketServer) {
   let snapshotDiagBufferedMax = 0;
   let snapshotDiagSkipped = 0;
 
+  const updateBodyguards = (room: Room, now: number) => {
+    if (room.state !== 'active' || now < room.resumeAt) return;
+    for (const [ownerId, guard] of room.bodyguards) {
+      const owner = clients.get(ownerId);
+      if (!owner || owner.disconnectedAt > 0 || guard.expiresAt <= now) {
+        room.bodyguards.delete(ownerId);
+        broadcastMeta(room);
+        continue;
+      }
+      let target: ClientRecord | null = null;
+      let bestDist = BODYGUARD_RANGE;
+      for (const id of room.members) {
+        const candidate = clients.get(id);
+        if (!candidate || candidate.id === ownerId || candidate.disconnectedAt > 0 || candidate.respawnAt > now) continue;
+        if (room.mode === 'tdm' && candidate.team != null && candidate.team === owner.team) continue;
+        const d = Math.hypot(candidate.pos.x - guard.pos.x, candidate.pos.z - guard.pos.z);
+        if (d < bestDist) { bestDist = d; target = candidate; }
+      }
+      if (target) {
+        guard.yaw = Math.atan2(target.pos.x - guard.pos.x, target.pos.z - guard.pos.z);
+        if (bestDist > 8) {
+          const step = Math.min(bestDist - 8, BODYGUARD_SPEED / SNAPSHOT_HZ);
+          guard.pos.x += (target.pos.x - guard.pos.x) / bestDist * step;
+          guard.pos.z += (target.pos.z - guard.pos.z) / bestDist * step;
+        }
+        if (now >= guard.nextShotAt && target.invulnUntilMs <= now) {
+          guard.nextShotAt = now + BODYGUARD_FIRE_COOLDOWN * 1000;
+          target.health = Math.max(0, target.health - BODYGUARD_DAMAGE);
+          if (target.health <= 0) {
+            owner.frags += 1;
+            target.deaths += 1;
+            const respawnPos = pickSpawn(room, target, owner.pos);
+            const firstBlood = !room.firstBloodAwarded;
+            room.firstBloodAwarded = true;
+            broadcastRoom(room, {
+              type: 'kill',
+              killerId: guard.id,
+              killerName: guard.name,
+              ownerId,
+              victimId: target.id,
+              victimName: target.name,
+              weapon: 'assault',
+              headshot: false,
+              firstBlood,
+              victimPos: { ...target.pos },
+              respawnPos,
+              killerCard: owner.card ? { ...owner.card, title: resolveTitleText(owner.playerId, owner.title) } : owner.card,
+              t: now,
+            });
+            target.pos = { ...respawnPos };
+            target.health = MAX_HEALTH;
+            target.history.length = 0;
+            target.posSamples.length = 0;
+            target.respawnAt = now + RESPAWN_HIDE_MS;
+            target.invulnUntilMs = now + KILL_RESPAWN_INVULN_MS;
+            if (room.isRanked && owner.frags >= RANKED_DUEL_FRAG_LIMIT) endRankedMatch(room, owner);
+            else if (room.mode === 'tdm' && owner.team != null && teamFrags(room, owner.team) >= TDM_FRAG_LIMIT) startVote(room, null, owner.team);
+            else if (room.mode === 'duel' && owner.frags >= DUEL_FRAG_LIMIT) startVote(room, owner.id);
+            else if (room.mode === 'ffa' && owner.frags >= MATCH_FRAG_LIMIT) startVote(room, owner.id);
+          }
+        }
+      } else {
+        const d = Math.hypot(owner.pos.x - guard.pos.x, owner.pos.z - guard.pos.z);
+        if (d > 4) {
+          const step = Math.min(d - 3, BODYGUARD_SPEED / SNAPSHOT_HZ);
+          guard.pos.x += (owner.pos.x - guard.pos.x) / d * step;
+          guard.pos.z += (owner.pos.z - guard.pos.z) / d * step;
+        }
+        guard.yaw = owner.yaw;
+      }
+    }
+  };
+
   // Always-on event-loop health gauge (vs NETCODE_DIAG which is opt-in + log-only).
   // The 64Hz tick is the canary: ANY synchronous stall on the shared event loop —
   // a slow better-sqlite3 query, a GC pause, host CPU steal/throttling on the
@@ -2746,6 +3016,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     }
     for (const room of rooms.values()) {
       if (room.members.size === 0) continue;
+      updateBodyguards(room, now);
       // Record each member's pose into the lag-comp history AT SNAPSHOT TIME (not
       // at pos-receive time). Clients interpolate remotes by snapshot timestamp,
       // so stamping history on the same timeline makes a rewind reconstruct the

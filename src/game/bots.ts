@@ -22,11 +22,14 @@ import {
   MAX_HORIZONTAL_SPEED,
   MAX_HEALTH,
   WALK_SPEED,
+  WEAPON_SPECS,
   type BotDifficulty,
+  type WeaponType,
 } from './constants';
 import { movePlayer, rayAabb, type ArenaMap } from './map';
+import { shotDirections } from './weapon';
 import { LocomotionBlender } from './locomotion';
-import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
+import { attachWeaponToSoldier, WeaponHold } from './weapon-model';
 import { WornHat } from './hats';
 import { HATS, UNUSUALS } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
@@ -43,6 +46,7 @@ function randomUnusualId(): string {
 }
 
 const BOT_NAMES = ['Vex', 'Razor', 'Strafe', 'Pyro', 'Vandal', 'Frost', 'Pulse', 'Echo'];
+const BOT_WEAPONS: readonly WeaponType[] = ['assault', 'smg', 'shotgun', 'sniper', 'railgun'];
 const BOT_FACING_LERP = 12;
 // Preferred engagement distance band — bots back off when closer than MIN and
 // close the gap when farther than MAX, otherwise circle-strafe.
@@ -81,9 +85,17 @@ const BOT_MOVE: Record<BotDifficulty, BotMove> = {
 };
 
 // An enemy a bot can target (the local player or another bot).
-export type BotTarget = { id: string; pos: Vec3; team?: number | null };
+export type BotTarget = { id: string; pos: Vec3; team?: number | null; bodyguard?: boolean };
 // A bot's decision to fire this tick — resolved by Game against the world.
-export type BotFireIntent = { botId: string; botName: string; origin: Vec3; dir: Vec3; team: number | null };
+export type BotFireIntent = {
+  botId: string;
+  botName: string;
+  origin: Vec3;
+  dir: Vec3;
+  rays: { dir: Vec3; maxDist: number }[];
+  team: number | null;
+  weapon: WeaponType;
+};
 const MODEL_SCALE = 1.0;
 // Soldier.glb actually faces -Z at identity (confirmed: when camera is at
 // +Z we see the model's back). Movement direction comes back as
@@ -309,10 +321,13 @@ export class Bot {
   private actions: Partial<Record<ActionKey, THREE.AnimationAction>> = {};
   private loco: LocomotionBlender | null = null;
   private hold: WeaponHold | null = null;
+  private weaponGroup: THREE.Group | null = null;
   private fallbackBody: THREE.Mesh | null = null;
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
   protected target: Vec3;
+  protected readonly bodyguard: boolean;
+  protected ownerPos: Vec3 | null = null;
   private roamStuckTimer = 0; // accrues while a roaming bot makes no progress → forces an unstick
   protected team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color
   private nameColor = '#ffd1d8'; // current nameplate color (team-tinted in TDM)
@@ -338,6 +353,9 @@ export class Bot {
   private engagedId: string | null = null; // current target id, null = roaming
   private seenForSec = 0; // how long the current target has been visible (reaction gate)
   private shootCooldown = 0;
+  private weaponType: WeaponType;
+  private weaponSwitchTimer = rand(7, 13);
+  private shotSeed = 0;
   private strafeSign = Math.random() < 0.5 ? -1 : 1;
   private strafeFlipTimer = rand(1.2, 3); // randomly reverse strafe so juking isn't metronomic
   // Human-like aim: a smoothed point that chases the target. A laggy chase
@@ -355,7 +373,11 @@ export class Bot {
     scene: THREE.Scene,
     model: BotModel | null,
     difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
+    bodyguard = false,
+    weapon: WeaponType = 'railgun',
   ) {
+    this.bodyguard = bodyguard;
+    this.weaponType = weapon;
     this.diff = BOT_DIFFICULTY[difficulty];
     this.mv = BOT_MOVE[difficulty];
     this.decideTimer = rand(0, this.mv.decideInterval); // desync decision clocks across bots
@@ -365,6 +387,7 @@ export class Bot {
       pos: { ...spawn },
       health: MAX_HEALTH,
       alive: true,
+      bodyguard,
       respawnTimer: 0,
       moveTimer: rand(BOT_MOVE_INTERVAL_MIN, BOT_MOVE_INTERVAL_MAX),
     };
@@ -405,6 +428,7 @@ export class Bot {
       return false;
     }
     if (this.shootCooldown > 0) this.shootCooldown = Math.max(0, this.shootCooldown - dt);
+    if (this.weaponSwitchTimer > 0) this.weaponSwitchTimer = Math.max(0, this.weaponSwitchTimer - dt);
     // Movement timers (run while alive; harmless while dead since velocity is zeroed).
     if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
@@ -430,6 +454,8 @@ export class Bot {
         this.dashTimer = 0;
         this.dashCooldown = 0;
         this.boostCooldown = 0;
+        this.shootCooldown = 0;
+        this.weaponSwitchTimer = rand(7, 13);
         this.jumping = false;
         this.wasOnGround = true;
         this.shotAtTimer = 0;
@@ -447,6 +473,10 @@ export class Bot {
       }
       return false;
     }
+    if (this.weaponSwitchTimer <= 0) {
+      this.switchWeapon();
+      this.weaponSwitchTimer = rand(8, 15);
+    }
     return true;
   }
 
@@ -459,6 +489,10 @@ export class Bot {
     let bestDist = Infinity;
     for (const e of enemies) {
       if (e.id === this.state.id) continue;
+      // The bodyguard protects its owner and other bots ignore it as a target;
+      // this keeps the summoned ally from attacking the player or being treated
+      // as a normal enemy by the offline bot roster.
+      if (this.bodyguard ? e.id === 'player' : e.bodyguard) continue;
       // TDM: never acquire a teammate (friendly fire is off).
       if (this.team != null && e.team != null && e.team === this.team) continue;
       const d = Math.hypot(e.pos.x - this.state.pos.x, e.pos.z - this.state.pos.z);
@@ -505,8 +539,11 @@ export class Bot {
       this.applyFacing();
       // Fire once reaction time has elapsed and the weapon is off cooldown.
       if (this.seenForSec >= this.diff.reaction && this.shootCooldown <= 0) {
-        // Jitter the cadence ±15% so bots don't fire on a metronome.
-        this.shootCooldown = this.diff.fireCooldown * (0.85 + Math.random() * 0.3);
+        // Jitter each weapon's own cadence ±15% so bots visibly respect their
+        // equipped weapon: SMGs fire rapidly, while snipers take deliberate shots.
+        const difficultyRate = this.diff.fireCooldown / 1.2;
+        const weaponCooldown = WEAPON_SPECS[this.weaponType].cooldown * difficultyRate;
+        this.shootCooldown = weaponCooldown * (0.85 + Math.random() * 0.3);
         return this.buildFireIntent(eye);
       }
       return null;
@@ -515,6 +552,23 @@ export class Bot {
     // ── No target: roam toward a wander point ──
     this.engagedId = null;
     this.seenForSec = 0;
+    if (this.bodyguard && this.ownerPos) {
+      const dx = this.ownerPos.x - this.state.pos.x;
+      const dz = this.ownerPos.z - this.state.pos.z;
+      const followDist = Math.hypot(dx, dz);
+      if (followDist <= 3) {
+        const beforeX = this.state.pos.x;
+        const beforeZ = this.state.pos.z;
+        this.integrate(dt, map, { x: 0, z: 0 });
+        this.updateLoco(beforeX, beforeZ, dt);
+        return null;
+      }
+      this.target = {
+        x: this.ownerPos.x - Math.sin(this.facing) * 2.5,
+        y: this.ownerPos.y,
+        z: this.ownerPos.z - Math.cos(this.facing) * 2.5,
+      };
+    }
     this.aimSeeded = false; // re-acquire aim from scratch on the next target
     this.lastTargetId = null;
     const px = this.state.pos.x;
@@ -957,6 +1011,13 @@ export class Bot {
       origin: { ...eye },
       dir: { x: dx / l2, y: dy / l2, z: dz / l2 },
       team: this.team,
+      weapon: this.weaponType,
+      rays: shotDirections(new THREE.Vector3(dx / l2, dy / l2, dz / l2), this.weaponType, ++this.shotSeed)
+        .map((shotDir) => ({
+          dir: { x: shotDir.x, y: shotDir.y, z: shotDir.z },
+          maxDist: WEAPON_SPECS[this.weaponType].range,
+        })),
+
     };
   }
 
@@ -977,6 +1038,10 @@ export class Bot {
   }
   getTeam(): number | null {
     return this.team;
+  }
+
+  setOwnerPosition(pos: Vec3 | null) {
+    this.ownerPos = pos ? { ...pos } : null;
   }
 
   kill() {
@@ -1029,6 +1094,7 @@ export class Bot {
 
   dispose(scene: THREE.Scene) {
     this.hat?.dispose();
+    this.disposeWeaponGroup();
     scene.remove(this.group);
     if (this.fallbackBody) {
       this.fallbackBody.geometry.dispose();
@@ -1042,6 +1108,29 @@ export class Bot {
     smMat.map?.dispose();
     smMat.dispose();
     if (this.mixer) this.mixer.stopAllAction();
+  }
+
+  private switchWeapon() {
+    const options = BOT_WEAPONS.filter((type) => type !== this.weaponType);
+    const next = options[Math.floor(Math.random() * options.length)] ?? 'railgun';
+    this.weaponType = next;
+    if (!this.modelRoot) return;
+    this.disposeWeaponGroup();
+    this.weaponGroup = attachWeaponToSoldier(this.modelRoot, BOT_HEIGHT, this.weaponType);
+  }
+
+  private disposeWeaponGroup() {
+    if (!this.weaponGroup) return;
+    this.weaponGroup.parent?.remove(this.weaponGroup);
+    this.weaponGroup.traverse((obj) => {
+      const mesh = obj as THREE.Mesh & THREE.Line;
+      const geometry = (mesh as unknown as { geometry?: THREE.BufferGeometry }).geometry;
+      if (geometry) geometry.dispose();
+      const material = (mesh as unknown as { material?: THREE.Material | THREE.Material[] }).material;
+      if (Array.isArray(material)) material.forEach((mat) => mat.dispose());
+      else if (material) material.dispose();
+    });
+    this.weaponGroup = null;
   }
 
   private installModel(model: BotModel) {
@@ -1062,7 +1151,7 @@ export class Bot {
     this.hat = new WornHat(this.group, cloned);
     void this.hat.setHat(randomHatId());
     if (Math.random() < 0.6) this.hat.setUnusual(randomUnusualId());
-    attachRailgunToSoldier(cloned, BOT_HEIGHT);
+    this.weaponGroup = attachWeaponToSoldier(cloned, BOT_HEIGHT, this.weaponType);
     this.hold = new WeaponHold(cloned);
     this.mixer = new THREE.AnimationMixer(cloned);
 
@@ -1155,9 +1244,45 @@ export class BotManager {
     const names = pickN(BOT_NAMES, count);
     for (let i = 0; i < count; i++) {
       const spawn = pickFreeSpot(map, playerSpawn);
-      const bot = new Bot(`bot-${i}`, names[i] ?? `Bot${i}`, spawn, scene, model, difficulty);
+      const bot = new Bot(
+        `bot-${i}`,
+        names[i] ?? `Bot${i}`,
+        spawn,
+        scene,
+        model,
+        difficulty,
+        false,
+        BOT_WEAPONS[i % BOT_WEAPONS.length],
+      );
       this.bots.push(bot);
     }
+  }
+
+  summonBodyguard(
+    scene: THREE.Scene,
+    map: ArenaMap,
+    ownerPos: Vec3,
+    model: BotModel | null,
+    difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
+  ): Bot | null {
+    const existing = this.bots.find((b) => b.state.bodyguard);
+    if (existing) return existing;
+    const spawn = pickFreeSpot(map, ownerPos);
+    const guard = new Bot('bodyguard', 'Bodyguard', spawn, scene, model, difficulty, true, 'assault');
+    guard.setOwnerPosition(ownerPos);
+    this.bots.push(guard);
+    return guard;
+  }
+
+  dismissBodyguard(scene: THREE.Scene) {
+    const guard = this.bots.find((b) => b.state.bodyguard);
+    if (!guard) return;
+    guard.dispose(scene);
+    this.bots = this.bots.filter((b) => b !== guard);
+  }
+
+  bodyguard(): Bot | null {
+    return this.bots.find((b) => b.state.bodyguard) ?? null;
   }
 
   // Steps every bot and returns the fire intents they produced this tick.

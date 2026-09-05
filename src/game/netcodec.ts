@@ -16,6 +16,7 @@ const BIN_POS = 2; // client → server: a position update
 const BIN_STATE = 3; // legacy quantized server → client state snapshot
 const BIN_STATE_STANCE = 4; // legacy quantized snapshot with crouch stance
 const BIN_STATE_HEALTH = 5; // quantized snapshot with health + crouch stance
+const BIN_STATE_BODYGUARD = 6; // quantized snapshot with bodyguard marker
 
 export type BinStatePlayer = {
   id: string;
@@ -30,6 +31,7 @@ export type BinStatePlayer = {
   invulnMs: number;
   ping: number;
   crouched: boolean;
+  bodyguard?: boolean;
 };
 
 const STATE_HEADER = 1 + 8 + 8 + 1; // tag + t(f64) + resumeAt(f64) + count(u8)
@@ -63,13 +65,14 @@ export function toView(data: ArrayBuffer | ArrayBufferView): DataView {
 
 export function encodeState(t: number, players: BinStatePlayer[], resumeAt: number): Uint8Array {
   const n = Math.min(players.length, 255);
+  const hasBodyguard = true;
   let size = STATE_HEADER;
   for (let i = 0; i < n; i++) {
-    size += 1 + Math.min(players[i].id.length, 255) + 5 * 2 + 5 * 2 + 1;
+    size += 1 + Math.min(players[i].id.length, 255) + 5 * 2 + 5 * 2 + 2;
   }
   const dv = new DataView(new ArrayBuffer(size));
   let o = 0;
-  dv.setUint8(o, BIN_STATE_HEALTH); o += 1;
+  dv.setUint8(o, BIN_STATE_BODYGUARD); o += 1;
   dv.setFloat64(o, t, true); o += 8;
   dv.setFloat64(o, resumeAt, true); o += 8;
   dv.setUint8(o, n); o += 1;
@@ -89,6 +92,7 @@ export function encodeState(t: number, players: BinStatePlayer[], resumeAt: numb
     dv.setUint16(o, clampU16(p.invulnMs), true); o += 2;
     dv.setUint16(o, clampU16(p.ping), true); o += 2;
     dv.setUint8(o, p.crouched ? 1 : 0); o += 1;
+    dv.setUint8(o, p.bodyguard ? 1 : 0); o += 1;
   }
   return new Uint8Array(dv.buffer);
 }
@@ -98,9 +102,10 @@ export function decodeState(
 ): { t: number; resumeAt: number; players: BinStatePlayer[] } | null {
   if (dv.byteLength < STATE_HEADER) return null;
   const tag = dv.getUint8(0);
-  const quantized = tag === BIN_STATE || tag === BIN_STATE_STANCE || tag === BIN_STATE_HEALTH;
-  const hasStance = tag === BIN_STATE_STANCE || tag === BIN_STATE_HEALTH;
-  const hasHealth = tag === BIN_STATE_HEALTH;
+  const quantized = tag === BIN_STATE || tag === BIN_STATE_STANCE || tag === BIN_STATE_HEALTH || tag === BIN_STATE_BODYGUARD;
+  const hasStance = tag === BIN_STATE_STANCE || tag === BIN_STATE_HEALTH || tag === BIN_STATE_BODYGUARD;
+  const hasHealth = tag === BIN_STATE_HEALTH || tag === BIN_STATE_BODYGUARD;
+  const hasBodyguard = tag === BIN_STATE_BODYGUARD;
   if (!quantized && tag !== BIN_STATE_F32) return null;
   let o = 1;
   const t = dv.getFloat64(o, true); o += 8;
@@ -115,8 +120,9 @@ export function decodeState(
     // function's contract instead of throwing a RangeError mid-decode.
     const hotFieldBytes = quantized ? 5 * 2 : 5 * 4;
     const stanceBytes = hasStance ? 1 : 0;
+    const bodyguardBytes = hasBodyguard ? 1 : 0;
     const statBytes = 4 * 2 + (hasHealth ? 2 : 0);
-    if (o + idLen + hotFieldBytes + statBytes + stanceBytes > dv.byteLength) return null;
+    if (o + idLen + hotFieldBytes + statBytes + stanceBytes + bodyguardBytes > dv.byteLength) return null;
     let id = '';
     for (let j = 0; j < idLen; j++) { id += String.fromCharCode(dv.getUint8(o)); o += 1; }
     const x = quantized ? decodeStateCoord(dv.getInt16(o, true)) : dv.getFloat32(o, true); o += quantized ? 2 : 4;
@@ -130,7 +136,8 @@ export function decodeState(
     const invulnMs = dv.getUint16(o, true); o += 2;
     const ping = dv.getUint16(o, true); o += 2;
     const crouched = hasStance ? dv.getUint8(o++) !== 0 : false;
-    players.push({ id, x, y, z, yaw, pitch, frags, deaths, health, invulnMs, ping, crouched });
+    const bodyguard = hasBodyguard ? dv.getUint8(o++) !== 0 : false;
+    players.push({ id, x, y, z, yaw, pitch, frags, deaths, health, invulnMs, ping, crouched, bodyguard });
   }
   return { t, resumeAt, players };
 }

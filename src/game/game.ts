@@ -9,11 +9,13 @@ import {
   type BotTarget,
 } from './bots';
 import {
+  AIR_JUMPS,
+  DEFAULT_ABILITY,
   BANNER_DURATION_SEC,
+  BODYGUARD_COOLDOWN,
+  BODYGUARD_DURATION,
   BOT_HEADSHOT_THRESHOLD,
   MAX_HEALTH,
-  RAIL_DAMAGE,
-  RAIL_HEADSHOT_DAMAGE,
   BOT_HEIGHT,
   DEFAULT_BOT_DIFFICULTY,
   DUEL_FRAG_LIMIT,
@@ -45,25 +47,29 @@ import {
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
   KILL_FLASH_DURATION_SEC,
-  RAIL_RANGE,
   SHAKE_DEATH,
   SHAKE_FIRE,
   SHAKE_KILL,
   SHAKE_MAX,
   TICK_DT,
+  TELEPORT_COOLDOWN,
+  TELEPORT_RANGE,
   TOAST_DURATION_SEC,
   TEAM_COLORS,
   TDM_FRIEND_COLOR,
   TDM_FRAG_LIMIT,
   RANKED_DUEL_FRAG_LIMIT,
+  type AbilityType,
   type BotDifficulty,
   type GameMode,
   type KeybindAction,
+  type WeaponType,
+  weaponSpec,
 } from './constants';
 import { EffectsManager } from './effects';
 import { TrainingRange } from './training';
 import { InputManager } from './input';
-import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, type ArenaMap } from './map';
+import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, movePlayer, rayAabb, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';
 import {
   DEFAULT_KILL_EFFECT,
@@ -117,7 +123,7 @@ const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
 import { createCamera, createRenderer, createScene } from './renderer';
-import { buildRailgun } from './weapon-model';
+import { buildWeapon } from './weapon-model';
 import type {
   AABB,
   BannerState,
@@ -237,6 +243,7 @@ export class Game {
   private mapMesh: THREE.Group;
   private player: Player;
   private weapon = new Railgun();
+  private abilityType: AbilityType = DEFAULT_ABILITY;
   private input: InputManager;
   private bots: BotManager | null = null;
   private botModel: BotModel | null = null;
@@ -268,6 +275,9 @@ export class Game {
   private playerHeadshots = 0;
   private playerShotsFired = 0;
   private playerShotsHit = 0;
+  private teleportCooldown = 0;
+  private bodyguardCooldown = 0;
+  private bodyguardTimer = 0;
   private botDeathCounts = new Map<string, number>();
   private botFrags = new Map<string, number>();
   // Per-bot shot tallies so the scoreboard can show bot accuracy too.
@@ -661,6 +671,18 @@ export class Game {
     this.training = on;
   }
 
+  setWeapon(type: WeaponType) {
+    this.weapon.setType(type);
+    this.net?.setLocalWeapon(this.weapon.type);
+    this.buildViewmodel();
+  }
+
+  setAbility(type: AbilityType) {
+    this.abilityType = type === 'teleport' || type === 'bodyguard' ? type : DEFAULT_ABILITY;
+    this.net?.setLocalAbility(this.abilityType);
+    this.emitHud();
+  }
+
   setBotsEnabled(enabled: boolean) {
     this.wantBots = enabled;
     this.applyBotsState();
@@ -791,7 +813,7 @@ export class Game {
     // Spectators show the WATCHED player's finish; normal play shows the local one.
     const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
     const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
-    const vm = buildRailgun(finish);
+    const vm = buildWeapon(this.weapon.type, finish);
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
@@ -863,7 +885,11 @@ export class Game {
   }
 
   private applyEnemyStyle() {
-    if (this.bots) for (const b of this.bots.bots) b.setHighlight(this.enemyColor);
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        b.setHighlight(b.state.bodyguard ? new THREE.Color('#43d17a') : this.enemyColor);
+      }
+    }
     // Remotes may be team-colored (TDM) — recolor through the team-aware path so
     // the enemy-color setting doesn't clobber team identification.
     this.recolorRemotes();
@@ -1124,6 +1150,8 @@ export class Game {
         name: this.playerName,
         roomId: this.multiplayerRoomId,
         spectate: this.spectator,
+        weapon: this.weapon.type,
+        ability: this.abilityType,
         events: {
           onKill: (ev) => this.handleNetKill(ev),
           onJoined: (info) => this.handleNetJoined(info),
@@ -1131,6 +1159,12 @@ export class Game {
           onSpectating: (info) => this.handleNetSpectating(info),
           onSpectateEnded: () => this.onNetEvent({ type: 'spectate-ended' }),
           onRespawn: (pos) => this.handleNetRespawn(pos),
+          onTeleport: (pos) => this.handleNetTeleport(pos),
+          onBodyguard: (cooldownMs, durationMs) => {
+            this.bodyguardCooldown = cooldownMs / 1000;
+            this.bodyguardTimer = durationMs / 1000;
+            this.emitHud();
+          },
           onVoteStart: (v) => this.handleVoteStart(v),
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
@@ -1220,6 +1254,14 @@ export class Game {
     this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
+  }
+
+  private handleNetTeleport(pos: { x: number; y: number; z: number }) {
+    this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.player.airJumpsLeft = AIR_JUMPS;
+    this.effects.spawnHitFlash(this.scene, new THREE.Vector3(pos.x, pos.y, pos.z), 0xa78bfa);
   }
 
   // Another player's rail beam (server-broadcast on every shot): draw the trail
@@ -1411,7 +1453,8 @@ export class Game {
   }
 
   private applyRemoteColor(rp: RemotePlayer) {
-    const hex = this.teamColorHex(rp.team);
+    const snap = this.net?.remotes.get(rp.id);
+    const hex = snap?.bodyguard ? '#43d17a' : this.teamColorHex(rp.team);
     if (hex) {
       rp.setHighlight(new THREE.Color(hex));
       rp.setTeamColor(hex); // team override > the player's name-color cosmetic
@@ -1591,6 +1634,7 @@ export class Game {
         this.applyRemoteColor(rp);
       }
       const respawned = rp.apply(snap, dt);
+      this.applyRemoteColor(rp);
       if (respawned && !this.reducedEffects) {
         // This remote just materialized at its new spawn — play its effect.
         this.effects.spawnInBurst(this.scene, rp.group.position, spawnEffectById(rp.equippedSpawnEffect).style);
@@ -1751,7 +1795,12 @@ export class Game {
     // While dead, movement is frozen — the camera is owned by the killcam in
     // render(). (Look is drained every frame in applyLook(), so it can't pile up
     // and snap the view on respawn.)
-    if (!dead) this.player.step(input, dt, this.map, this.inCountdown);
+    if (!dead) this.player.step(
+      input,
+      dt,
+      this.map,
+      this.inCountdown,
+    );
 
     // Self-heal the local sim: a NaN (degenerate collision) or falling out of
     // the world (boosted through a seam) would otherwise be unrecoverable
@@ -1774,30 +1823,41 @@ export class Game {
       }
     }
 
-    // Boost-jump feedback: a cyan spark at the surface the player kicked off.
-    if (this.player.didBoost) {
-      this.player.didBoost = false;
-      const c = this.player.boostContact;
-      this.effects.spawnHitFlash(this.scene, new THREE.Vector3(c.x, c.y, c.z), 0x9be8ff);
-    }
-
     this.weapon.step(dt, this.scene);
     this.effects.step(dt, this.scene);
     this.trainingRange?.update(dt);
     if (this.localRespawnInvuln > 0) {
       this.localRespawnInvuln = Math.max(0, this.localRespawnInvuln - dt);
     }
+    if (this.teleportCooldown > 0) this.teleportCooldown = Math.max(0, this.teleportCooldown - dt);
+    if (this.bodyguardCooldown > 0) this.bodyguardCooldown = Math.max(0, this.bodyguardCooldown - dt);
+
+    if (!dead && !this.inCountdown && input.boostPressed) {
+      if (this.abilityType === 'teleport') this.activateTeleport();
+      else if (this.abilityType === 'bodyguard') {
+        if (this.net) this.net.sendBodyguard();
+        else this.summonBodyguard();
+      }
+    }
+
     if (this.bots) {
       // Targetable entities: the local player (only while alive) + all live
-      // bots. Each bot skips itself. Resolve any shots they decide to take.
+      // bots. Each bot skips itself and bodyguards are protected from hostile
+      // targeting; the bodyguard itself skips the player and hunts enemies.
       const enemies: BotTarget[] = [];
       if (!dead) enemies.push({ id: 'player', pos: this.player.pos, team: this.localTeam });
+      const guard = this.bots.bodyguard();
+      guard?.setOwnerPosition(this.player.pos);
       for (const b of this.bots.bots) {
-        if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam() });
+        if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam(), bodyguard: b.state.bodyguard });
       }
       const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
+      if (this.bodyguardTimer > 0) {
+        this.bodyguardTimer = Math.max(0, this.bodyguardTimer - dt);
+        if (this.bodyguardTimer === 0) this.bots.dismissBodyguard(this.scene);
+      }
       // Spawn-in effect when a bot materializes (dead→alive), so solo play shows
       // the effect too. A stable per-bot style gives variety without netcode.
       if (!this.reducedEffects) {
@@ -1823,7 +1883,8 @@ export class Game {
     }
     this.weaponWasReady = ready;
 
-    if (input.firePressed && !dead && !this.inCountdown) this.handleFire();
+    const wantsToFire = this.weapon.automatic ? input.fire : input.firePressed;
+    if (wantsToFire && !dead && !this.inCountdown) this.handleFire();
 
     // Position broadcast at the sim-tick rate, with idle dedup. Sending fresher
     // samples (vs the old 32Hz) reduces the snapshot-aliasing jitter remote
@@ -1898,6 +1959,82 @@ export class Game {
     return { hit, headshot };
   }
 
+  private activateTeleport() {
+    if (this.teleportCooldown > 0 || this.killcam || this.matchOver) return;
+    this.tmpEuler.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
+    this.tmpForward.set(0, 0, -1).applyEuler(this.tmpEuler).normalize();
+    const eye = new THREE.Vector3(
+      this.player.pos.x,
+      this.player.pos.y + this.player.eyeHeight,
+      this.player.pos.z,
+    );
+    let travel = TELEPORT_RANGE;
+    for (const box of this.map.boxes) {
+      const t = rayAabb(
+        { x: eye.x, y: eye.y, z: eye.z },
+        { x: this.tmpForward.x, y: this.tmpForward.y, z: this.tmpForward.z },
+        box,
+      );
+      if (t !== null && t > 0.1) travel = Math.min(travel, t - 0.8);
+    }
+    const distance = Math.max(0, travel);
+    if (distance < 1) return;
+    const destination = {
+      x: this.player.pos.x + this.tmpForward.x * distance,
+      y: this.player.pos.y,
+      z: this.player.pos.z + this.tmpForward.z * distance,
+    };
+    const bounds = this.map.bounds;
+    if (
+      destination.x < bounds.min.x + PLAYER_RADIUS ||
+      destination.x > bounds.max.x - PLAYER_RADIUS ||
+      destination.z < bounds.min.z + PLAYER_RADIUS ||
+      destination.z > bounds.max.z - PLAYER_RADIUS
+    ) return;
+    // Probe a tiny horizontal move to reject destinations that overlap cover.
+    const probe = movePlayer(
+      destination,
+      { x: PLAYER_RADIUS * 2, y: this.player.height, z: PLAYER_RADIUS * 2 },
+      { x: 0.01, y: 0, z: 0 },
+      this.map.boxes,
+    );
+    if (probe.blocked.x || probe.blocked.y || probe.blocked.z) return;
+
+    this.teleportCooldown = TELEPORT_COOLDOWN;
+    if (this.net) {
+      this.net.sendTeleport(destination);
+      return;
+    }
+    this.handleNetTeleport(destination);
+  }
+
+  private summonBodyguard() {
+    if (this.net || this.training || this.bodyguardCooldown > 0 || !this.bots) return;
+    const guard = this.bots.summonBodyguard(
+      this.scene,
+      this.map,
+      this.player.pos,
+      this.botModel,
+      this.botDifficulty,
+    );
+    if (!guard) return;
+    guard.setTeam(this.localTeam, this.teamColorHex(this.localTeam) ?? '#43d17a');
+    guard.setHighlight(new THREE.Color('#43d17a'));
+    this.bodyguardCooldown = BODYGUARD_COOLDOWN;
+    this.bodyguardTimer = BODYGUARD_DURATION;
+    this.effects.spawnInBurst(this.scene, guard.group.position, 'beam');
+    this.botAlive.set(guard.state.id, true);
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: 'BODYGUARD DEPLOYED',
+      subtitle: 'your ally is covering you',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    this.emitHud();
+  }
+
   private handleFire() {
     this.tmpEuler.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     this.tmpForward.set(0, 0, -1).applyEuler(this.tmpEuler);
@@ -1924,7 +2061,7 @@ export class Game {
     const targets: RailTarget[] = [];
     const bots = this.bots?.bots ?? [];
     for (const b of bots) {
-      if (!b.state.alive) continue;
+      if (!b.state.alive || b.state.bodyguard) continue;
       // TDM: can't hit teammates (friendly fire off) — leave them off the raycast.
       if (this.localTeam != null && b.getTeam() === this.localTeam) continue;
       targets.push({
@@ -2010,8 +2147,8 @@ export class Game {
       this.net.interpolate(0);
       this.net.sendShot(
         { x: muzzle.x, y: muzzle.y, z: muzzle.z },
-        { x: this.tmpForward.x, y: this.tmpForward.y, z: this.tmpForward.z },
-        maxDist,
+        result.rays,
+        this.weapon.type,
       );
       // Predicted hit feedback. We render remotes at the same delayed positions
       // the server rewinds to, so a local raycast against them (with the server's
@@ -2048,6 +2185,7 @@ export class Game {
     let anyHit = false;
     let anyKill = false;
     let firstKillName = '';
+    const killedBots = new Set<string>();
 
     for (const hit of result.hits) {
       if (hit.target.kind !== 'bot') continue;
@@ -2056,8 +2194,9 @@ export class Game {
         firstHitHeadshot = hit.headshot;
       }
       const bot = bots.find((b) => b.state.id === hit.target.id);
-      if (!bot) continue;
-      const damage = hit.headshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE;
+      if (!bot || killedBots.has(bot.state.id)) continue;
+      const spec = weaponSpec(this.weapon.type);
+      const damage = hit.headshot ? spec.headshotDamage : spec.damage;
       bot.state.health = Math.max(0, bot.state.health - damage);
       this.effects.spawnHitFlash(this.scene, hit.point, 0xffd1d8);
       this.audio.play(hit.headshot ? 'headshot' : 'hit', 0.45);
@@ -2072,6 +2211,7 @@ export class Game {
         hit.headshot,
         this.killEffectStyle,
       );
+      killedBots.add(bot.state.id);
       bot.kill();
       this.recorder.logKill({
         killerId: 'you',
@@ -2092,7 +2232,7 @@ export class Game {
         killer: this.playerName,
         killerLocal: true,
         victim: hit.target.name,
-        weapon: 'rail',
+        weapon: this.weapon.type,
         special,
       });
       const medals = this.medals.onKill(this.elapsed, {
@@ -2128,16 +2268,29 @@ export class Game {
   }
 
   // ── Bot combat: resolve a bot's fired shot against the world ──────────────
+  // A shotgun intent contains one ray per pellet. Resolve those rays as one
+  // trigger pull so bots get the same spread and close-range damage model as the
+  // player, while preserving the existing kill/respawn flow for each target.
   private handleBotShot(intent: BotFireIntent) {
-    // Every intent is one shot fired — count it for the bot's accuracy.
+    const rays = intent.rays?.length
+      ? intent.rays
+      : [{ dir: intent.dir, maxDist: weaponSpec(intent.weapon).range }];
+    for (const ray of rays) {
+      this.handleBotShotRay({ ...intent, dir: ray.dir, rays: [ray] });
+    }
+  }
+
+  private handleBotShotRay(intent: BotFireIntent) {
+    // Every intent ray is one confirmed projectile; shotgun pellets intentionally
+    // count separately for the bot's hit-rate telemetry.
     this.botShotsFired.set(intent.botId, (this.botShotsFired.get(intent.botId) ?? 0) + 1);
     const origin = new THREE.Vector3(intent.origin.x, intent.origin.y, intent.origin.z);
     const dir = new THREE.Vector3(intent.dir.x, intent.dir.y, intent.dir.z).normalize();
     const o = intent.origin;
     const d = { x: dir.x, y: dir.y, z: dir.z };
 
-    // Nearest wall caps the beam + the shot.
-    let wallT = RAIL_RANGE;
+    // Nearest wall caps the beam + the weapon's own range.
+    let wallT = intent.rays?.[0]?.maxDist ?? weaponSpec(intent.weapon).range;
     for (const b of this.map.boxes) {
       const t = rayAabb(o, d, b);
       if (t !== null && t > 0 && t < wallT) wallT = t;
@@ -2167,7 +2320,7 @@ export class Game {
     }
     if (this.bots) {
       for (const b of this.bots.bots) {
-        if (!b.state.alive || b.state.id === intent.botId) continue;
+        if (!b.state.alive || b.state.id === intent.botId || b.state.bodyguard) continue;
         if (intent.team != null && b.getTeam() === intent.team) continue; // teammate — friendly fire off
         const t = rayAabb(o, d, b.bounds());
         if (t !== null && t > 0 && t < bestT) {
@@ -2201,9 +2354,10 @@ export class Game {
     this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
     this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
     if (victimKind === 'player') {
+      const botWeapon = weaponSpec(intent.weapon);
       this.player.health = Math.max(
         0,
-        this.player.health - (victimHeadshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE),
+        this.player.health - (victimHeadshot ? botWeapon.headshotDamage : botWeapon.damage),
       );
       this.playerHealth = this.player.health;
       this.audio.play('hit', 0.5);
@@ -2232,9 +2386,10 @@ export class Game {
     } else {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
       if (!victim) return;
+      const botWeapon = weaponSpec(intent.weapon);
       victim.state.health = Math.max(
         0,
-        victim.state.health - (victimHeadshot ? RAIL_HEADSHOT_DAMAGE : RAIL_DAMAGE),
+        victim.state.health - (victimHeadshot ? botWeapon.headshotDamage : botWeapon.damage),
       );
       this.audio.play(victimHeadshot ? 'headshot' : 'hit', 0.45);
       if (victim.state.health > 0) return;
@@ -2257,11 +2412,17 @@ export class Game {
         killer: intent.botName,
         killerLocal: false,
         victim: victimName,
-        weapon: 'rail',
+        weapon: intent.weapon,
         special: null,
       });
     }
-    this.botFrags.set(intent.botId, (this.botFrags.get(intent.botId) ?? 0) + 1);
+    if (intent.botId === 'bodyguard') {
+      // A summoned ally's kills belong to its owner for match progression, but
+      // the feed still names the Bodyguard so the assistance is visible.
+      this.playerFrags += 1;
+    } else {
+      this.botFrags.set(intent.botId, (this.botFrags.get(intent.botId) ?? 0) + 1);
+    }
     this.checkMatchEnd();
   }
 
@@ -2318,7 +2479,7 @@ export class Game {
       killer: killerName,
       killerLocal: false,
       victim: this.playerName,
-      weapon: 'rail',
+      weapon: this.weapon.type,
       special: null,
     });
   }
@@ -2587,7 +2748,8 @@ export class Game {
   // but works for every client in the match (including the victim).
   private handleNetKill(ev: KillEvent) {
     const myId = this.net?.clientId ?? null;
-    const iAmKiller = ev.killerId === myId;
+    const creditedKillerId = ev.ownerId ?? ev.killerId;
+    const iAmKiller = creditedKillerId === myId;
     const iAmVictim = ev.victimId === myId;
 
     // Visual effects at the victim's last-known position.
@@ -2698,7 +2860,7 @@ export class Game {
       killer: ev.killerName,
       killerLocal: iAmKiller,
       victim: ev.victimName,
-      weapon: 'rail',
+      weapon: ev.weapon,
       special: ev.headshot ? 'headshot' : null,
     });
 
@@ -2876,6 +3038,7 @@ export class Game {
     ];
     if (this.bots) {
       for (const b of this.bots.bots) {
+        if (b.state.bodyguard) continue;
         scores.push({
           id: b.state.id,
           name: b.state.name,
@@ -2995,7 +3158,7 @@ export class Game {
           z: snap.pos.z,
           yaw: snap.yaw,
           team: snap.team,
-          kind: 'remote',
+          kind: snap.bodyguard ? 'bodyguard' : 'remote',
         });
       }
     }
@@ -3013,8 +3176,7 @@ export class Game {
           kind: 'bot',
         });
       }
-    }
-    const minimap: MinimapState = {
+    }      const minimap: MinimapState = {
       bounds: this.map.bounds,
       // Copy the box list so the HUD's canvas can never mutate our geometry.
       boxes: this.map.boxes.map((b) => ({ ...b })),
@@ -3028,10 +3190,25 @@ export class Game {
     this.onHud({
       frags: this.playerFrags,
       health: this.player.health,
+      weaponType: this.weapon.type,
       railCooldown: this.weapon.cooldown,
       dashCooldown: this.player.dashCooldown,
       airJumpsLeft: this.player.airJumpsLeft,
-      boostReady: this.player.boostInRange,
+      abilityReady:
+        this.abilityType === 'teleport'
+          ? this.teleportCooldown <= 0
+          : this.net
+            ? this.bodyguardCooldown <= 0 && !this.net.bodyguardActive()
+            : this.bodyguardCooldown <= 0 && this.bots?.bodyguard() == null,
+      abilityType: this.abilityType,
+      abilityCooldown: this.abilityType === 'teleport'
+        ? this.teleportCooldown
+        : this.net
+          ? this.bodyguardCooldown
+          : this.bodyguardCooldown,
+      abilityActive: this.abilityType === 'bodyguard' && (
+        this.net ? this.net.bodyguardActive() : this.bodyguardTimer > 0 && this.bots?.bodyguard() != null
+      ),
       speed,
       locked: this.locked,
       currentStreak: this.medals.currentStreak,
@@ -3174,7 +3351,7 @@ export class Game {
       const killer = this.remotePlayers.get(this.killcam.killerId);
       const killerBot = killer
         ? null
-        : this.bots?.bots.find((b) => b.state.id === this.killcam!.killerId);
+        :      this.bots?.bots.find((b) => b.state.id === this.killcam!.killerId);
       const targetX = killer
         ? killer.group.position.x
         : killerBot

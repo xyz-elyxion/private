@@ -146,6 +146,9 @@ export class RemotePlayer {
   private fallbackBody: THREE.Mesh | null = null;
   private shieldMesh: THREE.Mesh;
   private shieldMaterial: THREE.MeshBasicMaterial;
+  private allyRing: THREE.Mesh;
+  private allyRingMaterial: THREE.MeshBasicMaterial;
+  private bodyguard = false;
   private facing = 0;
   private lastSeenPos = new THREE.Vector3();
   private lastMoveSpeed = 0;
@@ -178,6 +181,18 @@ export class RemotePlayer {
     this.shieldMesh.position.y = BOT_HEIGHT * 0.55;
     this.shieldMesh.visible = false;
     this.group.add(this.shieldMesh);
+    this.allyRingMaterial = new THREE.MeshBasicMaterial({
+      color: 0x43d17a,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.allyRing = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.06, 8, 32), this.allyRingMaterial);
+    this.allyRing.rotation.x = Math.PI / 2;
+    this.allyRing.position.y = 0.04;
+    this.allyRing.visible = false;
+    this.group.add(this.allyRing);
 
     scene.add(this.group);
   }
@@ -256,6 +271,15 @@ export class RemotePlayer {
 
     this.facing = snapshot.yaw; // already angle-interpolated in NetClient.interpolate()
 
+    const isBodyguard = snapshot.bodyguard === true;
+    if (isBodyguard !== this.bodyguard) {
+      this.bodyguard = isBodyguard;
+      this.allyRing.visible = isBodyguard;
+      if (isBodyguard) {
+        this.appliedNameColor = '#43d17a';
+        this.rebuildNameSprite();
+      }
+    }
     // Equipped hat + unusual (echoed from the server). Swap on change, re-seat.
     if (snapshot.hat !== this.hatId) {
       this.hatId = snapshot.hat;
@@ -285,6 +309,10 @@ export class RemotePlayer {
     if (snapshot.title !== this.titleId || nextTitleText !== this.titleText) {
       this.titleId = snapshot.title;
       this.titleText = nextTitleText;
+      this.rebuildNameSprite();
+    }
+    if (!this.bodyguard && this.appliedNameColor === '#43d17a') {
+      this.appliedNameColor = this.teamColor ?? this.cosmeticColor;
       this.rebuildNameSprite();
     }
     this.spawnEffectId = snapshot.spawnEffect; // remembered for the spawn-in burst
@@ -415,6 +443,8 @@ export class RemotePlayer {
     }
     this.shieldMesh.geometry.dispose();
     this.shieldMaterial.dispose();
+    this.allyRing.geometry.dispose();
+    this.allyRingMaterial.dispose();
     const smMat = this.nameSprite.material as THREE.SpriteMaterial;
     smMat.map?.dispose();
     smMat.dispose();

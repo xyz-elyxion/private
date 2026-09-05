@@ -6,6 +6,8 @@ export type AABB = { min: Vec3; max: Vec3 };
 
 export type EntityId = string;
 
+export type WeaponType = import('./constants').WeaponType;
+
 export type InputState = {
   forward: boolean;
   back: boolean;
@@ -34,6 +36,7 @@ export type BotState = {
   pos: Vec3;
   health: number;
   alive: boolean;
+  bodyguard?: boolean;
   respawnTimer: number;
   moveTimer: number;
 };
@@ -88,7 +91,7 @@ export type KillfeedEntry = {
   killer: string;
   killerLocal: boolean;
   victim: string;
-  weapon: 'rail';
+  weapon: WeaponType;
   special: 'mid-air' | 'headshot' | null;
   remaining: number;
   total: number;
@@ -227,10 +230,14 @@ export type NetDebugStats = {
 export type HudState = {
   frags: number;
   health: number;
+  weaponType: WeaponType;
   railCooldown: number;
   dashCooldown: number;
   airJumpsLeft: number;
-  boostReady: boolean; // a boostable surface is in range under the crosshair
+  abilityReady: boolean; // the equipped RMB ability can be used now
+  abilityType: import('./constants').AbilityType;
+  abilityCooldown: number;
+  abilityActive: boolean;
   speed: number;
   locked: boolean;
   currentStreak: number;
@@ -302,7 +309,7 @@ export type MinimapState = {
     z: number;
     yaw: number;
     team: number | null; // TDM team (0/1); null in FFA/Duel
-    kind: 'remote' | 'bot';
+    kind: 'remote' | 'bot' | 'bodyguard';
   }[];
 };
 

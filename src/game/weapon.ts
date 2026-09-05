@@ -1,20 +1,21 @@
 import * as THREE from 'three';
 import {
   RAIL_BEAM_DURATION,
-  RAIL_COOLDOWN,
   RAIL_CORE_COLOR,
   RAIL_CORE_RADIUS,
   RAIL_GLOW_RADIUS,
   RAIL_HELIX_COLOR,
   RAIL_HELIX_RADIUS,
   RAIL_HELIX_TURN_LEN,
-  RAIL_RANGE,
+  DEFAULT_WEAPON,
+  weaponSpec,
+  type WeaponType,
 } from './constants';
 import { rayAabb } from './map';
 import type { AABB, Vec3 } from './types';
 
-// A fading rail trail: a Group of meshes/lines plus the materials to fade and
-// their starting opacities (each part dims proportionally as the trail dies).
+// A fading energy/projectile trail. All weapons use the same readable beam
+// treatment for now; their gameplay differences come from the shared specs.
 type Beam = {
   group: THREE.Group;
   parts: Array<{ mat: THREE.Material & { opacity: number }; base: number }>;
@@ -23,10 +24,7 @@ type Beam = {
 
 const UP = new THREE.Vector3(0, 1, 0);
 
-// Quake-III CG_RailTrail look: a bright solid core cylinder, a soft additive
-// glow sleeve, and a helix spiralling around the axis. All additive so trails
-// read as light against the dark arena and stack nicely where they cross.
-function buildRailBeam(
+function buildBeam(
   origin: THREE.Vector3,
   end: THREE.Vector3,
   core: number,
@@ -34,16 +32,13 @@ function buildRailBeam(
 ): Beam {
   const group = new THREE.Group();
   const parts: Beam['parts'] = [];
-
   const dir = new THREE.Vector3().subVectors(end, origin);
   const len = dir.length();
-  if (len < 1e-4) {
-    return { group, parts, remaining: RAIL_BEAM_DURATION };
-  }
+  if (len < 1e-4) return { group, parts, remaining: RAIL_BEAM_DURATION };
+
   const axis = dir.clone().multiplyScalar(1 / len);
   const mid = origin.clone().addScaledVector(dir, 0.5);
   const quat = new THREE.Quaternion().setFromUnitVectors(UP, axis);
-
   const addCylinder = (radius: number, color: number, opacity: number) => {
     const geom = new THREE.CylinderGeometry(radius, radius, len, 6, 1, true);
     const mat = new THREE.MeshBasicMaterial({
@@ -61,10 +56,9 @@ function buildRailBeam(
     parts.push({ mat, base: opacity });
   };
 
-  addCylinder(RAIL_GLOW_RADIUS, helix, 0.28); // outer glow
-  addCylinder(RAIL_CORE_RADIUS, core, 1); // solid core
+  addCylinder(RAIL_GLOW_RADIUS, helix, 0.28);
+  addCylinder(RAIL_CORE_RADIUS, core, 1);
 
-  // Helix: perpendicular basis (u, v) about the axis, points stepped along it.
   const u = new THREE.Vector3();
   if (Math.abs(axis.y) < 0.99) u.crossVectors(axis, UP).normalize();
   else u.set(1, 0, 0);
@@ -93,12 +87,11 @@ function buildRailBeam(
   });
   group.add(new THREE.Line(helixGeom, helixMat));
   parts.push({ mat: helixMat, base: 0.85 });
-
   return { group, parts, remaining: RAIL_BEAM_DURATION };
 }
 
-// Generic shootable target. Bot and RemotePlayer both build one of these at
-// fire time so the weapon code stays oblivious to the entity type.
+// Generic shootable target. The combat engine remains independent of whether
+// the target is a bot, player, or training dummy.
 export type RailTarget = {
   kind: 'bot' | 'remote' | 'target';
   id: string;
@@ -116,18 +109,61 @@ type RailHit = {
   point: THREE.Vector3;
 };
 
+export type WeaponShotRay = { dir: Vec3; maxDist: number };
+
 export type RailFireResult = {
   hits: RailHit[];
   end: THREE.Vector3;
+  rays: WeaponShotRay[];
 };
+
+function hash01(n: number): number {
+  const x = Math.sin(n * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+export function shotDirections(dir: THREE.Vector3, type: WeaponType, seed: number): THREE.Vector3[] {
+  const spec = weaponSpec(type);
+  if (spec.pellets <= 1 || spec.spread <= 0) return [dir.clone().normalize()];
+  const forward = dir.clone().normalize();
+  const right = new THREE.Vector3();
+  if (Math.abs(forward.y) < 0.99) right.crossVectors(forward, UP).normalize();
+  else right.set(1, 0, 0);
+  const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+  const out: THREE.Vector3[] = [];
+  for (let i = 0; i < spec.pellets; i++) {
+    const u = hash01(seed * 17 + i * 31.7) * 2 - 1;
+    const v = hash01(seed * 23 + i * 47.3) * 2 - 1;
+    out.push(forward.clone().addScaledVector(right, u * spec.spread).addScaledVector(up, v * spec.spread).normalize());
+  }
+  return out;
+}
 
 export class Railgun {
   cooldown = 0;
   private beams: Beam[] = [];
-  // The local player's equipped rail-beam colors (railColor cosmetic). Enemy
-  // beams keep the defaults — spawnBeam's params fall back to the constants.
   private beamCore = RAIL_CORE_COLOR;
   private beamHelix = RAIL_HELIX_COLOR;
+  private weaponType: WeaponType = DEFAULT_WEAPON;
+  private shotSeed = 0;
+
+  get type(): WeaponType {
+    return this.weaponType;
+  }
+
+  get automatic(): boolean {
+    return weaponSpec(this.weaponType).automatic;
+  }
+
+  get cooldownMax(): number {
+    return weaponSpec(this.weaponType).cooldown;
+  }
+
+  setType(type: WeaponType) {
+    const next = weaponSpec(type).id;
+    if (next !== this.weaponType) this.cooldown = Math.min(this.cooldown, weaponSpec(next).cooldown);
+    this.weaponType = next;
+  }
 
   setBeamColors(core: number, helix: number) {
     this.beamCore = core;
@@ -148,62 +184,50 @@ export class Railgun {
     }
   }
 
-  // Returns null when the shot was blocked by cooldown (no side effects, no
-  // SFX should fire). When it returns a result, it's a "real" shot — the
-  // hits array contains every target between the muzzle and the nearest
-  // wall, sorted by distance so collateral is in order.
   fire(
     origin: THREE.Vector3,
     dir: THREE.Vector3,
     scene: THREE.Scene,
     boxes: AABB[],
     targets: RailTarget[],
-    // Where the VISIBLE beam starts (the gun muzzle). Hit detection still uses
-    // `origin` (the eye), so aim stays exact while the trail comes from the gun.
     beamOrigin?: THREE.Vector3,
   ): RailFireResult | null {
+    const spec = weaponSpec(this.weaponType);
     if (this.cooldown > 0) return null;
-    this.cooldown = RAIL_COOLDOWN;
-
-    const o: Vec3 = { x: origin.x, y: origin.y, z: origin.z };
-    const d: Vec3 = { x: dir.x, y: dir.y, z: dir.z };
-
-    // 1) Find the nearest wall — that's where the visible beam ends.
-    let wallT = RAIL_RANGE;
-    for (const b of boxes) {
-      const t = rayAabb(o, d, b);
-      if (t !== null && t > 0 && t < wallT) wallT = t;
-    }
-
-    // 2) Every target whose entry point is closer than the nearest wall is
-    //    hit (collateral). Sort by distance so kill order matches travel.
+    this.cooldown = spec.cooldown;
+    const directions = shotDirections(dir, this.weaponType, ++this.shotSeed);
     const hits: RailHit[] = [];
-    for (const target of targets) {
-      const t = rayAabb(o, d, target.bounds);
-      if (t === null || t <= 0 || t >= wallT) continue;
-      const hitY = origin.y + dir.y * t;
-      const point = origin.clone().addScaledVector(dir, t);
-      hits.push({
-        target,
-        t,
-        hitY,
-        headshot: hitY >= target.headshotY,
-        point,
-      });
+    const rays: WeaponShotRay[] = [];
+    let primaryEnd = origin.clone().addScaledVector(dir, spec.range);
+
+    for (const shotDir of directions) {
+      const o: Vec3 = { x: origin.x, y: origin.y, z: origin.z };
+      const d: Vec3 = { x: shotDir.x, y: shotDir.y, z: shotDir.z };
+      let wallT = spec.range;
+      for (const b of boxes) {
+        const t = rayAabb(o, d, b);
+        if (t !== null && t > 0 && t < wallT) wallT = t;
+      }
+      if (rays.length === 0) primaryEnd = origin.clone().addScaledVector(shotDir, wallT);
+      rays.push({ dir: d, maxDist: wallT });
+      for (const target of targets) {
+        const t = rayAabb(o, d, target.bounds);
+        if (t === null || t <= 0 || t >= wallT) continue;
+        const hitY = origin.y + shotDir.y * t;
+        hits.push({
+          target,
+          t,
+          hitY,
+          headshot: hitY >= target.headshotY,
+          point: origin.clone().addScaledVector(shotDir, t),
+        });
+      }
+      this.spawnBeam((beamOrigin ?? origin).clone(), origin.clone().addScaledVector(shotDir, wallT), scene, this.beamCore, this.beamHelix);
     }
     hits.sort((a, b) => a.t - b.t);
-
-    const end = origin.clone().addScaledVector(dir, wallT);
-    // The player's OWN beam uses their equipped rail colors.
-    this.spawnBeam((beamOrigin ?? origin).clone(), end, scene, this.beamCore, this.beamHelix);
-
-    return { hits, end };
+    return { hits, end: primaryEnd, rays };
   }
 
-  // Draw a standalone rail trail (no cooldown / hit logic). Used for bot shots
-  // so enemy fire is visible without going through the player's weapon state.
-  // Colors default to the stock rail (enemy beams), or the player's equipped
-  // colors when fire() passes them.
   spawnBeam(
     origin: THREE.Vector3,
     end: THREE.Vector3,
@@ -211,7 +235,7 @@ export class Railgun {
     core: number = RAIL_CORE_COLOR,
     helix: number = RAIL_HELIX_COLOR,
   ) {
-    const beam = buildRailBeam(origin.clone(), end.clone(), core, helix);
+    const beam = buildBeam(origin.clone(), end.clone(), core, helix);
     scene.add(beam.group);
     this.beams.push(beam);
   }

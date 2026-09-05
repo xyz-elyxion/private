@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { RailgunFinish } from './cosmetics';
+import type { WeaponType } from './constants';
 
 // Procedural railgun (no external asset — matches the game's all-procedural art
 // pipeline). Built pointing down -Z (the camera's forward), grip near the
@@ -129,6 +130,62 @@ export function buildRailgun(finish?: RailgunFinish): RailgunModel {
   return { group, muzzle, glow };
 }
 
+// Small procedural overlays that give each gameplay weapon a readable silhouette
+// without introducing external assets. The shared railgun body remains the
+// fallback, while the additions distinguish the five selectable weapons in the
+// first-person viewmodel.
+export function buildWeapon(type: WeaponType, finish?: RailgunFinish): RailgunModel {
+  if (type === 'railgun') return buildRailgun(finish);
+
+  const group = new THREE.Group();
+  const metal = new THREE.MeshStandardMaterial({ color: 0x303846, metalness: 0.82, roughness: 0.32 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x171b22, metalness: 0.7, roughness: 0.4 });
+  const glow = new THREE.MeshStandardMaterial({
+    color: 0x67e8f9,
+    emissive: 0x67e8f9,
+    emissiveIntensity: 1.2,
+    metalness: 0.25,
+    roughness: 0.25,
+  });
+  const add = (geometry: THREE.BufferGeometry, material: THREE.Material, position: [number, number, number], rotation?: [number, number, number]) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(...position);
+    if (rotation) mesh.rotation.set(...rotation);
+    group.add(mesh);
+  };
+  // Shared receiver and grip; each weapon adds its own barrel/profile below.
+  add(new THREE.BoxGeometry(0.18, 0.16, 0.38), dark, [0, 0, 0.08]);
+  add(new THREE.BoxGeometry(0.1, 0.28, 0.13), dark, [0, -0.2, 0.1], [0.2, 0, 0]);
+  switch (type) {
+    case 'sniper':
+      add(new THREE.BoxGeometry(0.2, 0.11, 0.52), metal, [0, 0.05, -0.35]);
+      add(new THREE.CylinderGeometry(0.04, 0.04, 0.95, 10), metal, [0, 0.06, -1.0], [Math.PI / 2, 0, 0]);
+      add(new THREE.CylinderGeometry(0.065, 0.065, 0.2, 10), glow, [0, 0.11, -0.58], [Math.PI / 2, 0, 0]);
+      break;
+    case 'shotgun':
+      add(new THREE.CylinderGeometry(0.1, 0.1, 0.78, 10), metal, [0, 0.02, -0.48], [Math.PI / 2, 0, 0]);
+      add(new THREE.CylinderGeometry(0.12, 0.12, 0.08, 12), glow, [0, 0.02, -0.9], [Math.PI / 2, 0, 0]);
+      add(new THREE.BoxGeometry(0.24, 0.09, 0.4), dark, [0, -0.03, -0.42]);
+      break;
+    case 'smg':
+      add(new THREE.BoxGeometry(0.16, 0.14, 0.42), metal, [0, 0.04, -0.3]);
+      add(new THREE.CylinderGeometry(0.045, 0.045, 0.36, 8), metal, [0, 0.05, -0.68], [Math.PI / 2, 0, 0]);
+      add(new THREE.BoxGeometry(0.13, 0.23, 0.12), dark, [0, -0.2, -0.2], [0.15, 0, 0]);
+      add(new THREE.BoxGeometry(0.19, 0.06, 0.18), glow, [0, 0.14, -0.25]);
+      break;
+    case 'assault':
+      add(new THREE.BoxGeometry(0.18, 0.18, 0.5), metal, [0, 0.03, -0.32]);
+      add(new THREE.CylinderGeometry(0.045, 0.05, 0.58, 8), metal, [0, 0.05, -0.78], [Math.PI / 2, 0, 0]);
+      add(new THREE.BoxGeometry(0.13, 0.24, 0.14), dark, [0, -0.2, -0.22], [0.18, 0, 0]);
+      add(new THREE.BoxGeometry(0.2, 0.06, 0.22), glow, [0, 0.15, -0.27]);
+      break;
+  }
+  const muzzle = new THREE.Object3D();
+  muzzle.position.set(0, 0.03, type === 'sniper' ? -1.5 : type === 'shotgun' ? -0.96 : type === 'assault' ? -1.06 : -0.88);
+  group.add(muzzle);
+  return { group, muzzle, glow };
+}
+
 // Third-person attach. Seats the railgun in the soldier's right hand so it
 // tracks the hand through idle/walk/run instead of floating at the hip. The
 // hand bone's local frame is offset/rotated, so the constants below were tuned
@@ -136,12 +193,13 @@ export function buildRailgun(finish?: RailgunFinish): RailgunModel {
 // back to a fixed body offset if the rig has no recognisable hand bone.
 const HAND_BONE_CANDIDATES = ['mixamorig:RightHand', 'RightHand', 'Hand.R', 'mixamorigRightHand'];
 
-export function attachRailgunToSoldier(
+export function attachWeaponToSoldier(
   root: THREE.Object3D,
   height = 1.8,
+  type: WeaponType = 'railgun',
   finish?: RailgunFinish,
 ): THREE.Group {
-  const { group } = buildRailgun(finish);
+  const { group } = buildWeapon(type, finish);
 
   let hand: THREE.Object3D | null = null;
   for (const name of HAND_BONE_CANDIDATES) {
@@ -151,11 +209,9 @@ export function attachRailgunToSoldier(
 
   if (hand) {
     // soldier.glb's right-hand bone lives in a cm-scaled, rotated local frame
-    // (world scale ~0.01). These constants — tuned in that bone space — seat the
-    // grip in the palm with the barrel pointing forward and slightly down, a
-    // relaxed "railgun at the ready" carry. The gun then tracks the hand through
-    // idle/walk/run instead of floating beside the body. localScale 60 → ~0.6
-    // world units → a ~0.57 m gun on the 1.8 m soldier.
+    // (world scale ~0.01). These constants seat each weapon in the palm with
+    // the barrel pointing forward and slightly down. localScale 60 → ~0.6
+    // world units → a roughly human-sized weapon on the 1.8m soldier.
     group.scale.setScalar(60);
     group.position.set(-2.317, -4.008, 10.329);
     group.rotation.set(2.469, 0.423, -0.021);
@@ -167,6 +223,15 @@ export function attachRailgunToSoldier(
     root.add(group);
   }
   return group;
+}
+
+// Backwards-compatible name for remote players and older preview callers.
+export function attachRailgunToSoldier(
+  root: THREE.Object3D,
+  height = 1.8,
+  finish?: RailgunFinish,
+): THREE.Group {
+  return attachWeaponToSoldier(root, height, 'railgun', finish);
 }
 
 // The soldier's idle/walk/run clips swing the arms freely, so a hand-attached
