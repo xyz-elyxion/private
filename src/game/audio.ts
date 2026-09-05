@@ -28,13 +28,29 @@ export type SoundClipName =
 // of generated clips under /sounds/elyxion/announcer/<id>/<clip>.mp3 (see
 // scripts/gen-announcers.mjs). Only ANNOUNCER_CLIPS are pack-swappable; weapon SFX
 // (fire/hit/kill/reload-ready) always use SOUND_URLS.
-export type AnnouncerPackId = 'legacy' | 'kuon';
+export type AnnouncerPackId = 'legacy' | 'memes';
 export type AnnouncerPack = { id: AnnouncerPackId; name: string; blurb: string };
 export const ANNOUNCER_PACKS: ReadonlyArray<AnnouncerPack> = [
   { id: 'legacy', name: 'Classic', blurb: 'Original deep-voice announcer' },
-  { id: 'kuon', name: 'Kuon (Anime)', blurb: 'Cheerful Japanese anime VO' },
+  { id: 'memes', name: 'Memes', blurb: 'Unhinged meme callouts for your killstreaks' },
 ];
 export const DEFAULT_ANNOUNCER_PACK: AnnouncerPackId = 'legacy';
+
+// The meme pack contains one fixed MP3 for these events. Other announcer events
+// fall back to the Classic file/TTS when no meme clip was supplied.
+const MEME_CLIPS: ReadonlySet<SoundClipName> = new Set<SoundClipName>([
+  'double-kill',
+  'triple-kill',
+  'quad-kill',
+  'penta-kill',
+  'killing-spree',
+  'rampage',
+  'dominating',
+  'unstoppable',
+  'godlike',
+  'headshot',
+  'humiliation',
+]);
 
 // User-supplied .ogg files override the procedural / TTS fallback when present.
 // Drop CC-licensed clips at these public/ paths. See plan §6.
@@ -160,8 +176,10 @@ export class SoundManager {
     this.initVoice();
   }
 
-  // URL of one announcer line variant (1-indexed) for the active pack.
+  // URL of one announcer clip for the active pack. Meme clips use the exact
+  // event filename; generated packs (if added later) can use numbered variants.
   private announcerVariantUrl(name: SoundClipName, idx: number): string {
+    if (this.pack === 'memes') return `/sounds/elyxion/announcer/memes/${name}.mp3`;
     return `/sounds/elyxion/announcer/${this.pack}/${name}_${idx}.mp3`;
   }
 
@@ -187,7 +205,9 @@ export class SoundManager {
   private preloadPack() {
     if (!this.ctx || this.pack === 'legacy') return;
     for (const name of ANNOUNCER_CLIPS) {
-      const count = announcerVariantCount(this.pack, name);
+      const count = this.pack === 'memes'
+        ? (MEME_CLIPS.has(name) ? 1 : 0)
+        : announcerVariantCount(this.pack, name);
       for (let i = 1; i <= count; i++) void this.loadClip(this.announcerVariantUrl(name, i)).catch(() => {});
     }
   }
@@ -217,8 +237,13 @@ export class SoundManager {
     if (isAnnouncer && !this.announcerEnabled) return;
     const bus = (isAnnouncer ? this.announcerBus : this.sfxBus) ?? this.master;
     // Pack announcer clips have N line variants → pick one (no immediate repeat);
-    // everything else (legacy announcer, SFX) uses the flat SOUND_URLS file.
-    const variants = isAnnouncer ? announcerVariantCount(this.pack, name) : 0;
+    // the fixed meme clips count as one variant. Everything else (Classic
+    // announcer, SFX, or a meme event without a supplied file) uses SOUND_URLS.
+    const variants = isAnnouncer
+      ? this.pack === 'memes'
+        ? (MEME_CLIPS.has(name) ? 1 : 0)
+        : announcerVariantCount(this.pack, name)
+      : 0;
     const url = variants > 0 ? this.announcerVariantUrl(name, this.pickVariant(name, variants)) : SOUND_URLS[name];
     const buf = url ? this.buffers.get(url) : undefined;
     if (buf) {

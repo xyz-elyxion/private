@@ -234,6 +234,8 @@ function decodeSettings(code: string): Settings | null {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      // Removed announcer packs reset old saved/share-code selections to Classic.
+      announcerPack: parsed.announcerPack === 'memes' ? 'memes' : DEFAULT_ANNOUNCER_PACK,
       abilityType: normalizeAbilityType(parsed.abilityType),
       crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
       keybinds,
@@ -719,6 +721,9 @@ function loadSettings(): Settings {
       keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
       viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
     };
+    // Removed announcer packs use Classic, while the new meme
+    // pack remains valid and selectable.
+    merged.announcerPack = merged.announcerPack === 'memes' ? 'memes' : DEFAULT_ANNOUNCER_PACK;
     merged.abilityType = normalizeAbilityType(merged.abilityType);
     // Migrate legacy sensitivity: the old model stored radians/pixel (~0.0022).
     // Anything below the new minimum is a legacy value → convert to the

@@ -19,13 +19,10 @@ Announcer voices — default "legacy" pack (public/sounds/elyxion/)
   Full credits + the CC-BY-SA share-alike note:
   public/sounds/elyxion/README.md
 
-Announcer voices — "kuon" pack (public/sounds/elyxion/announcer/kuon/)
-  Generated with ElevenLabs text-to-speech. This audio is NOT licensed under
-  the AGPL and is NOT placed under any open license by this repository. It is
-  included for use with the canonical deployment; its use and redistribution
-  are subject to ElevenLabs' terms and the deployer's ElevenLabs license. If
-  you fork this project, remove these files or replace them with audio you are
-  licensed to distribute — the game falls back gracefully when they are absent.
+Announcer voices — "memes" pack (public/sounds/elyxion/announcer/memes/)
+  User-supplied meme audio. These files are NOT licensed under the AGPL by this
+  repository. Their use and redistribution remain the responsibility of the
+  asset owner; replace them if you do not have permission to distribute them.
 ────────────────────────────────────────────────────────────────────────────
 
 If you redistribute Elyxion (source or a running service), keep this

@@ -454,7 +454,7 @@ export function titleGrantsFrom(stats: TitleStats): string[] {
 // Settings → Audio). They're registered here ONLY for ownership/unlock gating, so
 // they ride the same machinery as every other cosmetic: admins auto-own all of
 // them, and non-admins unlock by level (or credits). The default 'legacy' pack is
-// free; 'kuon' is level-gated. Cosmetic id = `announcer.<packId>`.
+// free; the meme pack is level-gated. Cosmetic id = `announcer.<packId>`.
 type AnnouncerPackCosmetic = {
   id: string;
   name: string;
@@ -464,7 +464,7 @@ type AnnouncerPackCosmetic = {
 };
 const ANNOUNCER_PACK_COSMETICS: readonly AnnouncerPackCosmetic[] = [
   { id: 'announcer.legacy', name: 'Classic',      blurb: 'The original deep-voice announcer.',                                  rarity: 'common', source: { type: 'default' } },
-  { id: 'announcer.kuon',   name: 'Kuon (Anime)', blurb: 'A cheerful Japanese-anime announcer — hype, variety, encouragement.', rarity: 'epic',   source: { type: 'level', level: 5 } },
+  { id: 'announcer.memes',  name: 'Memes',       blurb: 'Unhinged meme callouts for your killstreaks.',                       rarity: 'epic',   source: { type: 'level', level: 5 } },
 ];
 export function announcerPackCosmeticId(packId: string): string {
   return `announcer.${packId}`;
