@@ -668,6 +668,11 @@ export class NetClient {
     this.send({ type: 'bodyguard' });
   }
 
+  sendAdminBodyguards() {
+    if (this.spectate || !this.localAdmin) return;
+    this.send({ type: 'admin-bodyguards' });
+  }
+
   setLocalCrosshair(code: string): void {
     this.localCrosshair = code;
     this.send({ type: 'crosshair', code });

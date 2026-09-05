@@ -5,6 +5,7 @@ import './index.css';
 import Landing from './pages/Landing';
 import SupportPage from './pages/SupportPage';
 import CommunityPage from './pages/CommunityPage';
+import Loader from './Loader';
 
 // Code-split the game client: it drags in the whole Three.js engine (~1MB), and
 // the landing page shouldn't pay for that on first paint. The /play route loads
@@ -20,19 +21,8 @@ const ReplayEditorPage = lazy(() => import('./pages/ReplayEditorPage'));
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
 const Loading = () => (
-  <div
-    style={{
-      position: 'fixed',
-      inset: 0,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: '#0a0a0b',
-      color: '#6b7280',
-      fontFamily: 'system-ui, sans-serif',
-    }}
-  >
-    Loading…
+  <div className='fixed inset-0 flex items-center justify-center overflow-hidden bg-[#e5e7eb]'>
+    <Loader />
   </div>
 );
 

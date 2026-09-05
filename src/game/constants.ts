@@ -90,13 +90,14 @@ export const BOOST_COOLDOWN = 0.3;
 export const TELEPORT_COOLDOWN = 8;
 export const TELEPORT_RANGE = 14;
 export const BODYGUARD_COOLDOWN = 28;
+export const ADMIN_BODYGUARD_COOLDOWN = 28;
 export const BODYGUARD_DURATION = 18;
 export const BODYGUARD_DAMAGE = 12;
 export const BODYGUARD_FIRE_COOLDOWN = 0.8;
 export const BODYGUARD_RANGE = 36;
 export const BODYGUARD_SPEED = 7;
 
-export type AbilityType = 'teleport' | 'bodyguard';
+export type AbilityType = 'teleport' | 'bodyguard' | 'admin-bodyguards';
 export type AbilitySpec = {
   id: AbilityType;
   label: string;
@@ -107,6 +108,7 @@ export const DEFAULT_ABILITY: AbilityType = 'bodyguard';
 export const ABILITY_SPECS: Readonly<Record<AbilityType, AbilitySpec>> = {
   teleport: { id: 'teleport', label: 'Teleport', blurb: 'Blink forward through open space.', cooldown: TELEPORT_COOLDOWN },
   bodyguard: { id: 'bodyguard', label: 'Bodyguard', blurb: 'Summon an allied fighter to cover you.', cooldown: BODYGUARD_COOLDOWN },
+  'admin-bodyguards': { id: 'admin-bodyguards', label: 'Admin Bodyguards', blurb: 'Deploy ten allied bodyguards. Admins only.', cooldown: ADMIN_BODYGUARD_COOLDOWN },
 };
 export function abilitySpec(type: string | undefined): AbilitySpec {
   return ABILITY_SPECS[(type as AbilityType) ?? DEFAULT_ABILITY] ?? ABILITY_SPECS[DEFAULT_ABILITY];
@@ -152,9 +154,9 @@ export const RAIL_BEAM_DURATION = 0.9;
 export const RAIL_RANGE = 200;
 // Rail trail geometry (Q3 CG_RailTrail: a bright solid core + a colored
 // helix spiralling around it). Scaled to our metric world.
-export const RAIL_CORE_RADIUS = 0.035; // solid inner beam thickness
-export const RAIL_GLOW_RADIUS = 0.11; // soft additive glow around the core
-export const RAIL_HELIX_RADIUS = 0.17; // spiral offset from the axis
+export const RAIL_CORE_RADIUS = 0.06; // solid inner beam thickness
+export const RAIL_GLOW_RADIUS = 0.2; // soft additive glow around the core
+export const RAIL_HELIX_RADIUS = 0.24; // spiral offset from the axis
 export const RAIL_HELIX_TURN_LEN = 0.7; // metres of beam per full spiral turn
 export const RAIL_CORE_COLOR = 0xd6f4ff; // near-white cyan core
 export const RAIL_HELIX_COLOR = 0x37a6ff; // blue spiral

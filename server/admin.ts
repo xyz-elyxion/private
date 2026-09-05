@@ -43,9 +43,17 @@ import {
   TICKET_STATUSES,
   addTicketReply,
   getTicket,
+  issueViolation,
+  listViolations,
+  reviewViolationAppeal,
+  setViolationStatus,
+  violationCounts,
   type AccountInfo,
   type FeedbackStatus,
   type TicketStatus,
+  type ViolationAppealStatus,
+  type ViolationSeverity,
+  type ViolationStatus,
 } from './db';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 import {
@@ -451,6 +459,108 @@ adminRouter.post('/support/tickets/:id/reply', (req, res) => {
     ip: req.ip,
   });
   res.json({ ok: true, id, replyId });
+});
+
+// ── Violations / warnings (admin side) ─────────────────────────────────────
+// The list is readable with either admin session or read-only API token. Issuing,
+// dismissing, and reviewing appeals require a real admin session.
+adminRouter.get('/violations', (req, res) => {
+  const limit = parseInt(String(req.query.limit ?? ''), 10);
+  const rows = listViolations({ limit: Number.isFinite(limit) && limit > 0 ? limit : 100 });
+  res.json({ violations: rows, counts: violationCounts() });
+});
+
+adminRouter.post('/violations', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const username = cleanUsername(body.username);
+  const guest = cleanGuestId(body.guest);
+  const playerId = cleanUsername(body.playerId);
+  const reason = cleanUsername(body.reason).slice(0, 500);
+  const severity = body.severity === 'strike' ? 'strike' : body.severity === 'warning' ? 'warning' : '';
+  const durationMs =
+    typeof body.durationMs === 'number' && Number.isFinite(body.durationMs) && body.durationMs > 0
+      ? Math.min(Math.floor(body.durationMs), 10 * 365 * 86_400_000)
+      : 0;
+  if ((!username && !guest && !playerId) || !reason || !severity) {
+    res.status(400).json({ error: 'bad_violation' });
+    return;
+  }
+  let targetId = playerId;
+  let targetName = username || 'Guest';
+  if (username) {
+    const target = findAccountByName(username.toLowerCase());
+    if (!target) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    targetId = target.id;
+    targetName = target.username;
+  } else if (guest) {
+    targetId = guest;
+  }
+  if (!targetId) {
+    res.status(400).json({ error: 'bad_target' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  const now = Date.now();
+  const id = issueViolation({
+    playerId: targetId,
+    playerName: targetName,
+    severity: severity as ViolationSeverity,
+    reason,
+    issuedBy: admin.username,
+    expiresAt: durationMs > 0 ? now + durationMs : 0,
+    now,
+  });
+  if (!id) {
+    res.status(500).json({ error: 'server_error' });
+    return;
+  }
+  logEvent({
+    event: 'admin.violation_issue',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId,
+    detail: { violationId: id, playerName: targetName, severity, reason, durationMs },
+    ip: req.ip,
+  });
+  res.json({ ok: true, id, severity, playerId: targetId, playerName: targetName });
+});
+
+adminRouter.post('/violations/:id/status', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  const status = (req.body as Record<string, unknown> | undefined)?.status;
+  if (!Number.isFinite(id) || id <= 0 || (status !== 'active' && status !== 'dismissed')) {
+    res.status(400).json({ error: 'bad_status' });
+    return;
+  }
+  if (!setViolationStatus(id, status as ViolationStatus)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({ event: 'admin.violation_status', actorId: admin.id, actorName: admin.username, targetId: String(id), detail: { status }, ip: req.ip });
+  res.json({ ok: true, id, status });
+});
+
+adminRouter.post('/violations/:id/appeal', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  const appealStatus = (req.body as Record<string, unknown> | undefined)?.status;
+  if (!Number.isFinite(id) || id <= 0 || (appealStatus !== 'approved' && appealStatus !== 'denied')) {
+    res.status(400).json({ error: 'bad_appeal_status' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  if (!reviewViolationAppeal(id, appealStatus as Exclude<ViolationAppealStatus, 'none' | 'pending'>, admin.username)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  logEvent({ event: `admin.violation_appeal_${appealStatus}`, actorId: admin.id, actorName: admin.username, targetId: String(id), detail: { status: appealStatus }, ip: req.ip });
+  res.json({ ok: true, id, appealStatus });
 });
 
 // ── Community chat (admin side) ────────────────────────────────────────────

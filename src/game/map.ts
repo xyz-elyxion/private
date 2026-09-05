@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { installArenaShader } from './renderer';
 import { getArenaTextures } from './textures';
 import type { AABB, Vec3 } from './types';
 
@@ -54,6 +55,7 @@ const LOUNGE: ArenaMap = (() => {
     boxes,
     spawn: { x: 0, y: 0.05, z: 16 },
     bounds: { min: { x: -30, y: -1, z: -22 }, max: { x: 30, y: 20, z: 22 } },
+    openTop: true,
   };
 })();
 
@@ -95,6 +97,7 @@ const CAUSEWAY: ArenaMap = (() => {
     boxes,
     spawn: { x: 0, y: 0.05, z: 19 },
     bounds: { min: { x: -35, y: -1, z: -25 }, max: { x: 35, y: 22, z: 25 } },
+    openTop: true,
   };
 })();
 
@@ -143,6 +146,7 @@ const REACTOR: ArenaMap = (() => {
     boxes,
     spawn: { x: -30, y: 0.05, z: 0 },
     bounds: { min: { x: -40, y: -1, z: -28 }, max: { x: 40, y: 24, z: 28 } },
+    openTop: true,
   };
 })();
 
@@ -377,12 +381,12 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
       roughness,
       metalness,
     });
-  const matWall = surfaceMat(tex.wall, 0.8, 0.1);
-  const matFloor = surfaceMat(tex.floor, 0.9, 0.05);
+  const matWall = installArenaShader(surfaceMat(tex.wall, 0.8, 0.1), 0x67d8ff);
+  const matFloor = installArenaShader(surfaceMat(tex.floor, 0.9, 0.05), 0x4ab8ff);
   const matCeiling = new THREE.MeshStandardMaterial({ color: 0x2c333f, roughness: 0.95 });
-  const matPlatform = surfaceMat(tex.platform, 0.55, 0.2);
-  const matCover = surfaceMat(tex.cover, 0.7, 0.1);
-  const matTower = surfaceMat(tex.tower, 0.7, 0.15);
+  const matPlatform = installArenaShader(surfaceMat(tex.platform, 0.55, 0.2), 0x8be8ff);
+  const matCover = installArenaShader(surfaceMat(tex.cover, 0.7, 0.1), 0xff9b52);
+  const matTower = installArenaShader(surfaceMat(tex.tower, 0.7, 0.15), 0xb68cff);
   for (let i = 0; i < map.boxes.length; i++) {
     // Open-air arenas keep the ceiling for collision but don't draw it, so the
     // skybox shows overhead.

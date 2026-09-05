@@ -305,18 +305,31 @@ export class InputManager {
   };
 
   private onMousedown = (e: MouseEvent) => {
-    if (!this.locked || this.chatting) return;
-    if (e.button === 0) this.state.fire = true;
-    else if (e.button === 2) {
+    if (this.chatting) return;
+    if (e.button === 2) {
+      e.preventDefault();
+      // Let the first RMB both capture the pointer and queue the ability. The
+      // old locked-only guard discarded this click because pointer lock is
+      // granted after mousedown, making RMB appear broken in local bot matches.
+      this.boostQueued = true;
+      if (!this.locked) {
+        this.requestLock();
+        return;
+      }
       this.state.boost = true;
-      this.boostQueued = true; // RMB → the equipped ability
+      return;
     }
+    if (!this.locked) return;
+    if (e.button === 0) this.state.fire = true;
   };
 
   private onMouseup = (e: MouseEvent) => {
     if (this.chatting) return;
     if (e.button === 0) this.state.fire = false;
-    else if (e.button === 2) this.state.boost = false;
+    else if (e.button === 2) {
+      e.preventDefault();
+      this.state.boost = false;
+    }
   };
 
   // Suppress the browser context menu so RMB is a clean game input.

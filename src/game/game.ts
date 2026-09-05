@@ -13,6 +13,7 @@ import {
   DEFAULT_ABILITY,
   BANNER_DURATION_SEC,
   BODYGUARD_COOLDOWN,
+  ADMIN_BODYGUARD_COOLDOWN,
   BODYGUARD_DURATION,
   BOT_HEADSHOT_THRESHOLD,
   MAX_HEALTH,
@@ -122,7 +123,7 @@ const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
 
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
-import { createCamera, createRenderer, createScene } from './renderer';
+import { createCamera, createRenderer, createScene, updateSceneShaders } from './renderer';
 import { buildWeapon } from './weapon-model';
 import type {
   AABB,
@@ -277,6 +278,7 @@ export class Game {
   private playerShotsHit = 0;
   private teleportCooldown = 0;
   private bodyguardCooldown = 0;
+  private adminBodyguardCooldown = 0;
   private bodyguardTimer = 0;
   private botDeathCounts = new Map<string, number>();
   private botFrags = new Map<string, number>();
@@ -678,7 +680,9 @@ export class Game {
   }
 
   setAbility(type: AbilityType) {
-    this.abilityType = type === 'teleport' || type === 'bodyguard' ? type : DEFAULT_ABILITY;
+    this.abilityType = type === 'teleport' || type === 'bodyguard' || type === 'admin-bodyguards'
+      ? type
+      : DEFAULT_ABILITY;
     this.net?.setLocalAbility(this.abilityType);
     this.emitHud();
   }
@@ -1831,12 +1835,25 @@ export class Game {
     }
     if (this.teleportCooldown > 0) this.teleportCooldown = Math.max(0, this.teleportCooldown - dt);
     if (this.bodyguardCooldown > 0) this.bodyguardCooldown = Math.max(0, this.bodyguardCooldown - dt);
+    if (this.adminBodyguardCooldown > 0) this.adminBodyguardCooldown = Math.max(0, this.adminBodyguardCooldown - dt);
 
     if (!dead && !this.inCountdown && input.boostPressed) {
       if (this.abilityType === 'teleport') this.activateTeleport();
       else if (this.abilityType === 'bodyguard') {
         if (this.net) this.net.sendBodyguard();
         else this.summonBodyguard();
+      } else if (this.abilityType === 'admin-bodyguards' && this.net?.localAdmin && this.adminBodyguardCooldown <= 0) {
+        this.net.sendAdminBodyguards();
+        this.adminBodyguardCooldown = ADMIN_BODYGUARD_COOLDOWN;
+        this.banner = {
+          id: this.nextEventId++,
+          tier: 'special',
+          title: 'ADMIN DEPLOYMENT',
+          subtitle: '10 bodyguards incoming',
+          remaining: BANNER_DURATION_SEC,
+          total: BANNER_DURATION_SEC,
+        };
+        this.emitHud();
       }
     }
 
@@ -2061,7 +2078,7 @@ export class Game {
     const targets: RailTarget[] = [];
     const bots = this.bots?.bots ?? [];
     for (const b of bots) {
-      if (!b.state.alive || b.state.bodyguard) continue;
+      if (!b.state.alive || b.state.bodyguard) continue; // the owner cannot damage their ally
       // TDM: can't hit teammates (friendly fire off) — leave them off the raycast.
       if (this.localTeam != null && b.getTeam() === this.localTeam) continue;
       targets.push({
@@ -2202,6 +2219,20 @@ export class Game {
       this.audio.play(hit.headshot ? 'headshot' : 'hit', 0.45);
       if (bot.state.health > 0) continue;
 
+      if (bot.state.bodyguard) {
+        this.bodyguardTimer = 0;
+        this.bots?.dismissBodyguard(this.scene);
+        this.banner = {
+          id: this.nextEventId++,
+          tier: 'special',
+          title: 'BODYGUARD LOST',
+          subtitle: 'your ally was eliminated',
+          remaining: BANNER_DURATION_SEC,
+          total: BANNER_DURATION_SEC,
+        };
+        this.emitHud();
+        continue;
+      }
       anyKill = true;
       if (!firstKillName) firstKillName = hit.target.name;
       const midAir = this.fireWasAirborne;
@@ -2212,7 +2243,12 @@ export class Game {
         this.killEffectStyle,
       );
       killedBots.add(bot.state.id);
-      bot.kill();
+      if (bot.state.bodyguard) {
+        this.bodyguardTimer = 0;
+        this.bots?.dismissBodyguard(this.scene);
+      } else {
+        bot.kill();
+      }
       this.recorder.logKill({
         killerId: 'you',
         victimId: bot.state.id,
@@ -2320,7 +2356,8 @@ export class Game {
     }
     if (this.bots) {
       for (const b of this.bots.bots) {
-        if (!b.state.alive || b.state.id === intent.botId || b.state.bodyguard) continue;
+        if (!b.state.alive || b.state.id === intent.botId) continue;
+        if (intent.botId === 'bodyguard' && b.state.bodyguard) continue;
         if (intent.team != null && b.getTeam() === intent.team) continue; // teammate — friendly fire off
         const t = rayAabb(o, d, b.bounds());
         if (t !== null && t > 0 && t < bestT) {
@@ -2393,6 +2430,20 @@ export class Game {
       );
       this.audio.play(victimHeadshot ? 'headshot' : 'hit', 0.45);
       if (victim.state.health > 0) return;
+      if (victim.state.bodyguard) {
+        this.bodyguardTimer = 0;
+        this.bots?.dismissBodyguard(this.scene);
+        this.banner = {
+          id: this.nextEventId++,
+          tier: 'special',
+          title: 'BODYGUARD LOST',
+          subtitle: 'your ally was eliminated',
+          remaining: BANNER_DURATION_SEC,
+          total: BANNER_DURATION_SEC,
+        };
+        this.emitHud();
+        return;
+      }
       this.claimFirstBlood();
       this.recorder.logKill({
         killerId: intent.botId,
@@ -2406,7 +2457,12 @@ export class Game {
         false,
         DEFAULT_KILL_EFFECT,
       );
-      victim.kill();
+      if (victim.state.bodyguard) {
+        this.bodyguardTimer = 0;
+        this.bots?.dismissBodyguard(this.scene);
+      } else {
+        victim.kill();
+      }
       this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
       this.pushKillfeed({
         killer: intent.botName,
@@ -3173,7 +3229,7 @@ export class Game {
           // convention so one heading formula draws every arrow correctly.
           yaw: b.getFacing() + Math.PI,
           team: b.getTeam(),
-          kind: 'bot',
+          kind: b.state.bodyguard ? 'bodyguard' : 'bot',
         });
       }
     }      const minimap: MinimapState = {
@@ -3197,18 +3253,21 @@ export class Game {
       abilityReady:
         this.abilityType === 'teleport'
           ? this.teleportCooldown <= 0
-          : this.net
-            ? this.bodyguardCooldown <= 0 && !this.net.bodyguardActive()
-            : this.bodyguardCooldown <= 0 && this.bots?.bodyguard() == null,
+          : this.abilityType === 'admin-bodyguards'
+            ? !!this.net?.localAdmin && !!this.net && !this.spectator && this.adminBodyguardCooldown <= 0
+            : this.net
+              ? this.bodyguardCooldown <= 0 && !this.net.bodyguardActive()
+              : this.bodyguardCooldown <= 0 && this.bots?.bodyguard() == null,
       abilityType: this.abilityType,
       abilityCooldown: this.abilityType === 'teleport'
         ? this.teleportCooldown
-        : this.net
+        : this.abilityType === 'bodyguard'
           ? this.bodyguardCooldown
-          : this.bodyguardCooldown,
+          : this.adminBodyguardCooldown,
       abilityActive: this.abilityType === 'bodyguard' && (
         this.net ? this.net.bodyguardActive() : this.bodyguardTimer > 0 && this.bots?.bodyguard() != null
       ),
+      admin: this.net?.localAdmin ?? false,
       speed,
       locked: this.locked,
       currentStreak: this.medals.currentStreak,
@@ -3480,6 +3539,7 @@ export class Game {
       this.tmpForward.x, this.tmpForward.y, this.tmpForward.z,
       0, 1, 0,
     );
+    updateSceneShaders(this.scene, this.elapsed);
     this.renderer.render(this.scene, this.camera);
   }
 

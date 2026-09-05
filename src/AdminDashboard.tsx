@@ -292,7 +292,7 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat' | 'support' | 'community' | 'announcements';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'violations' | 'anticheat' | 'support' | 'community' | 'announcements';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
@@ -300,6 +300,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'matches', label: 'Matches' },
   { id: 'players', label: 'Players' },
   { id: 'feedback', label: 'Feedback' },
+  { id: 'violations', label: 'Violations' },
   { id: 'anticheat', label: 'Anticheat' },
   { id: 'support', label: 'Support' },
   { id: 'community', label: 'Community' },
@@ -1707,6 +1708,142 @@ function FeedbackTab() {
   );
 }
 
+// ── Tab: Violations / warnings ──────────────────────────────────────────────
+type ViolationRow = {
+  id: number;
+  createdAt: number;
+  updatedAt: number;
+  playerId: string;
+  playerName: string;
+  severity: 'warning' | 'strike';
+  reason: string;
+  issuedBy: string;
+  status: 'active' | 'dismissed';
+  expiresAt: number;
+  appealStatus: 'none' | 'pending' | 'approved' | 'denied';
+  appealText: string;
+  appealedAt: number;
+  reviewedBy: string;
+  reviewedAt: number;
+};
+
+type ViolationCounts = { active: number; dismissed: number; pendingAppeals: number };
+const VIOLATION_DURATIONS = [
+  { label: 'Permanent', ms: 0 },
+  { label: '1 day', ms: 86_400_000 },
+  { label: '7 days', ms: 7 * 86_400_000 },
+  { label: '30 days', ms: 30 * 86_400_000 },
+];
+const violationStatusLabel: Record<string, string> = {
+  none: 'No appeal', pending: 'Appeal pending', approved: 'Appeal approved', denied: 'Appeal denied',
+};
+
+function ViolationsTab() {
+  const [rows, setRows] = useState<ViolationRow[]>([]);
+  const [counts, setCounts] = useState<ViolationCounts>({ active: 0, dismissed: 0, pendingAppeals: 0 });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [username, setUsername] = useState('');
+  const [guest, setGuest] = useState('');
+  const [severity, setSeverity] = useState<'warning' | 'strike'>('warning');
+  const [reason, setReason] = useState('');
+  const [durationMs, setDurationMs] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const d = await getJSON<{ violations: ViolationRow[]; counts: ViolationCounts }>('/api/admin/violations?limit=200');
+    setRows(d?.violations ?? []);
+    if (d?.counts) setCounts(d.counts);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const issue = async () => {
+    if (busy || !reason.trim() || (!username.trim() && !guest.trim())) return;
+    setBusy(true);
+    setError(null);
+    const d = await postJSON<{ ok: boolean }>('/api/admin/violations', {
+      ...(username.trim() ? { username: username.trim() } : { guest: guest.trim().toLowerCase() }),
+      severity,
+      reason: reason.trim(),
+      durationMs,
+    });
+    if (!d?.ok) {
+      setError('Could not issue violation. Use an existing username or a valid guest id, and make sure you are logged in as an admin.');
+    } else {
+      setUsername('');
+      setGuest('');
+      setReason('');
+      await load();
+    }
+    setBusy(false);
+  };
+
+  const updateStatus = async (id: number, status: 'active' | 'dismissed') => {
+    const d = await postJSON<{ ok: boolean }>(`/api/admin/violations/${id}/status`, { status });
+    if (!d?.ok) setError('Status update failed — moderation needs an admin session login.');
+    else await load();
+  };
+
+  const reviewAppeal = async (id: number, status: 'approved' | 'denied') => {
+    const d = await postJSON<{ ok: boolean }>(`/api/admin/violations/${id}/appeal`, { status });
+    if (!d?.ok) setError('Appeal review failed — moderation needs an admin session login.');
+    else await load();
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Panel title="Issue warning or strike" right={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/35">all actions are audited</span>}>
+        <div className="grid gap-2 md:grid-cols-2">
+          <input value={username} onChange={(e) => { setUsername(e.target.value); setGuest(''); }} placeholder="Account username" className="rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60" />
+          <input value={guest} onChange={(e) => { setGuest(e.target.value); setUsername(''); }} placeholder="Guest id (optional instead)" className="rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60" />
+          <select value={severity} onChange={(e) => setSeverity(e.target.value as 'warning' | 'strike')} className="rounded-md border border-white/15 bg-black/40 px-2 py-2 font-mono text-[12px] text-white/80 outline-none focus:border-cyan-400/60">
+            <option value="warning" className="bg-zinc-900">Warning</option>
+            <option value="strike" className="bg-zinc-900">Strike</option>
+          </select>
+          <select value={durationMs} onChange={(e) => setDurationMs(Number(e.target.value))} className="rounded-md border border-white/15 bg-black/40 px-2 py-2 font-mono text-[12px] text-white/80 outline-none focus:border-cyan-400/60">
+            {VIOLATION_DURATIONS.map((d) => <option key={d.ms} value={d.ms} className="bg-zinc-900">{d.label}</option>)}
+          </select>
+        </div>
+        <div className="mt-2 flex gap-2">
+          <input value={reason} onChange={(e) => setReason(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void issue()} maxLength={500} placeholder="Reason for the warning or strike" className="min-w-0 flex-1 rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60" />
+          <button onClick={() => void issue()} disabled={busy || !reason.trim() || (!username.trim() && !guest.trim())} className="rounded-md bg-amber-400 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-950 transition hover:bg-amber-300 disabled:opacity-40">{busy ? '…' : 'Issue'}</button>
+        </div>
+        {error && <div className="mt-2 rounded-md border border-rose-400/40 bg-rose-400/10 px-3 py-2 text-[11px] text-rose-200">{error}</div>}
+      </Panel>
+
+      <Panel title="Warnings and appeals" right={<span className="font-mono text-[10px] text-white/40">{counts.active} active · {counts.pendingAppeals} pending appeals</span>}>
+        {loading ? <Loading /> : rows.length === 0 ? <Empty label="No warnings or strikes have been issued." /> : (
+          <div className="flex flex-col gap-2">
+            {rows.map((v) => (
+              <div key={v.id} className="rounded-lg border border-white/10 bg-black/30 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+                    <span className="text-white/35">#{v.id}</span>
+                    <span className={v.severity === 'strike' ? 'font-bold uppercase tracking-[0.14em] text-rose-300' : 'font-bold uppercase tracking-[0.14em] text-amber-300'}>{v.severity}</span>
+                    <span className="text-white/85">{v.playerName}</span>
+                    <span className={v.status === 'active' ? 'text-emerald-300' : 'text-white/35'}>{v.status}</span>
+                    <span className="text-white/35">{ago(v.createdAt)}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {v.appealStatus === 'pending' && <><button onClick={() => void reviewAppeal(v.id, 'approved')} className="rounded border border-emerald-400/40 px-2 py-1 text-[10px] font-bold uppercase text-emerald-300 hover:bg-emerald-400/10">Approve appeal</button><button onClick={() => void reviewAppeal(v.id, 'denied')} className="rounded border border-rose-400/40 px-2 py-1 text-[10px] font-bold uppercase text-rose-300 hover:bg-rose-400/10">Deny appeal</button></>}
+                    {v.status === 'active' ? <button onClick={() => void updateStatus(v.id, 'dismissed')} className="rounded border border-white/15 px-2 py-1 text-[10px] uppercase text-white/60 hover:text-white">Dismiss</button> : <button onClick={() => void updateStatus(v.id, 'active')} className="rounded border border-cyan-400/30 px-2 py-1 text-[10px] uppercase text-cyan-300 hover:bg-cyan-400/10">Reactivate</button>}
+                  </div>
+                </div>
+                <p className="mt-2 text-[12px] leading-relaxed text-white/75">{v.reason}</p>
+                <div className="mt-1 flex flex-wrap gap-x-3 font-mono text-[10px] text-white/35"><span>issued by {v.issuedBy}</span>{v.expiresAt > 0 && <span>{v.expiresAt > Date.now() ? `expires ${new Date(v.expiresAt).toLocaleString()}` : 'expired'}</span>}<span>{violationStatusLabel[v.appealStatus]}</span></div>
+                {v.appealText && <div className="mt-2 rounded-md border border-cyan-400/20 bg-cyan-400/5 p-2"><div className="font-mono text-[10px] uppercase tracking-[0.14em] text-cyan-300/75">Player appeal</div><p className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-white/80">{v.appealText}</p></div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 // ── Tab: Anticheat ───────────────────────────────────────────────────────────
 // What the defensive layer caught and did: rejected hacks (speed / fire-rate /
 // shot-origin / aimbot), kicks (afk / flood), blocks (banned at the door /
@@ -2410,7 +2547,7 @@ function AnnouncementsTab() {
 type AdminNavItem = {
   id: Tab;
   title: string;
-  icon: 'grid' | 'activity' | 'trend' | 'reticle' | 'users' | 'chat' | 'shield' | 'support' | 'globe' | 'megaphone';
+  icon: 'grid' | 'activity' | 'trend' | 'reticle' | 'users' | 'chat' | 'shield' | 'support' | 'globe' | 'megaphone' | 'warning';
   badge?: number | string;
 };
 
@@ -2433,6 +2570,7 @@ const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
       { id: 'matches', title: 'Matches', icon: 'reticle' },
       { id: 'players', title: 'Players', icon: 'users' },
       { id: 'feedback', title: 'Feedback', icon: 'chat' },
+      { id: 'violations', title: 'Violations', icon: 'warning' },
       { id: 'support', title: 'Support', icon: 'support' },
       { id: 'community', title: 'Community', icon: 'globe' },
     ],
@@ -2455,6 +2593,7 @@ function AdminGlyph({ name, size = 17 }: { name: AdminNavItem['icon'] | 'search'
     users: 'M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20M9.5 10.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM17 11a3 3 0 0 0 0-6M17 14.5h1a4 4 0 0 1 4 4V20',
     chat: 'M4 5h16v11H8l-4 4V5zM8 9h8M8 12h5',
     shield: 'M12 3l8 3v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-3zM9 12l2 2 4-4',
+    warning: 'M12 3l9 17H3L12 3zM12 9v5M12 17h.01',
     support: 'M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v5H5a1 1 0 0 1-1-1v-4zM20 13h-3v5h2a1 1 0 0 0 1-1v-4zM12 20h3',
     globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
     megaphone: 'M3 11v2l12 4V7L3 11zM15 9l4-2v10l-4-2M6 14l1 5h3l-1-4',
@@ -2808,6 +2947,7 @@ export default function AdminDashboard() {
             {tab === 'matches' && <MatchesTab />}
             {tab === 'players' && <PlayersTab />}
             {tab === 'feedback' && <FeedbackTab />}
+            {tab === 'violations' && <ViolationsTab />}
             {tab === 'anticheat' && <AnticheatTab />}
             {tab === 'support' && <SupportTab />}
             {tab === 'community' && <CommunityTab />}

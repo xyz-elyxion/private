@@ -215,7 +215,9 @@ function encodeSettings(s: Settings): string {
 }
 
 function normalizeAbilityType(value: unknown): AbilityType {
-  return value === 'teleport' || value === 'bodyguard' ? value : DEFAULT_ABILITY;
+  return value === 'teleport' || value === 'bodyguard' || value === 'admin-bodyguards'
+    ? value
+    : DEFAULT_ABILITY;
 }
 
 function decodeSettings(code: string): Settings | null {
@@ -837,6 +839,7 @@ const INITIAL_HUD: HudState = {
   abilityType: DEFAULT_ABILITY,
   abilityCooldown: 0,
   abilityActive: false,
+  admin: false,
   speed: 0,
   locked: false,
   currentStreak: 0,
@@ -971,7 +974,14 @@ export default function ElyxionClient() {
   useEffect(() => {
     if (!auth.ready) return;
     const name = auth.account?.username ?? 'Guest';
-    setSettings((s) => (s.playerName === name ? s : { ...s, playerName: name }));
+    setSettings((s) => {
+      const abilityType = !auth.account?.isAdmin && s.abilityType === 'admin-bodyguards'
+        ? DEFAULT_ABILITY
+        : s.abilityType;
+      return s.playerName === name && abilityType === s.abilityType
+        ? s
+        : { ...s, playerName: name, abilityType };
+    });
   }, [auth.ready, auth.account]);
 
   const startMatch = useCallback((cfg: MatchConfig) => {
@@ -2106,7 +2116,9 @@ function Locker({
             </button>
           )}
           <div className='grid grid-cols-2 gap-2'>
-            {sl.items.map((item) => {
+            {sl.items
+              .filter((item) => sl.slot !== 'ability' || item.id !== 'admin-bodyguards' || account?.isAdmin)
+              .map((item) => {
               const equipped = sl.current(settings) === item.id;
               const owned = owns(item.id, item.source);
               const buyable = !owned && item.source.type === 'credits';

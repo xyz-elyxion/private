@@ -12,7 +12,7 @@ import { loadBotModel } from './bots';
 import { buildMapMesh, mapById } from './map';
 import { EffectsManager } from './effects';
 import { ReplayPlayer, type ReplaySource } from './replay';
-import { createCamera, createRenderer, createScene } from './renderer';
+import { createCamera, createRenderer, createScene, updateSceneShaders } from './renderer';
 import type { ReplayData } from './replay-codec';
 import type { Vec3 } from './types';
 
@@ -186,6 +186,7 @@ export class ReplayViewer {
     } catch {
       /* keep rendering the last good state */
     }
+    updateSceneShaders(this.scene, this.player?.currentT ?? 0);
     this.renderer.render(this.scene, this.camera);
 
     // Throttle the progress callback so React isn't re-rendered every frame.

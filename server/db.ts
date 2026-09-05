@@ -212,6 +212,33 @@ function ensureBanColumns() {
 }
 ensureBanColumns();
 
+// Moderation violations / warnings. A violation is tied to either a registered
+// account id or the stable guest igpid, so users can review only their own
+// records while admins retain a complete moderation history. Appeals are kept
+// on the violation row because there is one active appeal per warning at a time.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_violations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  player_id       TEXT NOT NULL,
+  player_name     TEXT NOT NULL DEFAULT '',
+  severity        TEXT NOT NULL DEFAULT 'warning',
+  reason          TEXT NOT NULL DEFAULT '',
+  issued_by       TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'active',
+  expires_at      INTEGER NOT NULL DEFAULT 0,
+  appeal_status   TEXT NOT NULL DEFAULT 'none',
+  appeal_text     TEXT NOT NULL DEFAULT '',
+  appealed_at     INTEGER NOT NULL DEFAULT 0,
+  reviewed_by     TEXT NOT NULL DEFAULT '',
+  reviewed_at     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_violations_player ON elyxion_violations(player_id, id);
+CREATE INDEX IF NOT EXISTS idx_violations_status ON elyxion_violations(status, id);
+CREATE INDEX IF NOT EXISTS idx_violations_appeal ON elyxion_violations(appeal_status, id);
+`);
+
 // Append-only audit log: account registrations, logins, recorded matches, and
 // admin actions. Powers auditing now and a metrics dashboard later. `detail` is
 // a small JSON blob; `ip` is best-effort (proxy-forwarded) for abuse triage.
@@ -764,6 +791,144 @@ const mTicketCounts = sqlite.prepare(
 export function ticketCounts(): Record<string, number> {
   const out: Record<string, number> = {};
   for (const r of mTicketCounts.all() as { status: string; n: number }[]) out[r.status] = r.n;
+  return out;
+}
+
+// ── Violations / warnings ─────────────────────────────────────────────────────
+export type ViolationSeverity = 'warning' | 'strike';
+export type ViolationStatus = 'active' | 'dismissed';
+export type ViolationAppealStatus = 'none' | 'pending' | 'approved' | 'denied';
+
+export type ViolationRow = {
+  id: number;
+  createdAt: number;
+  updatedAt: number;
+  playerId: string;
+  playerName: string;
+  severity: ViolationSeverity;
+  reason: string;
+  issuedBy: string;
+  status: ViolationStatus;
+  expiresAt: number;
+  appealStatus: ViolationAppealStatus;
+  appealText: string;
+  appealedAt: number;
+  reviewedBy: string;
+  reviewedAt: number;
+};
+
+type ViolationDbRow = {
+  id: number;
+  created_at: number;
+  updated_at: number;
+  player_id: string;
+  player_name: string;
+  severity: string;
+  reason: string;
+  issued_by: string;
+  status: string;
+  expires_at: number;
+  appeal_status: string;
+  appeal_text: string;
+  appealed_at: number;
+  reviewed_by: string;
+  reviewed_at: number;
+};
+
+const insertViolationStmt = sqlite.prepare(`
+  INSERT INTO elyxion_violations
+    (created_at, updated_at, player_id, player_name, severity, reason, issued_by, status, expires_at)
+  VALUES (@createdAt, @updatedAt, @playerId, @playerName, @severity, @reason, @issuedBy, 'active', @expiresAt)
+`);
+const listViolationsStmt = sqlite.prepare(`SELECT * FROM elyxion_violations ORDER BY id DESC LIMIT ?`);
+const listViolationsByPlayerStmt = sqlite.prepare(`SELECT * FROM elyxion_violations WHERE player_id = ? ORDER BY id DESC LIMIT ?`);
+const setViolationStatusStmt = sqlite.prepare(`UPDATE elyxion_violations SET status = @status, updated_at = @now WHERE id = @id`);
+const getViolationStmt = sqlite.prepare(`SELECT * FROM elyxion_violations WHERE id = ?`);
+const appealViolationStmt = sqlite.prepare(`
+  UPDATE elyxion_violations
+     SET appeal_status = 'pending', appeal_text = @text, appealed_at = @now,
+         updated_at = @now, reviewed_by = '', reviewed_at = 0
+   WHERE id = @id AND player_id = @playerId AND status = 'active'
+`);
+const reviewViolationAppealStmt = sqlite.prepare(`
+  UPDATE elyxion_violations
+     SET appeal_status = @appealStatus,
+         status = CASE WHEN @appealStatus = 'approved' THEN 'dismissed' ELSE status END,
+         reviewed_by = @reviewedBy, reviewed_at = @now, updated_at = @now
+   WHERE id = @id AND appeal_status = 'pending'
+`);
+
+function mapViolationRow(r: ViolationDbRow): ViolationRow {
+  return {
+    id: r.id,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    playerId: r.player_id,
+    playerName: r.player_name || 'Guest',
+    severity: r.severity as ViolationSeverity,
+    reason: r.reason,
+    issuedBy: r.issued_by,
+    status: r.status as ViolationStatus,
+    expiresAt: r.expires_at,
+    appealStatus: r.appeal_status as ViolationAppealStatus,
+    appealText: r.appeal_text,
+    appealedAt: r.appealed_at,
+    reviewedBy: r.reviewed_by,
+    reviewedAt: r.reviewed_at,
+  };
+}
+
+export function issueViolation(v: { playerId: string; playerName: string; severity: ViolationSeverity; reason: string; issuedBy: string; expiresAt?: number; now?: number }): number {
+  try {
+    const now = v.now ?? Date.now();
+    const result = insertViolationStmt.run({
+      createdAt: now,
+      updatedAt: now,
+      playerId: v.playerId.slice(0, 64),
+      playerName: v.playerName.slice(0, 32) || 'Guest',
+      severity: v.severity,
+      reason: v.reason.slice(0, 500),
+      issuedBy: v.issuedBy.slice(0, 32),
+      expiresAt: v.expiresAt && v.expiresAt > now ? Math.floor(v.expiresAt) : 0,
+    });
+    return Number(result.lastInsertRowid) || 0;
+  } catch (err) {
+    console.error('[violations] issue failed', err);
+    return 0;
+  }
+}
+
+export function listViolations(opts: { playerId?: string; limit?: number }): ViolationRow[] {
+  const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 100)));
+  const rows = opts.playerId ? listViolationsByPlayerStmt.all(opts.playerId, limit) : listViolationsStmt.all(limit);
+  return (rows as ViolationDbRow[]).map(mapViolationRow);
+}
+
+export function getViolation(id: number): ViolationRow | null {
+  const row = getViolationStmt.get(id) as ViolationDbRow | undefined;
+  return row ? mapViolationRow(row) : null;
+}
+
+export function setViolationStatus(id: number, status: ViolationStatus, now?: number): boolean {
+  return setViolationStatusStmt.run({ id, status, now: now ?? Date.now() }).changes > 0;
+}
+
+export function submitViolationAppeal(id: number, playerId: string, text: string, now?: number): boolean {
+  return appealViolationStmt.run({ id, playerId, text: text.slice(0, 2000), now: now ?? Date.now() }).changes > 0;
+}
+
+export function reviewViolationAppeal(id: number, appealStatus: Exclude<ViolationAppealStatus, 'none' | 'pending'>, reviewedBy: string, now?: number): boolean {
+  return reviewViolationAppealStmt.run({ id, appealStatus, reviewedBy: reviewedBy.slice(0, 32), now: now ?? Date.now() }).changes > 0;
+}
+
+const violationCountsStmt = sqlite.prepare(`SELECT status, appeal_status, COUNT(*) AS n FROM elyxion_violations GROUP BY status, appeal_status`);
+export function violationCounts(): { active: number; dismissed: number; pendingAppeals: number } {
+  const out = { active: 0, dismissed: 0, pendingAppeals: 0 };
+  for (const row of violationCountsStmt.all() as { status: string; appeal_status: string; n: number }[]) {
+    if (row.status === 'active') out.active += Number(row.n);
+    if (row.status === 'dismissed') out.dismissed += Number(row.n);
+    if (row.appeal_status === 'pending') out.pendingAppeals += Number(row.n);
+  }
   return out;
 }
 

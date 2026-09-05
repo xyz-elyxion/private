@@ -35,6 +35,7 @@ import {
   TEAM_COUNT,
   DEFAULT_ABILITY,
   BODYGUARD_COOLDOWN,
+  ADMIN_BODYGUARD_COOLDOWN,
   BODYGUARD_DURATION,
   BODYGUARD_DAMAGE,
   BODYGUARD_FIRE_COOLDOWN,
@@ -58,7 +59,7 @@ import {
   ROOM_CODE_LEN,
 } from '../src/game/arena-data';
 import { randomBytes } from 'node:crypto';
-import type { CardPayload, Vec3 } from '../src/game/types';
+import type { AABB, CardPayload, Vec3 } from '../src/game/types';
 import {
   DEFAULT_RAIL_COLOR,
   DEFAULT_RAILGUN_FINISH,
@@ -248,6 +249,7 @@ type ClientRecord = {
   lastShotMs: number; // server-side fire-rate gate
   teleportCooldownUntilMs: number;
   bodyguardCooldownUntilMs: number;
+  adminBodyguardCooldownUntilMs: number;
   lastPosMs: number; // for the pos-update speed clamp
   msgWindowStart: number; // inbound message-rate window start
   msgCount: number; // messages seen in the current window
@@ -319,7 +321,7 @@ type Room = {
   // Recently-used spawn spots (anti-camp): pickSpawn penalizes candidates near
   // these so a camper can't farm the same spawn. Pruned by age (SPAWN_RECENT_MS).
   recentSpawns: { x: number; z: number; t: number }[];
-  bodyguards: Map<ClientId, BodyguardRecord>;
+  bodyguards: Map<string, BodyguardRecord>;
 };
 
 type ClientMessage =
@@ -346,6 +348,7 @@ type ClientMessage =
   | { type: 'weapon'; id?: string }
   | { type: 'ability'; id?: string }
   | { type: 'bodyguard' }
+  | { type: 'admin-bodyguards' }
   | { type: 'teleport'; x: number; y: number; z: number }
   | { type: 'crosshair'; code?: string }
   | { type: 'card'; card?: unknown }
@@ -488,6 +491,20 @@ function clampInt(v: unknown, lo: number, hi: number, fb: number): number {
 
 function parseMode(v: unknown): GameMode {
   return v === 'duel' || v === 'tdm' ? v : 'ffa';
+}
+
+function firstOccluderDistance(
+  origin: Vec,
+  direction: Vec,
+  maxDistance: number,
+  occluders: AABB[],
+): number {
+  let closest = maxDistance;
+  for (const box of occluders) {
+    const t = rayAabb(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, box.min, box.max);
+    if (t !== null && t > 0.05 && t < closest) closest = t;
+  }
+  return closest;
 }
 
 // Ray vs axis-aligned box; returns entry distance t (along a unit dir) or null.
@@ -1054,7 +1071,14 @@ export function attachElyxionWs(wss: WebSocketServer) {
     record.roomId = null;
     record.team = null;
     if (!room) return;
-    if (room.bodyguards.delete(record.id)) broadcastMeta(room);
+    let removedGuards = false;
+    for (const [guardId, guard] of room.bodyguards) {
+      if (guard.ownerId === record.id) {
+        room.bodyguards.delete(guardId);
+        removedGuards = true;
+      }
+    }
+    if (removedGuards) broadcastMeta(room);
     room.members.delete(record.id);
     broadcastRoom(room, { type: 'peer-left', clientId: record.id });
     broadcastMeta(room); // refresh the roster profile sans the departed player
@@ -1772,6 +1796,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     room.vote = null;
     room.resumeAt = Date.now() + POST_MATCH_RESET_SEC * 1000;
     room.firstBloodAwarded = false;
+    broadcastMeta(room); // remove expired guards from every client's roster immediately
 
     // Reset scoreboard + reposition everyone onto the new map.
     const now = Date.now();
@@ -1890,12 +1915,22 @@ export function attachElyxionWs(wss: WebSocketServer) {
     for (const ray of rawRays) {
       const dl = Math.hypot(ray.x, ray.y, ray.z);
       if (!Number.isFinite(dl) || dl < 1e-6) continue;
-      rays.push({
-        dx: ray.x / dl,
-        dy: ray.y / dl,
-        dz: ray.z / dl,
-        wallCap: Number.isFinite(ray.maxDist) ? Math.min(KILL_MAX_RANGE, Math.max(0, ray.maxDist ?? 0)) : KILL_MAX_RANGE,
-      });
+      const dx = ray.x / dl;
+      const dy = ray.y / dl;
+      const dz = ray.z / dl;
+      const clientCap = Number.isFinite(ray.maxDist)
+        ? Math.min(KILL_MAX_RANGE, Math.max(0, ray.maxDist ?? 0))
+        : KILL_MAX_RANGE;
+      // The client cap is only a visual range hint. The server independently
+      // clips every ray against the shared arena occluders so cover always wins
+      // over a forged client maxDist or a stale client map.
+      const wallCap = firstOccluderDistance(
+        { x: msg.ox, y: msg.oy, z: msg.oz },
+        { x: dx, y: dy, z: dz },
+        clientCap,
+        arenaNet(room.mapId).occluders,
+      );
+      rays.push({ dx, dy, dz, wallCap });
     }      if (rays.length === 0) return;
 
     // Anti-wallhack (#1): the ray is cast from the CLIENT-supplied origin, but
@@ -1966,6 +2001,24 @@ export function attachElyxionWs(wss: WebSocketServer) {
         const targetHeight = victim.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
         rayBestHeadshot = hitY >= pp.y + targetHeight * HEADSHOT_FRAC;
       }
+      // Bodyguards are server-owned NPCs, but they still have a real hitbox and
+      // can be killed by opposing players. The owner and TDM teammates cannot
+      // damage their ally.
+      for (const guard of room.bodyguards.values()) {
+        if (guard.ownerId === shooter.id) continue;
+        const owner = clients.get(guard.ownerId);
+        if (!owner || owner.disconnectedAt > 0) continue;
+        if (room.mode === 'tdm' && owner.team != null && owner.team === shooter.team) continue;
+        const min: Vec = { x: guard.pos.x - PLAYER_RADIUS, y: guard.pos.y, z: guard.pos.z - PLAYER_RADIUS };
+        const max: Vec = { x: guard.pos.x + PLAYER_RADIUS, y: guard.pos.y + PLAYER_HEIGHT, z: guard.pos.z + PLAYER_RADIUS };
+        const t = rayAabb(msg.ox, msg.oy, msg.oz, ray.dx, ray.dy, ray.dz, min, max);
+        if (t === null || t <= 0 || t >= ray.wallCap || t >= rayBestT) continue;
+        rayBestT = t;
+        rayBestId = guard.id;
+        rayBestPos = { ...guard.pos };
+        const hitY = msg.oy + ray.dy * t;
+        rayBestHeadshot = hitY >= guard.pos.y + PLAYER_HEIGHT * HEADSHOT_FRAC;
+      }
       if (rayBestId && rayBestPos) {
         const previous = hitById.get(rayBestId);
         hitById.set(rayBestId, {
@@ -2008,6 +2061,19 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
     if (!bestId || !bestPos) {
       recordAim(shooter, false, false); // a miss
+      return;
+    }
+    const guardVictim = [...room.bodyguards.values()].find((g) => g.id === bestId);
+    if (guardVictim) {
+      const confirmedGuard = hitById.get(bestId);
+      if (!confirmedGuard) return;
+      const guardDamage = confirmedGuard.pellets * spec.damage +
+        (confirmedGuard.headshot ? (spec.headshotDamage - spec.damage) : 0);
+      guardVictim.health = Math.max(0, guardVictim.health - guardDamage);
+      if (guardVictim.health <= 0) {
+        room.bodyguards.delete(guardVictim.id);
+        broadcastMeta(room);
+      }
       return;
     }
     const victim = clients.get(bestId);
@@ -2167,6 +2233,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       lastShotMs: 0,
       teleportCooldownUntilMs: 0,
       bodyguardCooldownUntilMs: 0,
+      adminBodyguardCooldownUntilMs: 0,
       lastPosMs: 0,
       msgWindowStart: now,
       msgCount: 0,
@@ -2710,7 +2777,9 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
         case 'ability': {
           const next = typeof msg.id === 'string' && (
-            msg.id === 'teleport' || msg.id === 'bodyguard'
+            msg.id === 'teleport' ||
+            msg.id === 'bodyguard' ||
+            (msg.id === 'admin-bodyguards' && record.admin)
           ) ? msg.id as AbilityType : DEFAULT_ABILITY;
           record.ability = next;
           break;
@@ -2733,11 +2802,42 @@ export function attachElyxionWs(wss: WebSocketServer) {
           });
           break;
 
+        case 'admin-bodyguards': {
+          if (!record.admin || record.ability !== 'admin-bodyguards' || !record.roomId) break;
+          const room = rooms.get(record.roomId);
+          if (!room || room.state !== 'active' || ts < room.resumeAt || ts < record.adminBodyguardCooldownUntilMs) break;
+          const arena = arenaNet(room.mapId);
+          for (let i = 0; i < 10; i++) {
+            const angle = (Math.PI * 2 * i) / 10;
+            const distance = 3 + (i % 2) * 1.5;
+            const spawn = {
+              x: record.pos.x + Math.cos(angle) * distance,
+              y: record.pos.y,
+              z: record.pos.z + Math.sin(angle) * distance,
+            };
+            if (isOutOfBounds(spawn, arena)) continue;
+            const id = `admin-guard-${record.id}-${adminGuardSequence++}`;
+            room.bodyguards.set(id, {
+              id,
+              ownerId: record.id,
+              name: `Bodyguard · ${record.name}`,
+              pos: spawn,
+              yaw: record.yaw,
+              health: MAX_HEALTH,
+              expiresAt: ts + BODYGUARD_DURATION * 1000,
+              nextShotAt: ts + 500 + i * 80,
+            });
+          }
+          record.adminBodyguardCooldownUntilMs = ts + ADMIN_BODYGUARD_COOLDOWN * 1000;
+          broadcastMeta(room);
+          break;
+        }
+
         case 'bodyguard': {
           if (!record.roomId || record.ability !== 'bodyguard') break;
           const room = rooms.get(record.roomId);
           if (!room || room.state !== 'active' || ts < room.resumeAt) break;
-          if (ts < record.bodyguardCooldownUntilMs || room.bodyguards.has(record.id)) break;
+          if (ts < record.bodyguardCooldownUntilMs || [...room.bodyguards.values()].some((g) => g.ownerId === record.id)) break;
           const spawn = {
             x: record.pos.x + Math.cos(record.yaw) * 2.5,
             y: record.pos.y,
@@ -2754,7 +2854,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
             expiresAt: ts + BODYGUARD_DURATION * 1000,
             nextShotAt: ts + 500,
           };
-          room.bodyguards.set(record.id, guard);
+          room.bodyguards.set(guard.id, guard);
           record.bodyguardCooldownUntilMs = ts + BODYGUARD_COOLDOWN * 1000;
           sendRaw(record.socket, {
             type: 'ability-bodyguard',
@@ -2900,12 +3000,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
   let snapshotDiagBufferedMax = 0;
   let snapshotDiagSkipped = 0;
 
+  let adminGuardSequence = 1;
+
   const updateBodyguards = (room: Room, now: number) => {
     if (room.state !== 'active' || now < room.resumeAt) return;
-    for (const [ownerId, guard] of room.bodyguards) {
+    for (const [guardId, guard] of room.bodyguards) {
+      const ownerId = guard.ownerId;
       const owner = clients.get(ownerId);
-      if (!owner || owner.disconnectedAt > 0 || guard.expiresAt <= now) {
-        room.bodyguards.delete(ownerId);
+      if (!owner || owner.disconnectedAt > 0 || guard.expiresAt <= now || guard.health <= 0) {
+        room.bodyguards.delete(guardId);
         broadcastMeta(room);
         continue;
       }
@@ -2916,7 +3019,19 @@ export function attachElyxionWs(wss: WebSocketServer) {
         if (!candidate || candidate.id === ownerId || candidate.disconnectedAt > 0 || candidate.respawnAt > now) continue;
         if (room.mode === 'tdm' && candidate.team != null && candidate.team === owner.team) continue;
         const d = Math.hypot(candidate.pos.x - guard.pos.x, candidate.pos.z - guard.pos.z);
-        if (d < bestDist) { bestDist = d; target = candidate; }
+        if (d >= bestDist) continue;
+        const dx = candidate.pos.x - guard.pos.x;
+        const dy = candidate.pos.y + (candidate.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT * 0.5) - (guard.pos.y + PLAYER_HEIGHT * 0.5);
+        const dz = candidate.pos.z - guard.pos.z;
+        const length = Math.hypot(dx, dy, dz);
+        if (length < 1e-3) continue;
+        const blocked = firstOccluderDistance(
+          { x: guard.pos.x, y: guard.pos.y + PLAYER_HEIGHT * 0.5, z: guard.pos.z },
+          { x: dx / length, y: dy / length, z: dz / length },
+          length,
+          arenaNet(room.mapId).occluders,
+        ) < length - 0.2;
+        if (!blocked) { bestDist = d; target = candidate; }
       }
       if (target) {
         guard.yaw = Math.atan2(target.pos.x - guard.pos.x, target.pos.z - guard.pos.z);

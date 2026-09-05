@@ -10,6 +10,20 @@ import { CrosshairMark } from './Landing';
 
 type TicketCategory = 'help' | 'report' | 'billing' | 'other';
 type TicketStatus = 'open' | 'ack' | 'resolved' | 'closed';
+type ViolationSeverity = 'warning' | 'strike';
+type ViolationAppealStatus = 'none' | 'pending' | 'approved' | 'denied';
+type Violation = {
+  id: number;
+  createdAt: number;
+  playerName: string;
+  severity: ViolationSeverity;
+  reason: string;
+  issuedBy: string;
+  status: 'active' | 'dismissed';
+  expiresAt: number;
+  appealStatus: ViolationAppealStatus;
+  appealText: string;
+};
 
 type TicketReply = { id: number; ts: number; author: string; body: string };
 type Ticket = {
@@ -52,6 +66,9 @@ const CATEGORY_COLOR: Record<TicketCategory, string> = {
 
 const ERRORS: Record<string, string> = {
   bad_category: 'Pick a category.',
+  bad_appeal: 'Appeals must be between 10 and 2000 characters.',
+  not_active: 'This violation is no longer active.',
+  appeal_unavailable: 'An appeal is already being reviewed.',
   bad_subject: 'Give it a short subject (3–120 characters).',
   bad_body: 'Add a bit more detail (10–4000 characters).',
   bad_id: 'That ticket doesn’t exist.',
@@ -170,6 +187,58 @@ function TicketCard({ t, onReplied }: { t: Ticket; onReplied: () => void }) {
   );
 }
 
+function ViolationCard({ v, onAppealed }: { v: Violation; onAppealed: () => void }) {
+  const [draft, setDraft] = useState(v.appealText || '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const canAppeal = v.status === 'active' && v.appealStatus !== 'pending' && v.appealStatus !== 'approved';
+  const submit = async () => {
+    if (busy || draft.trim().length < 10) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch(`/api/violations/${v.id}/appeal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ text: draft.trim() }),
+      });
+      const d = (await r.json().catch(() => ({}))) as { error?: string };
+      if (r.ok) onAppealed();
+      else setErr(ERRORS[d.error ?? ''] ?? 'Could not submit appeal.');
+    } catch {
+      setErr(ERRORS.network);
+    }
+    setBusy(false);
+  };
+  return (
+    <li className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 font-mono text-[11px]">
+          <span className="text-white/35">#{v.id}</span>
+          <span className={v.severity === 'strike' ? 'font-bold uppercase text-rose-300' : 'font-bold uppercase text-amber-300'}>{v.severity}</span>
+          <span className={v.status === 'active' ? 'text-emerald-300' : 'text-white/40'}>{v.status}</span>
+        </div>
+        <span className="font-mono text-[10px] text-white/35">issued {ago(v.createdAt)} by {v.issuedBy}</span>
+      </div>
+      <p className="mt-2 text-[12px] leading-relaxed text-white/80">{v.reason}</p>
+      {v.expiresAt > 0 && <p className="mt-1 font-mono text-[10px] text-white/40">{v.expiresAt > Date.now() ? `Expires ${new Date(v.expiresAt).toLocaleString()}` : 'Expired'}</p>}
+      {v.appealStatus !== 'none' && <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-300">Appeal: {v.appealStatus}</p>}
+      {v.appealStatus === 'approved' && <p className="mt-1 text-[11px] text-emerald-300">This violation was dismissed after review.</p>}
+      {canAppeal && (
+        <div className="mt-3 border-t border-white/10 pt-3">
+          <label className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/45">Appeal this decision</label>
+          <textarea value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={2000} rows={3} placeholder="Explain what happened and why this warning should be reviewed…" className="mt-1.5 w-full resize-y rounded-md border border-white/15 bg-black/40 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-white outline-none focus:border-cyan-400/60" />
+          <div className="mt-1 flex items-center justify-between gap-2">
+            {err ? <span className="text-[11px] text-rose-300">{err}</span> : <span className="text-[10px] text-white/35">10–2000 characters</span>}
+            <button onClick={() => void submit()} disabled={busy || draft.trim().length < 10} className="rounded-md bg-cyan-400 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-950 transition hover:bg-cyan-300 disabled:opacity-40">{busy ? '…' : 'Submit appeal'}</button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+
 function ago(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   if (s < 60) return `${s}s ago`;
@@ -189,6 +258,7 @@ export default function SupportPage() {
   const [busy, setBusy] = useState(false);
   const [sentId, setSentId] = useState<number | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [violations, setViolations] = useState<Violation[] | null>(null);
 
   // The caller's own tickets — keyed to the account when logged in, or to the
   // browser's anonymous guest identity otherwise (see server/support.ts), so a
@@ -204,9 +274,21 @@ export default function SupportPage() {
     }
   }, []);
 
+  const loadViolations = useCallback(async () => {
+    try {
+      const r = await fetch('/api/violations', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const d = (await r.json()) as { violations: Violation[] };
+      setViolations(d.violations);
+    } catch {
+      /* non-fatal */
+    }
+  }, []);
+
   useEffect(() => {
     void loadTickets();
-  }, [loadTickets]);
+    void loadViolations();
+  }, [loadTickets, loadViolations]);
 
   const submit = async () => {
     if (busy) return;
@@ -344,6 +426,17 @@ export default function SupportPage() {
                 </button>
               </>
             )}
+          </section>
+
+          {/* ── Your violations ────────────────────────────────────────── */}
+          <section className="deck-panel clip-deck p-6">
+            <h2 className="flex items-center gap-3 font-display text-[11px] font-bold uppercase tracking-[0.26em] text-amber-200/90">
+              Your violations
+              <span className="h-px flex-1 bg-white/10" aria-hidden="true" />
+              <button onClick={() => void loadViolations()} title="Refresh" aria-label="Refresh violations" className="font-mono text-[11px] font-bold text-amber-300/70 transition hover:text-amber-200">⟳</button>
+            </h2>
+            <p className="mt-3 text-[12px] leading-relaxed text-white/45">Warnings and strikes issued to your account appear here. If you believe one is incorrect, submit an appeal for staff review.</p>
+            {violations === null ? <p className="mt-4 font-mono text-[12px] text-white/35">Loading…</p> : violations.length === 0 ? <p className="mt-4 text-[13px] text-white/45">No violations on record.</p> : <ul className="mt-4 flex flex-col gap-3">{violations.map((v) => <ViolationCard key={v.id} v={v} onAppealed={() => void loadViolations()} />)}</ul>}
           </section>
 
           {/* ── Your tickets ───────────────────────────────────────────── */}

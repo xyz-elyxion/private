@@ -238,6 +238,7 @@ export type HudState = {
   abilityType: import('./constants').AbilityType;
   abilityCooldown: number;
   abilityActive: boolean;
+  admin: boolean;
   speed: number;
   locked: boolean;
   currentStreak: number;

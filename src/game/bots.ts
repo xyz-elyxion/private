@@ -375,8 +375,10 @@ export class Bot {
     difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
     bodyguard = false,
     weapon: WeaponType = 'railgun',
+    initialFacing = 0,
   ) {
     this.bodyguard = bodyguard;
+    this.facing = initialFacing;
     this.weaponType = weapon;
     this.diff = BOT_DIFFICULTY[difficulty];
     this.mv = BOT_MOVE[difficulty];
@@ -404,6 +406,7 @@ export class Bot {
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
     this.group.position.set(spawn.x, spawn.y, spawn.z);
+    this.applyFacing();
     scene.add(this.group);
     // LocomotionBlender (created in installModel) already starts in idle.
   }
@@ -489,10 +492,9 @@ export class Bot {
     let bestDist = Infinity;
     for (const e of enemies) {
       if (e.id === this.state.id) continue;
-      // The bodyguard protects its owner and other bots ignore it as a target;
-      // this keeps the summoned ally from attacking the player or being treated
-      // as a normal enemy by the offline bot roster.
-      if (this.bodyguard ? e.id === 'player' : e.bodyguard) continue;
+      // The bodyguard protects its owner. Hostile bots may damage the guard,
+      // while a guard ignores the player and any other allied guard.
+      if (this.bodyguard ? e.id === 'player' || e.bodyguard : false) continue;
       // TDM: never acquire a teammate (friendly fire is off).
       if (this.team != null && e.team != null && e.team === this.team) continue;
       const d = Math.hypot(e.pos.x - this.state.pos.x, e.pos.z - this.state.pos.z);
@@ -557,6 +559,8 @@ export class Bot {
       const dz = this.ownerPos.z - this.state.pos.z;
       const followDist = Math.hypot(dx, dz);
       if (followDist <= 3) {
+        // Keep the guard's last combat/travel heading; it should not mirror the
+        // owner's camera while standing nearby.
         const beforeX = this.state.pos.x;
         const beforeZ = this.state.pos.z;
         this.integrate(dt, map, { x: 0, z: 0 });
@@ -1264,11 +1268,22 @@ export class BotManager {
     ownerPos: Vec3,
     model: BotModel | null,
     difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
+    ownerFacing = 0,
   ): Bot | null {
     const existing = this.bots.find((b) => b.state.bodyguard);
     if (existing) return existing;
     const spawn = pickFreeSpot(map, ownerPos);
-    const guard = new Bot('bodyguard', 'Bodyguard', spawn, scene, model, difficulty, true, 'assault');
+    const guard = new Bot(
+      'bodyguard',
+      'Bodyguard',
+      spawn,
+      scene,
+      model,
+      difficulty,
+      true,
+      'assault',
+      ownerFacing,
+    );
     guard.setOwnerPosition(ownerPos);
     this.bots.push(guard);
     return guard;

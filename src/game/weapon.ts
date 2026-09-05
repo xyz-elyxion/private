@@ -48,8 +48,10 @@ function buildBeam(
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
+      depthTest: false,
     });
     const mesh = new THREE.Mesh(geom, mat);
+    mesh.renderOrder = 30;
     mesh.position.copy(mid);
     mesh.quaternion.copy(quat);
     group.add(mesh);
@@ -77,15 +79,34 @@ function buildBeam(
       origin.z + dir.z * f + oz,
     ));
   }
+  // Bright terminal marker makes the actual raycast endpoint visible on walls
+  // and targets, not just the thin line leading to it.
+  const impact = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color: core,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  impact.position.copy(end);
+  group.add(impact);
+
   const helixGeom = new THREE.BufferGeometry().setFromPoints(pts);
   const helixMat = new THREE.LineBasicMaterial({
     color: helix,
     transparent: true,
     opacity: 0.85,
     blending: THREE.AdditiveBlending,
+    depthTest: false,
     depthWrite: false,
   });
-  group.add(new THREE.Line(helixGeom, helixMat));
+  const helixLine = new THREE.Line(helixGeom, helixMat);
+  helixLine.renderOrder = 31;
+  group.add(helixLine);
   parts.push({ mat: helixMat, base: 0.85 });
   return { group, parts, remaining: RAIL_BEAM_DURATION };
 }
