@@ -201,6 +201,7 @@ type ChatBroadcastMessage = { type: 'chat' } & ChatMessage;
 type BeamMessage = {
   type: 'beam';
   id: string;
+  bodyguard?: boolean;
   ox: number; oy: number; oz: number;
   ex: number; ey: number; ez: number;
 };
@@ -276,6 +277,7 @@ export type NetEvents = {
   onKicked?: (info: { reason: string; banned: boolean }) => void;
   onBeam?: (b: {
     id: string;
+    bodyguard?: boolean;
     ox: number; oy: number; oz: number;
     ex: number; ey: number; ez: number;
   }) => void; // another player's weapon beam → render + sound it
@@ -1135,6 +1137,7 @@ export class NetClient {
     if (msg.type === 'beam') {
       this.events.onBeam?.({
         id: msg.id,
+        bodyguard: msg.bodyguard,
         ox: msg.ox, oy: msg.oy, oz: msg.oz,
         ex: msg.ex, ey: msg.ey, ez: msg.ez,
       });

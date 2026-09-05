@@ -1271,11 +1271,13 @@ export class Game {
   // Another player's rail beam (server-broadcast on every shot): draw the trail
   // in the SHOOTER's equipped rail color (from the meta roster), and play the
   // fire SFX, attenuated by distance so you hear who's shooting near you.
-  private handleNetBeam(b: { id?: string; ox: number; oy: number; oz: number; ex: number; ey: number; ez: number }) {
+  private handleNetBeam(b: { id?: string; bodyguard?: boolean; ox: number; oy: number; oz: number; ex: number; ey: number; ez: number }) {
     const origin = new THREE.Vector3(b.ox, b.oy, b.oz);
     const end = new THREE.Vector3(b.ex, b.ey, b.ez);
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
-    const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
+    const c = b.bodyguard
+      ? { core: 0xd8fff0, helix: 0x22e66f }
+      : railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
     this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix);
     // Spatialized fire SFX at the shot's origin — HRTF-panned + distance-faded by
     // the audio listener, so you can hear which direction a shot came from.
@@ -2033,6 +2035,10 @@ export class Game {
       this.player.pos,
       this.botModel,
       this.botDifficulty,
+      // Bot-facing uses the opposite convention from player yaw. Passing the
+      // player's yaw makes the newly spawned guard visually face away from its
+      // owner; after spawn its AI owns the heading completely.
+      this.player.yaw,
     );
     if (!guard) return;
     guard.setTeam(this.localTeam, this.teamColorHex(this.localTeam) ?? '#43d17a');
@@ -2372,9 +2378,16 @@ export class Game {
       }
     }
 
-    // Visible beam to the impact point (enemy fire reveals positions).
+    // Visible beam to the impact point (enemy fire reveals positions). Bodyguard
+    // fire is deliberately bright green and gets its own muzzle flash so it is
+    // unmistakable and never looks like the player's camera ray.
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
-    this.weapon.spawnBeam(origin, end, this.scene);
+    if (intent.botId === 'bodyguard') {
+      this.weapon.spawnBeam(origin, end, this.scene, 0xd8fff0, 0x22e66f);
+      this.effects.spawnMuzzleFlash(this.scene, origin, 0x22e66f);
+    } else {
+      this.weapon.spawnBeam(origin, end, this.scene);
+    }
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       end: { x: end.x, y: end.y, z: end.z },

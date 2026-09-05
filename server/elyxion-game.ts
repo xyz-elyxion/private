@@ -217,6 +217,7 @@ type BodyguardRecord = {
   name: string;
   pos: Vec;
   yaw: number;
+  idleYaw: number;
   health: number;
   expiresAt: number;
   nextShotAt: number;
@@ -2822,7 +2823,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
               ownerId: record.id,
               name: `Bodyguard · ${record.name}`,
               pos: spawn,
-              yaw: record.yaw,
+              yaw: record.yaw + Math.PI,
+              idleYaw: record.yaw + Math.PI,
               health: MAX_HEALTH,
               expiresAt: ts + BODYGUARD_DURATION * 1000,
               nextShotAt: ts + 500 + i * 80,
@@ -2849,7 +2851,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
             ownerId: record.id,
             name: `Bodyguard · ${record.name}`,
             pos: spawn,
-            yaw: record.yaw,
+            yaw: record.yaw + Math.PI,
+            idleYaw: record.yaw + Math.PI,
             health: MAX_HEALTH,
             expiresAt: ts + BODYGUARD_DURATION * 1000,
             nextShotAt: ts + 500,
@@ -3042,6 +3045,38 @@ export function attachElyxionWs(wss: WebSocketServer) {
         }
         if (now >= guard.nextShotAt && target.invulnUntilMs <= now) {
           guard.nextShotAt = now + BODYGUARD_FIRE_COOLDOWN * 1000;
+          const origin = {
+            x: guard.pos.x,
+            y: guard.pos.y + PLAYER_HEIGHT * 0.85,
+            z: guard.pos.z,
+          };
+          const targetPoint = {
+            x: target.pos.x,
+            y: target.pos.y + (target.crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT * 0.5),
+            z: target.pos.z,
+          };
+          const dx = targetPoint.x - origin.x;
+          const dy = targetPoint.y - origin.y;
+          const dz = targetPoint.z - origin.z;
+          const length = Math.hypot(dx, dy, dz) || 1;
+          const direction = { x: dx / length, y: dy / length, z: dz / length };
+          const beamLength = firstOccluderDistance(
+            origin,
+            direction,
+            length,
+            arenaNet(room.mapId).occluders,
+          );
+          broadcastRoom(room, {
+            type: 'beam',
+            id: guard.id,
+            bodyguard: true,
+            ox: origin.x,
+            oy: origin.y,
+            oz: origin.z,
+            ex: origin.x + direction.x * beamLength,
+            ey: origin.y + direction.y * beamLength,
+            ez: origin.z + direction.z * beamLength,
+          });
           target.health = Math.max(0, target.health - BODYGUARD_DAMAGE);
           if (target.health <= 0) {
             owner.frags += 1;
@@ -3083,7 +3118,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
           guard.pos.x += (owner.pos.x - guard.pos.x) / d * step;
           guard.pos.z += (owner.pos.z - guard.pos.z) / d * step;
         }
-        guard.yaw = owner.yaw;
+        guard.yaw = guard.idleYaw;
       }
     }
   };
