@@ -1035,6 +1035,7 @@ export default function ElyxionClient() {
         key={playId}
         config={config}
         settings={settings}
+        isAdmin={!!auth.account?.isAdmin}
         onChangeSettings={setSettings}
         onExit={exitToLobby}
         onPlayAgain={playAgain}
@@ -1147,12 +1148,14 @@ function OnboardingModal({
 function GameView({
   config,
   settings,
+  isAdmin,
   onChangeSettings,
   onExit,
   onPlayAgain,
 }: {
   config: MatchConfig;
   settings: Settings;
+  isAdmin: boolean;
   onChangeSettings: (s: Settings) => void;
   onExit: (result: MatchResult | null) => void;
   onPlayAgain: () => void;
@@ -1282,6 +1285,7 @@ function GameView({
       }
     });
     applySettingsToGame(game, settings);
+    game.setLocalAdmin(isAdmin);
     applyMatchConfig(game, config);
     void game.start();
     // Bulletproof activation: ?netdebug in the URL turns the overlay on with no
@@ -1558,6 +1562,7 @@ function SpectatorView({
       }
     });
     applySettingsToGame(game, settings);
+    game.setLocalAdmin(isAdmin);
     applyMatchConfig(game, config);
     void game.start();
     return () => {
@@ -5787,19 +5792,18 @@ function Lobby({
   const playDisabled = touchOnly;
 
   return (
-    <div className='deck-bg deck-scan fixed inset-0 z-50 overflow-hidden text-white'>
-      <div className='relative mx-auto flex h-full w-full max-w-6xl flex-col gap-4 px-5 py-5 sm:px-8 sm:py-6'>
+    <div className='deck-bg deck-scan lobby-redesign fixed inset-0 z-50 overflow-hidden text-white'>
+      <div className='relative mx-auto flex h-full w-full max-w-7xl flex-col gap-4 px-4 py-4 sm:px-7 sm:py-5 lg:px-10'>
         {/* ── Top status bar ─────────────────────────────────────────── */}
-        <header className='deck-rise flex items-center gap-3' style={{ animationDelay: '0ms' }}>
+        <header className='lobby-header deck-rise flex items-center gap-3' style={{ animationDelay: '0ms' }}>
           <h1
-            className='font-display text-3xl font-bold uppercase leading-none tracking-[0.16em] text-cyan-300 sm:text-[2.5rem]'
-            style={{ filter: 'drop-shadow(0 0 18px rgba(34,211,238,0.45))' }}
+            className='deck-rise font-display text-6xl font-bold uppercase leading-[0.92] tracking-[0.04em] sm:text-7xl'
+            style={{ animationDelay: '60ms' }}
           >
             Elyxion
+            <br />
+            <span className='text-cyan-300'>Arena</span>
           </h1>
-          <span className='font-display mt-0.5 text-xs font-semibold uppercase tracking-[0.55em] text-white/35'>
-            Arena
-          </span>
           <div className='ml-auto flex items-center gap-3'>
             {account ? (
               <span className='hidden items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
@@ -5861,11 +5865,19 @@ function Lobby({
 
         {/* ── Main grid: actions (left) · live feed (right). Scrolls as one
             page on mobile; splits into two fixed columns on desktop. ─────── */}
-        <main className='grid min-h-0 flex-1 gap-4 overflow-y-auto lg:grid-cols-[1.15fr_0.85fr] lg:overflow-visible'>
-          {/* Left — mode + actions */}
-          <section className='deck-scroll flex min-h-0 flex-col gap-3 pr-1 lg:overflow-y-auto'>
-            <p className='deck-rise max-w-md text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>               One railgun. Every shot matters — the whole game is aim, movement, and health management.
-            </p>
+        <main className='lobby-main-grid grid min-h-0 flex-1 gap-4 overflow-y-auto lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)] lg:overflow-visible'>
+          {/* Left — command center */}
+          <section className='lobby-command-column deck-scroll flex min-h-0 flex-col gap-3 pr-1 lg:overflow-y-auto'>
+            <div className='lobby-hero deck-rise' style={{ animationDelay: '60ms' }}>
+              <div className='lobby-hero-kicker'>COMBAT OPERATIONS / READY ROOM</div>
+              <h2 className='lobby-hero-title'>Choose your fight.</h2>
+              <p className='lobby-hero-copy'>Queue into the live arena, build a lobby for your squad, or warm up against bots before you deploy.</p>
+              <div className='lobby-hero-meta'>
+                <span><i className='lobby-signal' /> {online ? 'MATCH SERVICES ONLINE' : 'CONNECTING TO MATCH SERVICES'}</span>
+                <span className='hidden sm:inline'>/</span>
+                <span>64 HZ AUTHORITATIVE NETCODE</span>
+              </div>
+            </div>
 
             {touchOnly && (
               <div className='clip-deck-sm border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-center text-[12px] text-amber-100'>
@@ -5891,7 +5903,7 @@ function Lobby({
               }}
               disabled={!online || playDisabled || searching}
               aria-busy={searching}
-              className='clip-deck deck-rise group bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 active:translate-y-px disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
+              className='lobby-primary-cta clip-deck deck-rise group bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 active:translate-y-px disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
               style={{ animationDelay: '180ms' }}
             >
               <span className='flex items-center gap-3'>
@@ -5904,7 +5916,7 @@ function Lobby({
             </button>
 
             {/* Ways to play — online first, then offline practice. */}
-            <div className='deck-rise grid grid-cols-2 gap-3' style={{ animationDelay: '240ms' }}>
+            <div className='lobby-play-grid deck-rise grid grid-cols-2 gap-3' style={{ animationDelay: '240ms' }}>
               <DeckButton onClick={() => setCreateOnlineOpen(true)} disabled={!online || playDisabled} accent='cyan'>
                 Create Match
               </DeckButton>
@@ -5939,7 +5951,7 @@ function Lobby({
             {/* Utility row — meta surfaces kept visually subordinate to the ways
                 to play, so the menu reads top-down: queue → host → practice →
                 profile / settings. */}
-            <div className='deck-rise flex flex-wrap gap-2' style={{ animationDelay: '300ms' }}>
+            <div className='lobby-utility-row deck-rise flex flex-wrap gap-2' style={{ animationDelay: '300ms' }}>
               <UtilButton onClick={() => setStatsOpen(true)}>Stats</UtilButton>
               <UtilButton onClick={() => setChallengesOpen(true)}>
                 <span className='inline-flex items-center gap-1.5'>
@@ -5963,7 +5975,7 @@ function Lobby({
           </section>
 
           {/* Right — social column: who's online, open lobbies, global chat */}
-          <aside className='deck-rise flex min-h-0 flex-col gap-3' style={{ animationDelay: '200ms' }}>
+          <aside className='lobby-live-column deck-rise flex min-h-0 flex-col gap-3' style={{ animationDelay: '200ms' }}>
             <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
             <div className='min-h-[10rem] flex-1'>
               <OpenLobbies
@@ -5988,7 +6000,7 @@ function Lobby({
         </main>
 
         {/* ── Footer ─────────────────────────────────────────────────── */}
-        <footer className='flex shrink-0 items-center justify-between border-t border-white/10 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
+        <footer className='lobby-footer flex shrink-0 items-center justify-between border-t border-white/10 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
           <span>Quick match · up to {MAX_PLAYERS} players</span>
           <span className='text-white/25'>Elyxion</span>
         </footer>
@@ -6134,7 +6146,7 @@ function DeckButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`clip-deck-sm border px-5 py-3 text-left font-display text-sm font-semibold uppercase tracking-[0.12em] transition active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 ${tone} ${full ? 'w-full' : ''}`}
+      className={`lobby-action-card clip-deck-sm border px-5 py-3 text-left font-display text-sm font-semibold uppercase tracking-[0.12em] transition active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 ${tone} ${full ? 'w-full' : ''}`}
     >
       <span className='flex items-baseline justify-between gap-3'>
         <span>{children}</span>
@@ -6155,7 +6167,7 @@ function UtilButton({ onClick, children }: { onClick: () => void; children: Reac
   return (
     <button
       onClick={onClick}
-      className='clip-deck-sm border border-white/10 bg-white/[0.03] px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60 transition hover:border-white/25 hover:text-white/90'
+      className='lobby-utility-button clip-deck-sm border border-white/10 bg-white/[0.03] px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60 transition hover:border-white/25 hover:text-white/90'
     >
       {children}
     </button>
@@ -6353,7 +6365,7 @@ function OnlinePlayersPanel({
         </span>
       </button>
       {open && (
-        <div className='deck-scroll max-h-44 overflow-y-auto border-t border-white/10 px-3 py-2'>
+        <div className='lobby-online-list deck-scroll max-h-44 overflow-y-auto border-t border-white/10 px-3 py-2'>
           {players.length === 0 && guests === 0 ? (
             <div className='px-1 py-3 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-white/30'>
               No one online

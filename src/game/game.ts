@@ -14,7 +14,6 @@ import {
   BANNER_DURATION_SEC,
   BODYGUARD_COOLDOWN,
   ADMIN_BODYGUARD_COOLDOWN,
-  BODYGUARD_DURATION,
   BOT_HEADSHOT_THRESHOLD,
   MAX_HEALTH,
   BOT_HEIGHT,
@@ -280,6 +279,7 @@ export class Game {
   private bodyguardCooldown = 0;
   private adminBodyguardCooldown = 0;
   private bodyguardTimer = 0;
+  private localAdmin = false;
   private botDeathCounts = new Map<string, number>();
   private botFrags = new Map<string, number>();
   // Per-bot shot tallies so the scoreboard can show bot accuracy too.
@@ -685,6 +685,10 @@ export class Game {
       : DEFAULT_ABILITY;
     this.net?.setLocalAbility(this.abilityType);
     this.emitHud();
+  }
+
+  setLocalAdmin(isAdmin: boolean) {
+    this.localAdmin = isAdmin;
   }
 
   setBotsEnabled(enabled: boolean) {
@@ -1164,9 +1168,9 @@ export class Game {
           onSpectateEnded: () => this.onNetEvent({ type: 'spectate-ended' }),
           onRespawn: (pos) => this.handleNetRespawn(pos),
           onTeleport: (pos) => this.handleNetTeleport(pos),
-          onBodyguard: (cooldownMs, durationMs) => {
+          onBodyguard: (cooldownMs) => {
             this.bodyguardCooldown = cooldownMs / 1000;
-            this.bodyguardTimer = durationMs / 1000;
+            this.bodyguardTimer = Number.POSITIVE_INFINITY;
             this.emitHud();
           },
           onVoteStart: (v) => this.handleVoteStart(v),
@@ -1844,8 +1848,12 @@ export class Game {
       else if (this.abilityType === 'bodyguard') {
         if (this.net) this.net.sendBodyguard();
         else this.summonBodyguard();
-      } else if (this.abilityType === 'admin-bodyguards' && this.net?.localAdmin && this.adminBodyguardCooldown <= 0) {
-        this.net.sendAdminBodyguards();
+      } else if (this.abilityType === 'admin-bodyguards' && this.localAdmin && this.adminBodyguardCooldown <= 0) {
+        if (this.net) {
+          this.net.sendAdminBodyguards();
+        } else {
+          this.summonAdminBodyguards();
+        }
         this.adminBodyguardCooldown = ADMIN_BODYGUARD_COOLDOWN;
         this.banner = {
           id: this.nextEventId++,
@@ -1857,26 +1865,21 @@ export class Game {
         };
         this.emitHud();
       }
-    }
-
-    if (this.bots) {
+    }    if (this.bots) {
       // Targetable entities: the local player (only while alive) + all live
       // bots. Each bot skips itself and bodyguards are protected from hostile
       // targeting; the bodyguard itself skips the player and hunts enemies.
       const enemies: BotTarget[] = [];
-      if (!dead) enemies.push({ id: 'player', pos: this.player.pos, team: this.localTeam });
-      const guard = this.bots.bodyguard();
-      guard?.setOwnerPosition(this.player.pos);
+      if (!dead && this.localRespawnInvuln <= 0) {
+        enemies.push({ id: 'player', pos: this.player.pos, team: this.localTeam });
+      }
       for (const b of this.bots.bots) {
         if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam(), bodyguard: b.state.bodyguard });
       }
+
       const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
-      if (this.bodyguardTimer > 0) {
-        this.bodyguardTimer = Math.max(0, this.bodyguardTimer - dt);
-        if (this.bodyguardTimer === 0) this.bots.dismissBodyguard(this.scene);
-      }
       // Spawn-in effect when a bot materializes (dead→alive), so solo play shows
       // the effect too. A stable per-bot style gives variety without netcode.
       if (!this.reducedEffects) {
@@ -2027,6 +2030,26 @@ export class Game {
     this.handleNetTeleport(destination);
   }
 
+  private summonAdminBodyguards() {
+    if (this.net || this.training || this.adminBodyguardCooldown > 0 || !this.bots) return;
+    const guards = this.bots.summonAdminBodyguards(
+      this.scene,
+      this.map,
+      this.player.pos,
+      this.botModel,
+      this.botDifficulty,
+      this.player.yaw,
+      10,
+    );
+    if (guards.length === 0) return;
+    for (const guard of guards) {
+      guard.setTeam(this.localTeam, this.teamColorHex(this.localTeam) ?? '#43d17a');
+      guard.setHighlight(new THREE.Color('#43d17a'));
+      this.effects.spawnInBurst(this.scene, guard.group.position, 'beam');
+      this.botAlive.set(guard.state.id, true);
+    }
+  }
+
   private summonBodyguard() {
     if (this.net || this.training || this.bodyguardCooldown > 0 || !this.bots) return;
     const guard = this.bots.summonBodyguard(
@@ -2035,16 +2058,16 @@ export class Game {
       this.player.pos,
       this.botModel,
       this.botDifficulty,
-      // Bot-facing uses the opposite convention from player yaw. Passing the
-      // player's yaw makes the newly spawned guard visually face away from its
-      // owner; after spawn its AI owns the heading completely.
+      // Seed the guard with an independent heading opposite the owner. Its AI
+      // takes over and faces movement/targets from there.
       this.player.yaw,
     );
     if (!guard) return;
     guard.setTeam(this.localTeam, this.teamColorHex(this.localTeam) ?? '#43d17a');
     guard.setHighlight(new THREE.Color('#43d17a'));
     this.bodyguardCooldown = BODYGUARD_COOLDOWN;
-    this.bodyguardTimer = BODYGUARD_DURATION;
+    // Bodyguards remain deployed until an enemy kills them.
+    this.bodyguardTimer = Number.POSITIVE_INFINITY;
     this.effects.spawnInBurst(this.scene, guard.group.position, 'beam');
     this.botAlive.set(guard.state.id, true);
     this.banner = {
@@ -2227,7 +2250,7 @@ export class Game {
 
       if (bot.state.bodyguard) {
         this.bodyguardTimer = 0;
-        this.bots?.dismissBodyguard(this.scene);
+        this.bots?.dismissBodyguard(this.scene, bot);
         this.banner = {
           id: this.nextEventId++,
           tier: 'special',
@@ -2443,9 +2466,9 @@ export class Game {
       );
       this.audio.play(victimHeadshot ? 'headshot' : 'hit', 0.45);
       if (victim.state.health > 0) return;
-      if (victim.state.bodyguard) {
+        if (victim.state.bodyguard) {
         this.bodyguardTimer = 0;
-        this.bots?.dismissBodyguard(this.scene);
+        this.bots?.dismissBodyguard(this.scene, victim);
         this.banner = {
           id: this.nextEventId++,
           tier: 'special',
@@ -2472,7 +2495,7 @@ export class Game {
       );
       if (victim.state.bodyguard) {
         this.bodyguardTimer = 0;
-        this.bots?.dismissBodyguard(this.scene);
+        this.bots?.dismissBodyguard(this.scene, victim);
       } else {
         victim.kill();
       }
@@ -3267,7 +3290,8 @@ export class Game {
         this.abilityType === 'teleport'
           ? this.teleportCooldown <= 0
           : this.abilityType === 'admin-bodyguards'
-            ? !!this.net?.localAdmin && !!this.net && !this.spectator && this.adminBodyguardCooldown <= 0
+            ? !!this.net?.localAdmin && !!this.net && !this.spectator &&        this.adminBodyguardCooldown <= 0
+
             : this.net
               ? this.bodyguardCooldown <= 0 && !this.net.bodyguardActive()
               : this.bodyguardCooldown <= 0 && this.bots?.bodyguard() == null,
@@ -3278,7 +3302,7 @@ export class Game {
           ? this.bodyguardCooldown
           : this.adminBodyguardCooldown,
       abilityActive: this.abilityType === 'bodyguard' && (
-        this.net ? this.net.bodyguardActive() : this.bodyguardTimer > 0 && this.bots?.bodyguard() != null
+        this.net ? this.net.bodyguardActive() : this.bots?.bodyguard() != null
       ),
       admin: this.net?.localAdmin ?? false,
       speed,

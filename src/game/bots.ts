@@ -13,6 +13,7 @@ import {
   BOT_MOVE_INTERVAL_MIN,
   BOT_RADIUS,
   BOT_RESPAWN_DELAY,
+  LOCAL_RESPAWN_INVULN_SEC,
   DASH_COOLDOWN,
   DASH_DURATION,
   DASH_SPEED,
@@ -85,11 +86,18 @@ const BOT_MOVE: Record<BotDifficulty, BotMove> = {
 };
 
 // An enemy a bot can target (the local player or another bot).
-export type BotTarget = { id: string; pos: Vec3; team?: number | null; bodyguard?: boolean };
+export type BotTarget = {
+  id: string;
+  pos: Vec3;
+  team?: number | null;
+  bodyguard?: boolean;
+  spawnProtected?: boolean;
+};
 // A bot's decision to fire this tick — resolved by Game against the world.
 export type BotFireIntent = {
   botId: string;
   botName: string;
+  bodyguard?: boolean;
   origin: Vec3;
   dir: Vec3;
   rays: { dir: Vec3; maxDist: number }[];
@@ -174,6 +182,7 @@ export function pickFreeSpot(
   map: ArenaMap,
   avoid: Vec3 | Vec3[] | null = null,
   radius = BOT_RADIUS,
+  minAvoidDistance = 5,
 ): Vec3 {
   // Accept one point or many — spawn clear of EVERY live opponent, not just one,
   // so you don't drop into someone's crosshair.
@@ -198,7 +207,7 @@ export function pickFreeSpot(
       // First clear spot is a safe fallback; keep searching for one far from
       // every avoid point so we don't telefrag/stack on a live opponent.
       if (!fallback) fallback = { x, y, z };
-      if (avoidList.every((a) => Math.hypot(x - a.x, z - a.z) > 5)) {
+      if (avoidList.every((a) => Math.hypot(x - a.x, z - a.z) > minAvoidDistance)) {
         return { x, y, z };
       }
     }
@@ -348,6 +357,7 @@ export class Bot {
   private jumping = false;              // true between takeoff and landing (drives the jump anim)
   private wasOnGround = true;           // for landing-edge detection
   private shotAtTimer = 0;              // counts down after the bot is recently shot near; raises dodge reactivity
+  private spawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
   // Combat state
   protected diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
   private engagedId: string | null = null; // current target id, null = roaming
@@ -437,6 +447,7 @@ export class Bot {
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     if (this.boostCooldown > 0) this.boostCooldown = Math.max(0, this.boostCooldown - dt);
     if (this.shotAtTimer > 0) this.shotAtTimer = Math.max(0, this.shotAtTimer - dt);
+    if (this.spawnInvuln > 0) this.spawnInvuln = Math.max(0, this.spawnInvuln - dt);
     if (this.decideTimer > 0) this.decideTimer -= dt;
 
     if (!this.state.alive) {
@@ -462,6 +473,7 @@ export class Bot {
         this.jumping = false;
         this.wasOnGround = true;
         this.shotAtTimer = 0;
+        this.spawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
         this.decideTimer = rand(0, this.mv.decideInterval);
         this.group.position.set(spot.x, spot.y, spot.z);
         this.state.alive = true;
@@ -491,7 +503,7 @@ export class Bot {
     let best: BotTarget | null = null;
     let bestDist = Infinity;
     for (const e of enemies) {
-      if (e.id === this.state.id) continue;
+      if (e.id === this.state.id || e.spawnProtected) continue;
       // The bodyguard protects its owner. Hostile bots may damage the guard,
       // while a guard ignores the player and any other allied guard.
       if (this.bodyguard ? e.id === 'player' || e.bodyguard : false) continue;
@@ -567,11 +579,10 @@ export class Bot {
         this.updateLoco(beforeX, beforeZ, dt);
         return null;
       }
-      this.target = {
-        x: this.ownerPos.x - Math.sin(this.facing) * 2.5,
-        y: this.ownerPos.y,
-        z: this.ownerPos.z - Math.cos(this.facing) * 2.5,
-      };
+      // Follow the owner directly instead of orbiting an offset computed from
+      // the current look angle. That offset could make the guard strafe or move
+      // backward while still facing its old heading, which read as moonwalking.
+      this.target = { ...this.ownerPos };
     }
     this.aimSeeded = false; // re-acquire aim from scratch on the next target
     this.lastTargetId = null;
@@ -1012,6 +1023,7 @@ export class Bot {
     return {
       botId: this.state.id,
       botName: this.state.name,
+      bodyguard: this.state.bodyguard,
       origin: { ...eye },
       dir: { x: dx / l2, y: dy / l2, z: dz / l2 },
       team: this.team,
@@ -1046,6 +1058,10 @@ export class Bot {
 
   setOwnerPosition(pos: Vec3 | null) {
     this.ownerPos = pos ? { ...pos } : null;
+  }
+
+  isSpawnProtected(): boolean {
+    return this.spawnInvuln > 0;
   }
 
   kill() {
@@ -1272,7 +1288,7 @@ export class BotManager {
   ): Bot | null {
     const existing = this.bots.find((b) => b.state.bodyguard);
     if (existing) return existing;
-    const spawn = pickFreeSpot(map, ownerPos);
+    const spawn = pickFreeSpot(map, [ownerPos, ...this.bots.filter((b) => b.state.alive).map((b) => b.state.pos)]);
     const guard = new Bot(
       'bodyguard',
       'Bodyguard',
@@ -1289,11 +1305,60 @@ export class BotManager {
     return guard;
   }
 
-  dismissBodyguard(scene: THREE.Scene) {
-    const guard = this.bots.find((b) => b.state.bodyguard);
-    if (!guard) return;
-    guard.dispose(scene);
-    this.bots = this.bots.filter((b) => b !== guard);
+  summonAdminBodyguards(
+    scene: THREE.Scene,
+    map: ArenaMap,
+    ownerPos: Vec3,
+    model: BotModel | null,
+    difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
+    ownerFacing = 0,
+    count = 10,
+  ): Bot[] {
+    if (this.bots.some((b) => b.state.bodyguard)) return this.bots.filter((b) => b.state.bodyguard);
+    const guards: Bot[] = [];
+    const avoid: Vec3[] = [ownerPos, ...this.bots.filter((b) => b.state.alive).map((b) => b.state.pos)];
+    const radius = 4.5;
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 * i) / count;
+      const desired = {
+        x: ownerPos.x + Math.cos(angle) * radius,
+        y: ownerPos.y,
+        z: ownerPos.z + Math.sin(angle) * radius,
+      };
+      // Use the map-aware picker for every guard. The desired ring is only a
+      // spread hint; forcing those coordinates can put several guards inside
+      // the same cover piece or outside a small arena.
+      const spawn = pickFreeSpot(map, avoid, BOT_RADIUS, 3.5);
+      const guard = new Bot(
+        `admin-bodyguard-${i}`,
+        `Bodyguard ${i + 1}`,
+        spawn,
+        scene,
+        model,
+        difficulty,
+        true,
+        'assault',
+        ownerFacing,
+      );
+      guard.setOwnerPosition(ownerPos);
+      guards.push(guard);
+      this.bots.push(guard);
+      avoid.push(spawn);
+    }
+    return guards;
+  }
+
+  dismissBodyguard(scene: THREE.Scene, guard?: Bot) {
+    const target = guard ?? this.bots.find((b) => b.state.bodyguard);
+    if (!target) return;
+    target.dispose(scene);
+    this.bots = this.bots.filter((b) => b !== target);
+  }
+
+  dismissAllBodyguards(scene: THREE.Scene) {
+    const guards = this.bots.filter((b) => b.state.bodyguard);
+    for (const guard of guards) guard.dispose(scene);
+    this.bots = this.bots.filter((b) => !b.state.bodyguard);
   }
 
   bodyguard(): Bot | null {

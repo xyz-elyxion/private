@@ -85,13 +85,12 @@ export const BOOST_AIRCTRL_BONUS = 0.4;
 export const BOOST_AIRCTRL_TIME = 0.4;
 export const BOOST_COOLDOWN = 0.3;
 
-// Ability cooldowns. Teleport is a short combat reposition; Bodyguard is a
-// timed summon so it cannot permanently fill the arena with extra bots.
+// Ability cooldowns. Teleport is a short combat reposition; bodyguards remain
+// deployed until an enemy kills them (or the match/map is reset).
 export const TELEPORT_COOLDOWN = 8;
 export const TELEPORT_RANGE = 14;
 export const BODYGUARD_COOLDOWN = 28;
 export const ADMIN_BODYGUARD_COOLDOWN = 28;
-export const BODYGUARD_DURATION = 18;
 export const BODYGUARD_DAMAGE = 12;
 export const BODYGUARD_FIRE_COOLDOWN = 0.8;
 export const BODYGUARD_RANGE = 36;

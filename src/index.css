@@ -281,3 +281,257 @@ canvas {
 .deck-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ── Lobby redesign ───────────────────────────────────────────────────────
+   A compact command-center layout: the left side is for committing to a
+   match, while the right side is a live operations feed. These classes keep
+   the structure readable in JSX and let the menu feel intentional instead
+   of like a stack of unrelated buttons. */
+.lobby-redesign {
+  isolation: isolate;
+  background-color: #050609;
+  background-image:
+    radial-gradient(55rem 32rem at 17% 18%, rgba(34, 211, 238, 0.12), transparent 68%),
+    radial-gradient(38rem 30rem at 88% 86%, rgba(217, 70, 239, 0.08), transparent 70%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    #050609;
+  background-size: auto, auto, 72px 72px, 72px 72px, auto;
+}
+.lobby-redesign::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.65;
+  background:
+    linear-gradient(90deg, transparent 0 15%, rgba(34, 211, 238, 0.08) 15.05%, transparent 15.1%),
+    linear-gradient(180deg, transparent 0 72%, rgba(217, 70, 239, 0.08) 72.05%, transparent 72.1%);
+}
+.lobby-header {
+  min-height: 3.3rem;
+}
+.lobby-header h1 {
+  text-shadow: 0 0 28px rgba(34, 211, 238, 0.28);
+}
+.lobby-main-grid {
+  position: relative;
+}
+.lobby-command-column {
+  padding-top: 0.15rem;
+}
+.lobby-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 10.5rem;
+  padding: 1.35rem 1.5rem 1.25rem;
+  border: 1px solid rgba(103, 232, 249, 0.2);
+  background:
+    linear-gradient(110deg, rgba(8, 22, 29, 0.96), rgba(9, 11, 17, 0.94) 58%, rgba(20, 11, 28, 0.9)),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 4px);
+  clip-path: polygon(18px 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%, 0 18px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 18px 45px rgba(0, 0, 0, 0.18);
+}
+.lobby-hero::after {
+  content: '01';
+  position: absolute;
+  right: 1.5rem;
+  bottom: -0.35rem;
+  color: rgba(103, 232, 249, 0.08);
+  font-family: var(--font-display);
+  font-size: 7rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.12em;
+  pointer-events: none;
+}
+.lobby-hero-kicker {
+  position: relative;
+  z-index: 1;
+  color: rgba(103, 232, 249, 0.72);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+.lobby-hero-title {
+  position: relative;
+  z-index: 1;
+  margin: 0.35rem 0 0;
+  color: #f8fafc;
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 5vw, 3.45rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+}
+.lobby-hero-copy {
+  position: relative;
+  z-index: 1;
+  max-width: 34rem;
+  margin: 0.8rem 0 0;
+  color: rgba(226, 232, 240, 0.58);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+.lobby-hero-meta {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+  margin-top: 1rem;
+  color: rgba(148, 163, 184, 0.65);
+  font-family: var(--font-mono);
+  font-size: 0.59rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+}
+.lobby-hero-meta span:first-child {
+  color: rgba(167, 243, 208, 0.9);
+}
+.lobby-signal {
+  display: inline-block;
+  width: 0.38rem;
+  height: 0.38rem;
+  margin-right: 0.28rem;
+  border-radius: 999px;
+  background: #34d399;
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.85);
+  animation: deck-pulse 1.8s ease-in-out infinite;
+}
+.lobby-primary-cta {
+  position: relative;
+  min-height: 4.7rem;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(167, 243, 208, 0.12), 0 15px 34px rgba(16, 185, 129, 0.13);
+}
+.lobby-primary-cta::after {
+  content: '';
+  position: absolute;
+  top: -40%;
+  right: 7%;
+  width: 16rem;
+  height: 220%;
+  transform: rotate(24deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  transition: transform 0.6s ease;
+  pointer-events: none;
+}
+.lobby-primary-cta:hover::after {
+  transform: translateX(11rem) rotate(24deg);
+}
+.lobby-play-grid {
+  grid-auto-rows: minmax(4rem, auto);
+}
+.lobby-action-card {
+  position: relative;
+  min-height: 4rem;
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.025), transparent 65%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+.lobby-action-card::before {
+  content: '';
+  position: absolute;
+  top: 0.7rem;
+  right: 0.7rem;
+  width: 0.35rem;
+  height: 0.35rem;
+  border: 1px solid currentColor;
+  opacity: 0.42;
+}
+.lobby-action-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.lobby-utility-row {
+  padding-top: 0.2rem;
+}
+.lobby-utility-button {
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+.lobby-utility-button:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.07);
+}
+.lobby-live-column {
+  min-height: 0;
+}
+.lobby-live-column > .clip-deck,
+.lobby-live-column .deck-panel {
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+.lobby-panel-heading {
+  min-height: 2.85rem;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.045), transparent 65%);
+}
+.lobby-online-list {
+  background: rgba(0, 0, 0, 0.12);
+}
+.lobby-footer {
+  min-height: 1.8rem;
+}
+
+@media (min-width: 1024px) {
+  .lobby-main-grid {
+    overflow: hidden;
+  }
+  .lobby-command-column {
+    padding-right: 0.45rem;
+  }
+  .lobby-live-column {
+    padding-left: 0.35rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .lobby-redesign {
+    overflow-y: auto;
+  }
+  .lobby-redesign > div {
+    min-height: 100%;
+    height: auto;
+  }
+  .lobby-header {
+    flex-wrap: wrap;
+  }
+  .lobby-header > div {
+    margin-left: auto;
+  }
+  .lobby-hero {
+    min-height: 9.5rem;
+    padding: 1.15rem 1.1rem 1rem;
+  }
+  .lobby-hero-title {
+    font-size: 2.25rem;
+  }
+  .lobby-hero-meta {
+    font-size: 0.53rem;
+  }
+  .lobby-primary-cta {
+    padding: 1rem 1.1rem;
+  }
+  .lobby-primary-cta span span:last-child {
+    display: none;
+  }
+  .lobby-play-grid {
+    grid-template-columns: 1fr;
+  }
+  .lobby-play-grid > .col-span-2 {
+    grid-column: span 1;
+  }
+  .lobby-footer {
+    padding-bottom: 0.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lobby-primary-cta::after,
+  .lobby-action-card:hover,
+  .lobby-utility-button:hover {
+    transform: none;
+  }
+}

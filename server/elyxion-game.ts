@@ -36,7 +36,6 @@ import {
   DEFAULT_ABILITY,
   BODYGUARD_COOLDOWN,
   ADMIN_BODYGUARD_COOLDOWN,
-  BODYGUARD_DURATION,
   BODYGUARD_DAMAGE,
   BODYGUARD_FIRE_COOLDOWN,
   BODYGUARD_RANGE,
@@ -219,7 +218,6 @@ type BodyguardRecord = {
   yaw: number;
   idleYaw: number;
   health: number;
-  expiresAt: number;
   nextShotAt: number;
 };
 
@@ -1577,7 +1575,6 @@ export function attachElyxionWs(wss: WebSocketServer) {
       });
     }
     for (const guard of room.bodyguards.values()) {
-      if (guard.expiresAt <= now) continue;
       players.push({
         id: guard.id,
         x: guard.pos.x,
@@ -1654,7 +1651,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     }
     for (const guard of room.bodyguards.values()) {
       const owner = clients.get(guard.ownerId);
-      if (owner && guard.expiresAt > Date.now()) players.push(bodyguardMeta(guard, owner));
+      if (owner) players.push(bodyguardMeta(guard, owner));
     }
     return { type: 'meta' as const, players };
   };
@@ -2826,7 +2823,6 @@ export function attachElyxionWs(wss: WebSocketServer) {
               yaw: record.yaw + Math.PI,
               idleYaw: record.yaw + Math.PI,
               health: MAX_HEALTH,
-              expiresAt: ts + BODYGUARD_DURATION * 1000,
               nextShotAt: ts + 500 + i * 80,
             });
           }
@@ -2854,7 +2850,6 @@ export function attachElyxionWs(wss: WebSocketServer) {
             yaw: record.yaw + Math.PI,
             idleYaw: record.yaw + Math.PI,
             health: MAX_HEALTH,
-            expiresAt: ts + BODYGUARD_DURATION * 1000,
             nextShotAt: ts + 500,
           };
           room.bodyguards.set(guard.id, guard);
@@ -2862,7 +2857,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
           sendRaw(record.socket, {
             type: 'ability-bodyguard',
             cooldownMs: BODYGUARD_COOLDOWN * 1000,
-            durationMs: BODYGUARD_DURATION * 1000,
+            durationMs: 0,
           });
           broadcastMeta(room);
           break;
@@ -3010,7 +3005,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     for (const [guardId, guard] of room.bodyguards) {
       const ownerId = guard.ownerId;
       const owner = clients.get(ownerId);
-      if (!owner || owner.disconnectedAt > 0 || guard.expiresAt <= now || guard.health <= 0) {
+      if (!owner || owner.disconnectedAt > 0 || guard.health <= 0) {
         room.bodyguards.delete(guardId);
         broadcastMeta(room);
         continue;
@@ -3037,7 +3032,13 @@ export function attachElyxionWs(wss: WebSocketServer) {
         if (!blocked) { bestDist = d; target = candidate; }
       }
       if (target) {
-        guard.yaw = Math.atan2(target.pos.x - guard.pos.x, target.pos.z - guard.pos.z);
+        // Client player models face the camera-forward convention
+        // (-sin(yaw), -cos(yaw)). Convert the target vector to that yaw so the
+        // guard's model faces the enemy instead of moonwalking toward them.
+        guard.yaw = Math.atan2(
+          -(target.pos.x - guard.pos.x),
+          -(target.pos.z - guard.pos.z),
+        );
         if (bestDist > 8) {
           const step = Math.min(bestDist - 8, BODYGUARD_SPEED / SNAPSHOT_HZ);
           guard.pos.x += (target.pos.x - guard.pos.x) / bestDist * step;
@@ -3112,13 +3113,20 @@ export function attachElyxionWs(wss: WebSocketServer) {
           }
         }
       } else {
-        const d = Math.hypot(owner.pos.x - guard.pos.x, owner.pos.z - guard.pos.z);
+        const dx = owner.pos.x - guard.pos.x;
+        const dz = owner.pos.z - guard.pos.z;
+        const d = Math.hypot(dx, dz);
         if (d > 4) {
           const step = Math.min(d - 3, BODYGUARD_SPEED / SNAPSHOT_HZ);
-          guard.pos.x += (owner.pos.x - guard.pos.x) / d * step;
-          guard.pos.z += (owner.pos.z - guard.pos.z) / d * step;
+          guard.pos.x += (dx / d) * step;
+          guard.pos.z += (dz / d) * step;
+          // Face the direction of travel in the remote-player yaw convention;
+          // keeping the idle/owner-facing yaw while moving made the guard
+          // visually walk backwards (moonwalk).
+          guard.yaw = Math.atan2(-dx, -dz);
+        } else {
+          guard.yaw = guard.idleYaw;
         }
-        guard.yaw = guard.idleYaw;
       }
     }
   };
