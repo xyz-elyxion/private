@@ -22,10 +22,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const ENV_PATH = path.join(process.cwd(), '.env');
+const ENV_PATHS = [
+  path.join(process.cwd(), '.env'),
+  path.join(process.cwd(), '.env.local'),
+];
 
-if (fs.existsSync(ENV_PATH)) {
-  for (const line of fs.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
+for (const envPath of ENV_PATHS) {
+  if (!fs.existsSync(envPath)) continue;
+  for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
     if (!m) continue; // blank or comment line
     const [, key, raw] = m;

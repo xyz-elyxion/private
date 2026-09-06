@@ -104,7 +104,6 @@ export type BotFireIntent = {
   team: number | null;
   weapon: WeaponType;
 };
-const MODEL_SCALE = 1.0;
 // Soldier.glb actually faces -Z at identity (confirmed: when camera is at
 // +Z we see the model's back). Movement direction comes back as
 // atan2(dx, dz) which is 0 for wishdir +Z, so we add π to rotate the
@@ -116,6 +115,18 @@ export type BotModel = {
   scene: THREE.Object3D;
   animations: THREE.AnimationClip[];
 };
+
+// Normalize every character asset to the gameplay actor height and put its feet
+// on the actor origin. This keeps bots, bodyguards, and remote players visually
+// consistent even if a GLB was authored with a different unit scale or origin.
+export function normalizeModelHeight(model: THREE.Object3D, targetHeight: number): void {
+  const bounds = new THREE.Box3().setFromObject(model);
+  const height = bounds.max.y - bounds.min.y;
+  if (!Number.isFinite(height) || height <= 1e-5) return;
+  const scale = targetHeight / height;
+  model.scale.setScalar(scale);
+  model.position.y = -bounds.min.y * scale;
+}
 
 // Module-level cache so React StrictMode's double-mount (and any future
 // remount) doesn't trigger two concurrent GLTFLoader runs. Two concurrent
@@ -1160,7 +1171,7 @@ export class Bot {
     // partial axis writes leaving residual X/Z rotation in place.
     cloned.position.set(0, 0, 0);
     cloned.rotation.set(0, 0, 0);
-    cloned.scale.setScalar(MODEL_SCALE);
+    normalizeModelHeight(cloned, BOT_HEIGHT);
     // Tag the whole subtree so Game.disposeScene() skips disposing the
     // shared geometry / materials / textures from the cached source.
     cloned.traverse((obj) => {

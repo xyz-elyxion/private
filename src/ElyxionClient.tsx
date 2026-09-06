@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { useAuth, LoginModal, type Account } from './auth';
 import { FeedbackModal } from './FeedbackModal';
+import { ReportModal } from './ReportModal';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
 import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, type AnnouncerPackId } from './game/audio';
@@ -1025,6 +1026,7 @@ export default function ElyxionClient() {
           key={playId}
           config={config}
           settings={settings}
+          isAdmin={!!auth.account?.isAdmin}
           onChangeSettings={setSettings}
           onExit={() => exitToLobby(null)}
         />
@@ -1165,6 +1167,7 @@ function GameView({
   const gameRef = useRef<Game | null>(null);
   const [hud, setHud] = useState<HudState>(INITIAL_HUD);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [reportTarget, setReportTarget] = useState<PlayerScore | null>(null);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
   const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -1410,7 +1413,8 @@ function GameView({
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
-      {!hud.pom && <HudOverlay hud={hud} settings={settings} />}
+      {!hud.pom && <HudOverlay hud={hud} settings={settings} onReport={setReportTarget} />}
+      {reportTarget && <ReportModal target={reportTarget} onClose={() => setReportTarget(null)} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1529,11 +1533,13 @@ function GameView({
 function SpectatorView({
   config,
   settings,
+  isAdmin,
   onChangeSettings,
   onExit,
 }: {
   config: Extract<MatchConfig, { mode: 'spectator' }>;
   settings: Settings;
+  isAdmin: boolean;
   onChangeSettings: (s: Settings) => void;
   onExit: () => void;
 }) {
@@ -1542,6 +1548,7 @@ function SpectatorView({
   const gameRef = useRef<Game | null>(null);
   const [hud, setHud] = useState<HudState>(INITIAL_HUD);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [reportTarget, setReportTarget] = useState<PlayerScore | null>(null);
   const [showScores, setShowScores] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1726,8 +1733,10 @@ function SpectatorView({
           netStatus={hud.netStatus}
           mode={hud.mode}
           showPing={settings.showPing && hud.netStatus !== 'off'}
+          onReport={setReportTarget}
         />
       )}
+      {reportTarget && <ReportModal target={reportTarget} onClose={() => setReportTarget(null)} />}
 
       {error && (
         <JoinErrorOverlay message={error} onLeave={onExit} />
@@ -3262,9 +3271,11 @@ function JoinErrorOverlay({
 function HudOverlay({
   hud,
   settings,
+  onReport,
 }: {
   hud: HudState;
   settings: Settings;
+  onReport: (score: PlayerScore) => void;
 }) {
   const dead = hud.killcam !== null;
   const s = settings.uiScale || 1;
@@ -3336,6 +3347,7 @@ function HudOverlay({
           netStatus={hud.netStatus}
           mode={hud.mode}
           showPing={settings.showPing && hud.netStatus !== 'off'}
+          onReport={onReport}
         />
       )}
       </div>
@@ -4402,11 +4414,13 @@ function FullScoreboard({
   netStatus,
   mode,
   showPing = false,
+  onReport,
 }: {
   scores: PlayerScore[];
   netStatus: HudState['netStatus'];
   mode: GameMode;
   showPing?: boolean;
+  onReport?: (score: PlayerScore) => void;
 }) {
   const title = netStatus !== 'off' ? 'Elyxion — Online' : 'Elyxion';
   const tag = mode === 'tdm' ? 'TDM' : mode === 'duel' ? 'Duel' : 'FFA';
@@ -4429,14 +4443,15 @@ function FullScoreboard({
                 team={team}
                 players={scores.filter((s) => s.team === team)}
                 showPing={showPing}
+                onReport={onReport}
               />
             ))}
             {scores.some((s) => s.team == null) && (
-              <ScoreTable players={scores.filter((s) => s.team == null)} showPing={showPing} />
+              <ScoreTable players={scores.filter((s) => s.team == null)} showPing={showPing} onReport={onReport} />
             )}
           </div>
         ) : (
-          <ScoreTable players={scores} showPing={showPing} />
+          <ScoreTable players={scores} showPing={showPing} onReport={onReport} />
         )}
       </div>
     </div>
@@ -4449,14 +4464,16 @@ function ScoreTable({
   players,
   teamColor,
   showPing = false,
+  onReport,
 }: {
   players: PlayerScore[];
   teamColor?: string;
   showPing?: boolean;
+  onReport?: (score: PlayerScore) => void;
 }) {
   const cols = showPing
-    ? 'grid-cols-[1fr_auto_auto_auto_auto_auto_auto]'
-    : 'grid-cols-[1fr_auto_auto_auto_auto_auto]';
+    ? 'grid-cols-[1fr_auto_auto_auto_auto_auto_auto_auto]'
+    : 'grid-cols-[1fr_auto_auto_auto_auto_auto_auto]';
   return (
     <div className={`grid ${cols} gap-x-6 gap-y-1 text-[12px]`}>
       <Th>Player</Th>
@@ -4466,8 +4483,9 @@ function ScoreTable({
       <Th align='right'>Acc</Th>
       <Th align='right'>Best Streak</Th>
       {showPing && <Th align='right'>Ping</Th>}
+      <Th align='right'>Report</Th>
       {players.map((s) => (
-        <ScoreboardRow key={s.id} score={s} nameColor={teamColor} showPing={showPing} />
+        <ScoreboardRow key={s.id} score={s} nameColor={teamColor} showPing={showPing} onReport={onReport} />
       ))}
     </div>
   );
@@ -4479,10 +4497,12 @@ function TeamScoreSection({
   team,
   players,
   showPing = false,
+  onReport,
 }: {
   team: number;
   players: PlayerScore[];
   showPing?: boolean;
+  onReport?: (score: PlayerScore) => void;
 }) {
   const color = TEAM_COLORS[team] ?? '#ffffff';
   const total = players.reduce((sum, s) => sum + s.frags, 0);
@@ -4502,7 +4522,7 @@ function TeamScoreSection({
           {total}
         </span>
       </div>
-      <ScoreTable players={players} teamColor={color} showPing={showPing} />
+      <ScoreTable players={players} teamColor={color} showPing={showPing} onReport={onReport} />
     </div>
   );
 }
@@ -4534,10 +4554,12 @@ function ScoreboardRow({
   score,
   nameColor,
   showPing = false,
+  onReport,
 }: {
   score: PlayerScore;
   nameColor?: string;
   showPing?: boolean;
+  onReport?: (score: PlayerScore) => void;
 }) {
   const kd =
     score.deaths === 0
@@ -4581,7 +4603,20 @@ function ScoreboardRow({
           {score.ping == null ? '—' : `${score.ping}ms`}
         </div>
       )}
+      <div className='py-1.5 text-right'>
+        {!score.isLocal && onReport && (
+          <button
+            type='button'
+            onClick={() => onReport(score)}
+            aria-label={`Report ${score.name}`}
+            className='text-[10px] uppercase tracking-[0.1em] text-rose-300/75 transition hover:text-rose-200'
+          >
+            Report
+          </button>
+        )}
+      </div>
     </>
+
   );
 }
 

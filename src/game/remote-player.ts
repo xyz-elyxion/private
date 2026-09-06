@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { applyHighlight, type BotModel } from './bots';
+import { applyHighlight, normalizeModelHeight, type BotModel } from './bots';
 import { LocomotionBlender } from './locomotion';
 import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
 import { WornHat } from './hats';
@@ -15,7 +15,6 @@ import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS, CROUCH_HEIGHT } from './constants';
 import type { AABB } from './types';
 
-const MODEL_SCALE = 1.0;
 // Soldier.glb faces -Z at identity. A remote player at yaw=0 is looking down
 // -Z too (forward = (-sin yaw, -cos yaw)), so the model already matches with
 // NO offset — rotation.y = yaw faces the look direction exactly. (Bots use a
@@ -455,7 +454,7 @@ export class RemotePlayer {
     const cloned = SkeletonUtils.clone(model.scene);
     cloned.position.set(0, 0, 0);
     cloned.rotation.set(0, 0, 0);
-    cloned.scale.setScalar(MODEL_SCALE);
+    normalizeModelHeight(cloned, BOT_HEIGHT);
     cloned.traverse((obj) => {
       obj.userData.shared = true;
     });
