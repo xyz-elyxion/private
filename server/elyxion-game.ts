@@ -3350,19 +3350,20 @@ export function attachElyxionWs(wss: WebSocketServer) {
     }
   }, 1500);
 
-  const sweepTimer = setInterval(async () => {
+  const sweepTimer = setInterval(() => {
     const now = Date.now();
     // Lapsed timed bans are inert at read time (expiry-aware lookups), but
     // delete the rows so the ban tables don't grow forever.
-    const swept = await sweepExpiredBans(now);
-    if (swept.nameBans + swept.ipBans + swept.guestBans > 0) {
-      acLog({
-        kind: 'unban',
-        target: 'expired',
-        detail: 'sweep',
-        reason: `${swept.nameBans} name + ${swept.ipBans} ip + ${swept.guestBans} guest timed bans lapsed`,
-      });
-    }
+    void sweepExpiredBans(now).then((swept) => {
+      if (swept.nameBans + swept.ipBans + swept.guestBans > 0) {
+        acLog({
+          kind: 'unban',
+          target: 'expired',
+          detail: 'sweep',
+          reason: `${swept.nameBans} name + ${swept.ipBans} ip + ${swept.guestBans} guest timed bans lapsed`,
+        });
+      }
+    }).catch((err) => console.error('[db] ban sweep failed', err));
     // Drop stale clients (socket dead) and AFK players (alive socket but no real
     // input in a while — pings alone keep `lastSeen` fresh but not `lastActiveMs`,
     // so an idle client used to hold a slot, e.g. blocking a 2-cap duel room).

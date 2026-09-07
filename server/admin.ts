@@ -681,7 +681,7 @@ adminRouter.delete('/announcements/:id', async (req, res) => {
 // ban, resume slot released. Target a display NAME ({ name }, case-insensitive)
 // or a guest by their uuid ({ guest }). Unknown/offline target → 404
 // 'not_online'.
-adminRouter.post('/kick', (req, res) => {
+adminRouter.post('/kick', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const name = cleanUsername(body.name);
@@ -689,7 +689,7 @@ adminRouter.post('/kick', (req, res) => {
   const reason = cleanUsername(body.reason).slice(0, 200);
   const admin = (req as AdminRequest).admin;
   if (guest) {
-    const r = moderation.kickGuest(guest, reason, admin.username);
+    const r = await moderation.kickGuest(guest, reason, admin.username);
     logEvent({
       event: 'admin.kick_guest',
       actorId: admin.id,
@@ -709,7 +709,7 @@ adminRouter.post('/kick', (req, res) => {
     res.status(400).json({ error: 'bad_target' });
     return;
   }
-  const r = moderation.kick(name, reason, admin.username);
+  const r = await moderation.kick(name, reason, admin.username);
   logEvent({
     event: 'admin.kick',
     actorId: admin.id,
@@ -731,7 +731,7 @@ adminRouter.post('/kick', (req, res) => {
 // the guest's next connect) and boots them now. An IP ban blocks the address at
 // the door and boots whoever is on it now. Optional { durationMs } makes it a
 // timed ban (0/absent = permanent).
-adminRouter.post('/ban', (req, res) => {
+adminRouter.post('/ban', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const name = cleanUsername(body.name);
@@ -749,7 +749,7 @@ adminRouter.post('/ban', (req, res) => {
   }
   const admin = (req as AdminRequest).admin;
   if (guest) {
-    const r = moderation.banGuest(guest, reason, admin.username, bannedUntil);
+    const r = await moderation.banGuest(guest, reason, admin.username, bannedUntil);
     logEvent({
       event: 'admin.ban_guest',
       actorId: admin.id,
@@ -762,7 +762,7 @@ adminRouter.post('/ban', (req, res) => {
     return;
   }
   if (ip) {
-    const r = moderation.banIp(ip, reason, admin.username, bannedUntil);
+    const r = await moderation.banIp(ip, reason, admin.username, bannedUntil);
     logEvent({
       event: 'admin.ban_ip',
       actorId: admin.id,
@@ -773,7 +773,7 @@ adminRouter.post('/ban', (req, res) => {
     res.json({ ok: true, ip, names: r.names, reason, bannedUntil });
     return;
   }
-  const r = moderation.ban(name, reason, admin.username, bannedUntil);
+  const r = await moderation.ban(name, reason, admin.username, bannedUntil);
   logEvent({
     event: 'admin.ban',
     actorId: admin.id,
@@ -787,7 +787,7 @@ adminRouter.post('/ban', (req, res) => {
 // Lift a ban — by name ({ name }, also lifts the IPs + guest uuids that ban
 // captured), by guest uuid ({ guest }, also lifts the IP it captured), or by IP
 // ({ ip }). No-op (404) when nothing matched.
-adminRouter.post('/unban', (req, res) => {
+adminRouter.post('/unban', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const name = cleanUsername(body.name);
@@ -799,7 +799,7 @@ adminRouter.post('/unban', (req, res) => {
   }
   const admin = (req as AdminRequest).admin;
   if (guest) {
-    const ok = moderation.unbanGuest(guest, admin.username);
+    const ok = await moderation.unbanGuest(guest, admin.username);
     logEvent({
       event: 'admin.unban_guest',
       actorId: admin.id,
@@ -816,7 +816,7 @@ adminRouter.post('/unban', (req, res) => {
     return;
   }
   if (ip) {
-    const ok = moderation.unbanIp(ip, admin.username);
+    const ok = await moderation.unbanIp(ip, admin.username);
     logEvent({
       event: 'admin.unban_ip',
       actorId: admin.id,
@@ -831,7 +831,7 @@ adminRouter.post('/unban', (req, res) => {
     res.json({ ok: true, ip });
     return;
   }
-  const ok = moderation.unban(name, admin.username);
+  const ok = await moderation.unban(name, admin.username);
   logEvent({
     event: 'admin.unban',
     actorId: admin.id,
@@ -847,8 +847,8 @@ adminRouter.post('/unban', (req, res) => {
 });
 
 // Current ban list, newest first (for review / the dashboard). Read-only.
-adminRouter.get('/bans', (_req, res) => {
-  res.json({ bans: moderation.list() });
+adminRouter.get('/bans', async (_req, res) => {
+  res.json({ bans: await moderation.list() });
 });
 
 // Live players right now — accounts AND each online guest (uuid + IP + where
