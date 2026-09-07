@@ -258,7 +258,10 @@ export class RemotePlayer {
     this.group.position.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
     if (snapshot.crouched !== this.crouched) {
       this.crouched = snapshot.crouched;
-      this.modelRoot?.scale.set(1, this.crouched ? CROUCH_HEIGHT / BOT_HEIGHT : 1, 1);
+      if (this.modelRoot) {
+        const stanceScale = this.crouched ? CROUCH_HEIGHT / BOT_HEIGHT : 1;
+        this.modelRoot.scale.y = this.modelRoot.scale.x * stanceScale;
+      }
       this.nameSprite.position.y = (this.crouched ? CROUCH_HEIGHT : BOT_HEIGHT) + 0.35 + (this.titleText ? 0.13 : 0);
       this.shieldMesh.position.y = this.crouched ? CROUCH_HEIGHT * 0.5 : BOT_HEIGHT * 0.55;
     }
