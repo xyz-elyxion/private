@@ -400,7 +400,7 @@ const CARD_STAT_DEFS: ReadonlyArray<{
   { key: 'headshots', label: 'HEADSHOTS', from: (p) => String(p.stats.headshots) },
   { key: 'accuracy', label: 'ACCURACY', from: (p) => `${Math.round(p.stats.bestAccuracy)}%` },
   // Ranked Elo — "Unranked" until you've played a ranked match.
-  { key: 'rating', label: 'RANKED', from: (p) => (p.ranked ? String(p.ranked.rating) : 'Unranked') },
+  { key: 'rating', label: 'RANKED', from: (p) => (p.ranked ? String(p.ranked.season.rating) : 'Unranked') },
 ];
 
 const MAX_CARD_STATS = 3;
@@ -4207,6 +4207,21 @@ type RankedProfile = {
   streak: number;
   rank: number;
   provisional: boolean;
+  season: {
+    id: number;
+    rating: number;
+    peak: number;
+    games: number;
+    wins: number;
+    losses: number;
+    streak: number;
+    rank: number;
+    provisional: boolean;
+    startsAt: number;
+    endsAt: number;
+  };
+  eligible: boolean;
+  level: number;
 };
 type RankedLeaderEntry = {
   id: string;
@@ -4226,7 +4241,8 @@ const RANKED_BASE = 1000;
 // top-10 → "#N", otherwise the tier name; '' if the player has no ranked games.
 function rankedStandingText(ranked: InstagibProfile['ranked']): string {
   if (!ranked) return '';
-  return ranked.rank >= 1 && ranked.rank <= 10 ? `#${ranked.rank}` : rankedTierName(ranked.rating);
+  const season = ranked.season;
+  return season.rank >= 1 && season.rank <= 10 ? `#${season.rank}` : rankedTierName(season.rating);
 }
 
 // Full-screen ranked end-of-match overlay: VICTORY/DEFEAT + the rating delta.
@@ -4241,8 +4257,8 @@ function RankedResultOverlay({
 }) {
   const won = result.won;
   const mine = result.rating ? (won ? result.rating.winner : result.rating.loser) : null;
-  const tier = mine ? rankedTier(mine.rating) : null;
-  const delta = mine?.delta ?? 0;
+  const tier = mine ? rankedTier(mine.seasonRating) : null;
+  const delta = mine?.seasonDelta ?? 0;
   return (
     <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md">
       <div className="w-[420px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl">
@@ -4263,7 +4279,7 @@ function RankedResultOverlay({
               <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">New rating</div>
               <div className="mt-1 flex items-center justify-center gap-3">
                 <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
-                  {mine.rating}
+                  {mine.seasonRating}
                 </span>
                 <span
                   className={`font-mono text-lg tabular-nums ${delta >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}
@@ -4273,7 +4289,7 @@ function RankedResultOverlay({
                 </span>
               </div>
               <div className="mt-1 text-[12px] text-white/55">
-                {tier?.name} · ladder #{mine.rank}
+                Season {tier?.name} · ladder #{mine.seasonRank}
               </div>
               {result.reduced && (
                 <div className="mt-2 text-[11px] text-amber-300/80">
@@ -4334,6 +4350,7 @@ function RankedModal({
 }) {
   const [profile, setProfile] = useState<RankedProfile | null>(null);
   const [ladder, setLadder] = useState<RankedLeaderEntry[]>([]);
+  const [eligibility, setEligibility] = useState({ level: 1, eligible: false, minLevel: 10 });
   const [elapsed, setElapsed] = useState(0);
   const searching = status?.state === 'searching';
 
@@ -4341,7 +4358,14 @@ function RankedModal({
     if (!account) return;
     fetch('/api/ranked/me', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d: { profile?: RankedProfile } | null) => setProfile(d?.profile ?? null))
+      .then((d: { profile?: RankedProfile; level?: number; eligible?: boolean; minLevel?: number } | null) => {
+        setProfile(d?.profile ?? null);
+        setEligibility({
+          level: d?.level ?? d?.profile?.level ?? 1,
+          eligible: d?.eligible ?? d?.profile?.eligible ?? false,
+          minLevel: d?.minLevel ?? 10,
+        });
+      })
       .catch(() => {});
     fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
@@ -4371,7 +4395,9 @@ function RankedModal({
     return () => clearInterval(t);
   }, [searching, status?.since]);
 
-  const tier = profile ? rankedTier(profile.rating) : null;
+  const season = profile?.season;
+  const tier = profile ? rankedTier(season?.rating ?? profile.rating) : null;
+  const rankedEligible = eligibility.eligible;
 
   return (
     <ModalShell title="Ranked Duel" onClose={onClose}>
@@ -4397,50 +4423,66 @@ function RankedModal({
                   <div className="text-[10px] uppercase tracking-[0.2em] text-white/45">Your rating</div>
                   <div className="mt-0.5 flex items-baseline gap-2">
                     <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
-                      {profile?.rating ?? RANKED_BASE}
+                      {season?.rating ?? RANKED_BASE}
                     </span>
                     {tier && <span className="text-[12px] text-white/55">{tier.name}</span>}
                   </div>
                 </div>
                 <div className="text-right text-[11px] text-white/50">
-                  {profile && profile.rank > 0 ? (
+                  {season && season.rank > 0 ? (
                     <div>
-                      Ladder <span className="text-cyan-200">#{profile.rank}</span>
+                      Season #{season.rank}
                     </div>
                   ) : (
-                    <div className="text-white/35">Unranked</div>
+                    <div className="text-white/35">Unranked this season</div>
                   )}
                   <div className="tabular-nums">
-                    {profile?.wins ?? 0}W · {profile?.losses ?? 0}L
+                    {season?.wins ?? 0}W · {season?.losses ?? 0}L
                   </div>
-                  {profile?.provisional && <div className="text-amber-300/80">provisional</div>}
+                  {season?.provisional && <div className="text-amber-300/80">placement</div>}
                 </div>
               </div>
-              <div className="mt-4">
-                {searching ? (
-                  <button
-                    onClick={onCancel}
-                    className="w-full rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-500/20"
-                  >
-                    Searching… {elapsed}s · cancel
-                  </button>
-                ) : (
-                  <button
-                    onClick={onQueue}
-                    className="w-full rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
-                  >
-                    Find ranked match
-                  </button>
-                )}
-                {status?.reason === 'account' && (
-                  <p className="mt-2 text-center text-[11px] text-rose-300">Ranked needs an account.</p>
-                )}
-                {status?.reason === 'in-match' && (
-                  <p className="mt-2 text-center text-[11px] text-rose-300">
-                    You're already in a ranked match in another tab.
-                  </p>
-                )}
+              <div className="mt-1 text-[10px] text-white/35">
+                {season
+                  ? `Season ends ${new Date(season.endsAt).toLocaleDateString()}`
+                  : 'Season standings reset every 12 weeks'}
               </div>
+            </div>
+            <div className="mt-4">
+              {!rankedEligible && (
+                <p className="mb-2 text-center text-[11px] text-amber-200/80">
+                  Reach level {eligibility.minLevel} to unlock Ranked Duel. Current level: {eligibility.level}.
+                </p>
+              )}
+              {searching ? (
+                <button
+                  onClick={onCancel}
+                  className="w-full rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-500/20"
+                >
+                  Searching… {elapsed}s · cancel
+                </button>
+              ) : (
+                <button
+                  onClick={onQueue}
+                  disabled={!rankedEligible}
+                  className="w-full rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Find ranked match
+                </button>
+              )}
+              {status?.reason === 'account' && (
+                <p className="mt-2 text-center text-[11px] text-rose-300">Ranked needs an account.</p>
+              )}
+              {status?.reason === 'in-match' && (
+                <p className="mt-2 text-center text-[11px] text-rose-300">
+                  You&apos;re already in a ranked match in another tab.
+                </p>
+              )}
+              {status?.reason === 'level' && (
+                <p className="mt-2 text-center text-[11px] text-amber-200/80">
+                  Ranked unlocks at level 10.
+                </p>
+              )}
             </div>
 
             <div className="rounded-lg border border-white/12 bg-black/30 p-4">
@@ -6119,7 +6161,7 @@ type InstagibProfile = {
   unlocked: string[];
   equipped: Record<string, string>;
   stats: InstagibStats;
-  ranked: { rating: number; rank: number; provisional: boolean } | null;
+  ranked: RankedProfile | null;
 };
 
 function StatsModal({ onClose }: { onClose: () => void }) {
@@ -6377,16 +6419,25 @@ const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> =
 ];
 
 type LeaderboardWindow = 'all' | 'weekly' | 'daily' | 'ranked';
+type LeaderboardMode = 'all' | 'ffa' | 'duel' | 'tdm' | 'ranked';
 const LEADERBOARD_WINDOWS: ReadonlyArray<{ id: LeaderboardWindow; label: string }> = [
   { id: 'all', label: 'All-time' },
   { id: 'weekly', label: 'This week' },
   { id: 'daily', label: 'Today' },
   { id: 'ranked', label: 'Ranked' },
 ];
+const LEADERBOARD_MODES: ReadonlyArray<{ id: LeaderboardMode; label: string }> = [
+  { id: 'all', label: 'All modes' },
+  { id: 'ffa', label: 'FFA' },
+  { id: 'duel', label: 'Duel' },
+  { id: 'tdm', label: 'TDM' },
+  { id: 'ranked', label: 'Ranked Duel' },
+];
 
 function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const [sort, setSort] = useState<LeaderboardSort>('kills');
   const [window, setWindow] = useState<LeaderboardWindow>('all');
+  const [mode, setMode] = useState<LeaderboardMode>('all');
   const [rows, setRows] = useState<LeaderboardEntry[]>([]);
   const [you, setYou] = useState<LeaderboardYou>(null);
   const [rankedRows, setRankedRows] = useState<RankedLeaderEntry[]>([]);
@@ -6413,7 +6464,8 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
         active = false;
       };
     }
-    fetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25`, { credentials: 'same-origin' })
+    const modeQuery = mode === 'all' ? '' : `&mode=${mode}`;
+    fetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25${modeQuery}`, { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
       .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
         if (!active) return;
@@ -6427,18 +6479,22 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
     return () => {
       active = false;
     };
-  }, [sort, window]);
+  }, [sort, window, mode]);
 
   const youId = you?.entry.id;
   // Is the local player already visible in the top-N? If not, we pin them below.
   const youInTop = youId != null && rows.some((r) => r.id === youId);
   const rankedMeInTop = rankedMe != null && rankedRows.some((r) => r.id === rankedMe.id);
+  const rankedSeason = rankedMe?.season;
 
   return (
     <ModalShell title='Leaderboard' onClose={onClose}>
       <ButtonGroup label='Window' value={window} options={LEADERBOARD_WINDOWS} onChange={setWindow} />
       {!isRanked && (
-        <ButtonGroup label='Sort by' value={sort} options={LEADERBOARD_SORTS} onChange={setSort} />
+        <>
+          <ButtonGroup label='Mode' value={mode} options={LEADERBOARD_MODES} onChange={setMode} />
+          <ButtonGroup label='Sort by' value={sort} options={LEADERBOARD_SORTS} onChange={setSort} />
+        </>
       )}
       {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
       {state === 'error' && isRanked && (
@@ -6458,19 +6514,19 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
             {rankedRows.map((row, i) => (
               <RankedLeaderRow key={row.id} rank={i + 1} row={row} you={row.id === rankedMe?.id} />
             ))}
-            {rankedMe && rankedMe.rank > 0 && !rankedMeInTop && (
+            {rankedMe && rankedSeason && rankedSeason.rank > 0 && !rankedMeInTop && (
               <>
                 <div className='col-span-5 my-1 border-t border-dashed border-white/15' />
                 <RankedLeaderRow
-                  rank={rankedMe.rank}
+                  rank={rankedSeason.rank}
                   row={{
                     id: rankedMe.id,
                     userName: rankedMe.userName,
-                    rating: rankedMe.rating,
-                    games: rankedMe.games,
-                    wins: rankedMe.wins,
-                    losses: rankedMe.losses,
-                    streak: rankedMe.streak,
+                    rating: rankedSeason.rating,
+                    games: rankedSeason.games,
+                    wins: rankedSeason.wins,
+                    losses: rankedSeason.losses,
+                    streak: rankedSeason.streak,
                     admin: false,
                     verified: false,
                   }}

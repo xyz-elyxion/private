@@ -4,7 +4,13 @@
 // own standing for the lobby UI. Login-gated reads: a guest has no ranked id.
 
 import { Router, type Request } from 'express';
-import { getRankedLeaderboard, getRankedProfile } from './db';
+import {
+  currentRankedSeason,
+  getPlayerLevel,
+  getRankedLeaderboard,
+  getRankedProfile,
+  RANKED_MIN_LEVEL,
+} from './db';
 import { accountId } from './auth';
 
 export const rankedRouter = Router();
@@ -12,12 +18,20 @@ export const rankedRouter = Router();
 // The caller's own ranked profile (null for guests / never-played). The lobby's
 // "your rank" card reads this.
 rankedRouter.get('/ranked/me', (req: Request, res) => {
-  res.json({ profile: getRankedProfile(accountId(req)) });
+  const id = accountId(req);
+  const level = getPlayerLevel(id);
+  res.json({
+    profile: getRankedProfile(id),
+    level,
+    eligible: !!id && level >= RANKED_MIN_LEVEL,
+    minLevel: RANKED_MIN_LEVEL,
+    season: currentRankedSeason(),
+  });
 });
 
 // The top of the ladder, plus the caller's own standing pinned (so the UI can
 // show "you are #N" even when you're off the top page).
 rankedRouter.get('/ranked/leaderboard', (req: Request, res) => {
   const entries = getRankedLeaderboard(50);
-  res.json({ entries, me: getRankedProfile(accountId(req)) });
+  res.json({ entries, me: getRankedProfile(accountId(req)), season: currentRankedSeason() });
 });

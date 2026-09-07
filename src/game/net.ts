@@ -134,6 +134,9 @@ export type RankedSide = {
   rating: number;
   delta: number;
   rank: number;
+  seasonRating: number;
+  seasonDelta: number;
+  seasonRank: number;
 };
 type RankedResultMessage = {
   type: 'ranked-result';
@@ -1165,12 +1168,12 @@ export type ChatRejectReason = 'rate' | 'blocked' | 'account';
 
 // Ranked queue status pushed by the server (searching / idle). `reason` explains
 // an idle rejection: 'account' = a guest tried to queue (login-only); 'in-match' =
-// already in a ranked match in another tab.
+// already in a ranked match in another tab; 'level' = below the competitive gate.
 export type RankedStatus = {
   state: 'searching' | 'idle';
   size?: number; // players currently in the ranked queue
   since?: number; // server-clock ms the search began
-  reason?: 'account' | 'in-match';
+  reason?: 'account' | 'in-match' | 'level';
 };
 // A live ranked duel available to spectate (the ladder side-panel).
 export type RankedRoom = {
@@ -1305,7 +1308,8 @@ export class LobbyClient {
             state: msg.state === 'searching' ? 'searching' : 'idle',
             size: typeof msg.size === 'number' ? msg.size : undefined,
             since: typeof msg.since === 'number' ? msg.since : undefined,
-            reason: reason === 'account' ? 'account' : reason === 'in-match' ? 'in-match' : undefined,
+            reason:
+              reason === 'account' ? 'account' : reason === 'in-match' ? 'in-match' : reason === 'level' ? 'level' : undefined,
           });
           break;
         }

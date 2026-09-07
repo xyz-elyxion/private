@@ -96,6 +96,41 @@ CREATE TABLE IF NOT EXISTS instagib_period_stats (
 );
 CREATE INDEX IF NOT EXISTS idx_period_kills ON instagib_period_stats(period_key, total_kills);
 
+-- Mode-specific online leaderboard buckets. The mode is part of the key so
+-- casual FFA, Duel, TDM, and ranked results never compete in one board.
+CREATE TABLE IF NOT EXISTS instagib_mode_stats (
+  player_id        TEXT NOT NULL,
+  mode             TEXT NOT NULL,
+  user_name        TEXT NOT NULL,
+  total_kills      INTEGER NOT NULL DEFAULT 0,
+  total_deaths     INTEGER NOT NULL DEFAULT 0,
+  total_games      INTEGER NOT NULL DEFAULT 0,
+  total_wins       INTEGER NOT NULL DEFAULT 0,
+  best_kill_streak INTEGER NOT NULL DEFAULT 0,
+  headshots        INTEGER NOT NULL DEFAULT 0,
+  best_accuracy    REAL NOT NULL DEFAULT 0,
+  updated_at       INTEGER NOT NULL,
+  PRIMARY KEY (player_id, mode)
+);
+CREATE INDEX IF NOT EXISTS idx_mode_kills ON instagib_mode_stats(mode, total_kills);
+
+CREATE TABLE IF NOT EXISTS instagib_mode_period_stats (
+  player_id        TEXT NOT NULL,
+  mode             TEXT NOT NULL,
+  period_key       TEXT NOT NULL,
+  user_name        TEXT NOT NULL,
+  total_kills      INTEGER NOT NULL DEFAULT 0,
+  total_deaths     INTEGER NOT NULL DEFAULT 0,
+  total_games      INTEGER NOT NULL DEFAULT 0,
+  total_wins       INTEGER NOT NULL DEFAULT 0,
+  best_kill_streak INTEGER NOT NULL DEFAULT 0,
+  headshots        INTEGER NOT NULL DEFAULT 0,
+  best_accuracy    REAL NOT NULL DEFAULT 0,
+  updated_at       INTEGER NOT NULL,
+  PRIMARY KEY (player_id, mode, period_key)
+);
+CREATE INDEX IF NOT EXISTS idx_mode_period_kills ON instagib_mode_period_stats(mode, period_key, total_kills);
+
 -- Registered accounts. Progression keys off the account id (= instagib_stats
 -- player_id), so guests (no account) accrue nothing. Passwords are scrypt-hashed
 -- with a per-user salt (see server/auth.ts). Email is optional, recovery-only.
@@ -513,6 +548,46 @@ RETURNING total_kills, total_deaths, total_games, total_wins,
 `);
 
 // Per-period bucket upsert — same accumulation as the all-time row, keyed by period.
+const modeUpsertStmt = sqlite.prepare(`
+INSERT INTO instagib_mode_stats (
+  player_id, mode, user_name, total_kills, total_deaths, total_games,
+  total_wins, best_kill_streak, headshots, best_accuracy, updated_at
+) VALUES (
+  @playerId, @mode, @userName, @kills, @deaths, 1,
+  @wins, @bestStreak, @headshots, @accuracy, @now
+)
+ON CONFLICT(player_id, mode) DO UPDATE SET
+  user_name        = excluded.user_name,
+  total_kills      = total_kills + excluded.total_kills,
+  total_deaths     = total_deaths + excluded.total_deaths,
+  total_games      = total_games + 1,
+  total_wins       = total_wins + excluded.total_wins,
+  best_kill_streak = max(best_kill_streak, excluded.best_kill_streak),
+  headshots        = headshots + excluded.headshots,
+  best_accuracy    = max(best_accuracy, excluded.best_accuracy),
+  updated_at       = excluded.updated_at
+`);
+
+const modePeriodUpsertStmt = sqlite.prepare(`
+INSERT INTO instagib_mode_period_stats (
+  player_id, mode, period_key, user_name, total_kills, total_deaths, total_games,
+  total_wins, best_kill_streak, headshots, best_accuracy, updated_at
+) VALUES (
+  @playerId, @mode, @periodKey, @userName, @kills, @deaths, 1,
+  @wins, @bestStreak, @headshots, @accuracy, @now
+)
+ON CONFLICT(player_id, mode, period_key) DO UPDATE SET
+  user_name        = excluded.user_name,
+  total_kills      = total_kills + excluded.total_kills,
+  total_deaths     = total_deaths + excluded.total_deaths,
+  total_games      = total_games + 1,
+  total_wins       = total_wins + excluded.total_wins,
+  best_kill_streak = max(best_kill_streak, excluded.best_kill_streak),
+  headshots        = headshots + excluded.headshots,
+  best_accuracy    = max(best_accuracy, excluded.best_accuracy),
+  updated_at       = excluded.updated_at
+`);
+
 const periodUpsertStmt = sqlite.prepare(`
 INSERT INTO instagib_period_stats (
   player_id, period_key, user_name, total_kills, total_deaths, total_games,
@@ -557,9 +632,12 @@ function challengeWeekKey(now: number): string {
   return `${CHALLENGE_FORMAT}:${weekKey(now)}`;
 }
 
+export type MatchMode = 'ffa' | 'duel' | 'tdm' | 'ranked';
+
 export type MatchDelta = {
   playerId: string;
   userName: string;
+  mode?: MatchMode;
   kills: number;
   deaths: number;
   wins: number;
@@ -574,6 +652,14 @@ export type MatchDelta = {
 
 export function getStats(playerId: string): PublicStats {
   return toPublic(selectStmt.get(playerId) as Row | undefined);
+}
+
+// Authoritative account level used by competitive eligibility checks. A missing
+// progression row is level 1, so guests and fresh accounts stay gated.
+export function getPlayerLevel(playerId: string): number {
+  if (!playerId) return 1;
+  const row = progSelectStmt.get(playerId) as ProgRow | undefined;
+  return row?.level ?? 1;
 }
 
 // --- Progression (XP / level / credits / cosmetics) -------------------------
@@ -715,11 +801,16 @@ export function recordMatch(delta: MatchDelta): MatchRecordResult {
   }
   const stats = toPublic(upsertStmt.get(delta) as Row | undefined); // also creates the row
 
-  // Daily/weekly leaderboard buckets — online matches only (these are the
+  // Daily/weekly/mode leaderboard buckets — online matches only (these are the
   // competitive ladders; offline bot grinding shouldn't seed them).
   if (!delta.offline) {
     periodUpsertStmt.run({ ...delta, periodKey: dayKey(delta.now) });
     periodUpsertStmt.run({ ...delta, periodKey: weekKey(delta.now) });
+    if (delta.mode) {
+      modeUpsertStmt.run(delta);
+      modePeriodUpsertStmt.run({ ...delta, periodKey: dayKey(delta.now) });
+      modePeriodUpsertStmt.run({ ...delta, periodKey: weekKey(delta.now) });
+    }
   }
 
   const prog = progSelectStmt.get(delta.playerId) as ProgRow | undefined;
@@ -805,7 +896,7 @@ export type Profile = {
   stats: PublicStats;
   // Ranked Duel standing (null = never played ranked) — drives the rating card
   // stat + the live rank title. `getRankedProfile` is declared below (hoisted).
-  ranked: { rating: number; rank: number; provisional: boolean } | null;
+  ranked: RankedProfile | null;
 };
 
 export function getProfile(playerId: string): Profile {
@@ -822,7 +913,7 @@ export function getProfile(playerId: string): Profile {
     unlocked: [...ownedSet(prog, playerId)],
     equipped: parseEquipped(prog?.equipped),
     stats: getStats(playerId),
-    ranked: rp ? { rating: rp.rating, rank: rp.rank, provisional: rp.provisional } : null,
+    ranked: rp,
   };
 }
 
@@ -1164,6 +1255,52 @@ const periodRowStmt = sqlite.prepare(
   `SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats WHERE player_id = ? AND period_key = ?`,
 );
 
+const modeLeaderboardStmts = {
+  kills: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats
+     WHERE mode = ? AND total_games > 0
+     ORDER BY total_kills DESC LIMIT ?`),
+  wins: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats
+     WHERE mode = ? AND total_games > 0
+     ORDER BY total_wins DESC, total_kills DESC LIMIT ?`),
+  accuracy: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats
+     WHERE mode = ? AND total_games >= ${MIN_ACC_GAMES}
+     ORDER BY best_accuracy DESC, total_kills DESC LIMIT ?`),
+} as const;
+const modeRankStmts = {
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_stats WHERE mode = ? AND total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_stats WHERE mode = ? AND total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_stats WHERE mode = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+} as const;
+const modeRowStmt = sqlite.prepare(
+  `SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats WHERE player_id = ? AND mode = ?`,
+);
+const modePeriodLeaderboardStmts = {
+  kills: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats
+     WHERE mode = ? AND period_key = ? AND total_games > 0
+     ORDER BY total_kills DESC LIMIT ?`),
+  wins: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats
+     WHERE mode = ? AND period_key = ? AND total_games > 0
+     ORDER BY total_wins DESC, total_kills DESC LIMIT ?`),
+  accuracy: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats
+     WHERE mode = ? AND period_key = ? AND total_games >= ${MIN_ACC_GAMES}
+     ORDER BY best_accuracy DESC, total_kills DESC LIMIT ?`),
+} as const;
+const modePeriodRankStmts = {
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+} as const;
+const modePeriodRowStmt = sqlite.prepare(
+  `SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats WHERE player_id = ? AND mode = ? AND period_key = ?`,
+);
+
+export type LeaderMode = 'ffa' | 'duel' | 'tdm' | 'ranked';
 export type LeaderWindow = 'all' | 'daily' | 'weekly';
 // The period_key a window resolves to right now (null for all-time).
 function windowKey(win: LeaderWindow, now: number): string | null {
@@ -1215,14 +1352,22 @@ export function getLeaderboard(opts: {
   sort: 'kills' | 'wins' | 'accuracy';
   limit: number;
   window?: LeaderWindow;
+  mode?: LeaderMode;
 }): LeaderboardEntry[] {
   const limit = Math.max(1, Math.min(100, Math.floor(opts.limit)));
   const win = opts.window ?? 'all';
   const key = windowKey(win, Date.now());
-  const stmt = key
-    ? (periodLeaderboardStmts[opts.sort] ?? periodLeaderboardStmts.kills)
-    : (leaderboardStmts[opts.sort] ?? leaderboardStmts.kills);
-  const rows = (key ? stmt.all(key, limit) : stmt.all(limit)) as LeaderboardRow[];
+  const mode = opts.mode;
+  const stmt = mode && key
+    ? (modePeriodLeaderboardStmts[opts.sort] ?? modePeriodLeaderboardStmts.kills)
+    : mode
+      ? (modeLeaderboardStmts[opts.sort] ?? modeLeaderboardStmts.kills)
+      : key
+        ? (periodLeaderboardStmts[opts.sort] ?? periodLeaderboardStmts.kills)
+        : (leaderboardStmts[opts.sort] ?? leaderboardStmts.kills);
+  const rows = (
+    mode && key ? stmt.all(mode, key, limit) : mode ? stmt.all(mode, limit) : key ? stmt.all(key, limit) : stmt.all(limit)
+  ) as LeaderboardRow[];
   return attachUserFlags(rows.map(toLeaderboardEntry));
 }
 
@@ -1233,11 +1378,18 @@ export function getPlayerRank(
   playerId: string,
   sort: 'kills' | 'wins' | 'accuracy',
   window: LeaderWindow = 'all',
+  mode?: LeaderMode,
 ): { rank: number; entry: LeaderboardEntry } | null {
   if (!playerId) return null;
   const key = windowKey(window, Date.now());
   const row = (
-    key ? periodRowStmt.get(playerId, key) : playerStatsRowStmt.get(playerId)
+    mode && key
+      ? modePeriodRowStmt.get(playerId, mode, key)
+      : mode
+        ? modeRowStmt.get(playerId, mode)
+        : key
+          ? periodRowStmt.get(playerId, key)
+          : playerStatsRowStmt.get(playerId)
   ) as LeaderboardRow | undefined;
   if (!row || row.total_games <= 0) return null;
   const [entry] = attachUserFlags([toLeaderboardEntry(row)]);
@@ -1245,9 +1397,13 @@ export function getPlayerRank(
   const metric =
     sort === 'kills' ? row.total_kills : sort === 'wins' ? row.total_wins : row.best_accuracy;
   const above = (
-    key
-      ? (periodRankStmts[sort].get(key, metric) as { n: number })
-      : (rankStmts[sort].get(metric) as { n: number })
+    mode && key
+      ? (modePeriodRankStmts[sort].get(mode, key, metric) as { n: number })
+      : mode
+        ? (modeRankStmts[sort].get(mode, metric) as { n: number })
+        : key
+          ? (periodRankStmts[sort].get(key, metric) as { n: number })
+          : (rankStmts[sort].get(metric) as { n: number })
   ).n;
   return { rank: above + 1, entry };
 }
@@ -1659,8 +1815,9 @@ export function getPlayersTable(opts: {
 // ── Ranked Duel ladder (Elo) ─────────────────────────────────────────────────
 // Separate from career stats: a hidden-then-shown Elo rating per account, updated
 // only by ranked 1v1 results (server-authoritative — the game server reports the
-// winner, the client never sends a rating). Login-gated, so player_id is always a
-// real account id. Cosmetic-adjacent: rank is bragging rights, never an advantage.
+// winner, the client never sends a rating). Lifetime and season-scoped ratings
+// are both retained. Login-gated, so player_id is always a real account id.
+// Cosmetic-adjacent: rank is bragging rights, never an advantage.
 sqlite.exec(`
 CREATE TABLE IF NOT EXISTS instagib_ranked (
   player_id  TEXT PRIMARY KEY,
@@ -1675,10 +1832,36 @@ CREATE TABLE IF NOT EXISTS instagib_ranked (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ranked_rating ON instagib_ranked(rating);
+
+-- Current-season Duel ratings. Season rows are keyed by a deterministic
+-- 12-week season id, so a new season starts at the base rating without deleting
+-- historical lifetime MMR.
+CREATE TABLE IF NOT EXISTS instagib_ranked_seasons (
+  season_id  INTEGER NOT NULL,
+  player_id  TEXT NOT NULL,
+  user_name  TEXT NOT NULL,
+  rating     INTEGER NOT NULL DEFAULT 1000,
+  peak       INTEGER NOT NULL DEFAULT 1000,
+  games      INTEGER NOT NULL DEFAULT 0,
+  wins       INTEGER NOT NULL DEFAULT 0,
+  losses     INTEGER NOT NULL DEFAULT 0,
+  streak     INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (season_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ranked_season_rating ON instagib_ranked_seasons(season_id, rating);
 `);
 
 export const RANKED_BASE_RATING = 1000;
 export const RANKED_PLACEMENT_GAMES = 5; // below this, rating shows as "provisional"
+export const RANKED_MIN_LEVEL = 10;
+const SEASON_LENGTH_MS = 12 * 7 * 86_400_000;
+export function currentRankedSeason(now: number = Date.now()): { id: number; startsAt: number; endsAt: number } {
+  const id = Math.floor(now / SEASON_LENGTH_MS);
+  const startsAt = id * SEASON_LENGTH_MS;
+  return { id, startsAt, endsAt: startsAt + SEASON_LENGTH_MS };
+}
 
 // Classic Elo K-factor: volatile while provisional, calmer once established, and
 // smallest at the top so elite ratings don't swing on a single game.
@@ -1701,6 +1884,22 @@ const rankedUpdateStmt = sqlite.prepare(`
 const rankedRankStmt = sqlite.prepare(
   `SELECT COUNT(*) AS n FROM instagib_ranked WHERE games > 0 AND rating > ?`,
 );
+const seasonRowStmt = sqlite.prepare(
+  `SELECT * FROM instagib_ranked_seasons WHERE season_id = ? AND player_id = ?`,
+);
+const seasonEnsureStmt = sqlite.prepare(`
+  INSERT OR IGNORE INTO instagib_ranked_seasons
+    (season_id, player_id, user_name, rating, peak, created_at, updated_at)
+  VALUES (@seasonId, @playerId, @userName, ${RANKED_BASE_RATING}, ${RANKED_BASE_RATING}, @now, @now)`);
+const seasonUpdateStmt = sqlite.prepare(`
+  UPDATE instagib_ranked_seasons
+     SET user_name = @userName, rating = @rating, peak = max(peak, @rating),
+         games = games + 1, wins = wins + @win, losses = losses + @loss,
+         streak = @streak, updated_at = @now
+   WHERE season_id = @seasonId AND player_id = @playerId`);
+const seasonRankStmt = sqlite.prepare(
+  `SELECT COUNT(*) AS n FROM instagib_ranked_seasons WHERE season_id = ? AND games > 0 AND rating > ?`,
+);
 
 type RankedRow = {
   player_id: string;
@@ -1715,6 +1914,20 @@ type RankedRow = {
   updated_at: number;
 };
 
+export type RankedSeasonProfile = {
+  id: number;
+  rating: number;
+  peak: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  rank: number;
+  provisional: boolean;
+  startsAt: number;
+  endsAt: number;
+};
+
 export type RankedProfile = {
   id: string;
   userName: string;
@@ -1724,11 +1937,30 @@ export type RankedProfile = {
   wins: number;
   losses: number;
   streak: number;
-  rank: number; // ladder position (1 = top); 0 if unranked (no games)
+  rank: number; // lifetime ladder position (1 = top); 0 if unranked (no games)
   provisional: boolean;
+  season: RankedSeasonProfile;
+  eligible: boolean;
+  level: number;
 };
 
-function toRankedProfile(r: RankedRow): RankedProfile {
+function toRankedProfile(r: RankedRow, playerId: string): RankedProfile {
+  const season = currentRankedSeason();
+  const sr = seasonRowStmt.get(season.id, playerId) as (RankedRow & { season_id: number }) | undefined;
+  const seasonProfile: RankedSeasonProfile = {
+    id: season.id,
+    rating: sr?.rating ?? RANKED_BASE_RATING,
+    peak: sr?.peak ?? RANKED_BASE_RATING,
+    games: sr?.games ?? 0,
+    wins: sr?.wins ?? 0,
+    losses: sr?.losses ?? 0,
+    streak: sr?.streak ?? 0,
+    rank: sr && sr.games > 0 ? num(seasonRankStmt.get(season.id, sr.rating)) + 1 : 0,
+    provisional: (sr?.games ?? 0) < RANKED_PLACEMENT_GAMES,
+    startsAt: season.startsAt,
+    endsAt: season.endsAt,
+  };
+  const level = getPlayerLevel(playerId);
   return {
     id: r.player_id,
     userName: r.user_name,
@@ -1740,6 +1972,9 @@ function toRankedProfile(r: RankedRow): RankedProfile {
     streak: r.streak,
     rank: r.games > 0 ? num(rankedRankStmt.get(r.rating)) + 1 : 0,
     provisional: r.games < RANKED_PLACEMENT_GAMES,
+    season: seasonProfile,
+    eligible: level >= RANKED_MIN_LEVEL,
+    level,
   };
 }
 
@@ -1748,7 +1983,7 @@ function toRankedProfile(r: RankedRow): RankedProfile {
 export function getRankedProfile(playerId: string): RankedProfile | null {
   if (!playerId) return null;
   const r = rankedRowStmt.get(playerId) as RankedRow | undefined;
-  return r ? toRankedProfile(r) : null;
+  return r ? toRankedProfile(r, playerId) : null;
 }
 
 // Current rating for matchmaking — the stored value, or the base for a newcomer.
@@ -1758,8 +1993,26 @@ export function getRankedRating(playerId: string): number {
 }
 
 export type RankedResult = {
-  winner: { id: string; userName: string; rating: number; delta: number; rank: number };
-  loser: { id: string; userName: string; rating: number; delta: number; rank: number };
+  winner: {
+    id: string;
+    userName: string;
+    rating: number;
+    delta: number;
+    rank: number;
+    seasonRating: number;
+    seasonDelta: number;
+    seasonRank: number;
+  };
+  loser: {
+    id: string;
+    userName: string;
+    rating: number;
+    delta: number;
+    rank: number;
+    seasonRating: number;
+    seasonDelta: number;
+    seasonRank: number;
+  };
 };
 
 // Apply a ranked 1v1 result (server-authoritative). Symmetric Elo: the winner
@@ -1805,6 +2058,40 @@ export function recordRankedResult(
     streak: l.streak <= 0 ? l.streak - 1 : -1,
     now,
   });
+
+  // The seasonal ladder has its own placement/rating state. Lifetime Elo remains
+  // useful for long-term history and matchmaking, while this bucket resets by
+  // season id without deleting prior rows.
+  const season = currentRankedSeason(now);
+  seasonEnsureStmt.run({ seasonId: season.id, playerId: winnerId, userName: winnerName, now });
+  seasonEnsureStmt.run({ seasonId: season.id, playerId: loserId, userName: loserName, now });
+  const sw = seasonRowStmt.get(season.id, winnerId) as RankedRow;
+  const sl = seasonRowStmt.get(season.id, loserId) as RankedRow;
+  const seasonExpectedW = 1 / (1 + 10 ** ((sl.rating - sw.rating) / 400));
+  const seasonDW = Math.round(kFactor(sw.games, sw.rating) * (1 - seasonExpectedW) * w8);
+  const seasonDL = Math.round(kFactor(sl.games, sl.rating) * (0 - (1 - seasonExpectedW)) * w8);
+  const seasonW = Math.max(100, sw.rating + seasonDW);
+  const seasonL = Math.max(100, sl.rating + seasonDL);
+  seasonUpdateStmt.run({
+    seasonId: season.id,
+    playerId: winnerId,
+    userName: winnerName,
+    rating: seasonW,
+    win: 1,
+    loss: 0,
+    streak: sw.streak >= 0 ? sw.streak + 1 : 1,
+    now,
+  });
+  seasonUpdateStmt.run({
+    seasonId: season.id,
+    playerId: loserId,
+    userName: loserName,
+    rating: seasonL,
+    win: 0,
+    loss: 1,
+    streak: sl.streak <= 0 ? sl.streak - 1 : -1,
+    now,
+  });
   logEvent({
     event: 'ranked.match',
     actorId: winnerId,
@@ -1814,13 +2101,34 @@ export function recordRankedResult(
     now,
   });
   return {
-    winner: { id: winnerId, userName: winnerName, rating: newW, delta: newW - w.rating, rank: num(rankedRankStmt.get(newW)) + 1 },
-    loser: { id: loserId, userName: loserName, rating: newL, delta: newL - l.rating, rank: num(rankedRankStmt.get(newL)) + 1 },
+    winner: {
+      id: winnerId,
+      userName: winnerName,
+      rating: newW,
+      delta: newW - w.rating,
+      rank: num(rankedRankStmt.get(newW)) + 1,
+      seasonRating: seasonW,
+      seasonDelta: seasonW - sw.rating,
+      seasonRank: num(seasonRankStmt.get(season.id, seasonW)) + 1,
+    },
+    loser: {
+      id: loserId,
+      userName: loserName,
+      rating: newL,
+      delta: newL - l.rating,
+      rank: num(rankedRankStmt.get(newL)) + 1,
+      seasonRating: seasonL,
+      seasonDelta: seasonL - sl.rating,
+      seasonRank: num(seasonRankStmt.get(season.id, seasonL)) + 1,
+    },
   };
 }
 
 const rankedLeaderboardStmt = sqlite.prepare(
   `SELECT * FROM instagib_ranked WHERE games > 0 ORDER BY rating DESC, wins DESC LIMIT ?`,
+);
+const seasonLeaderboardStmt = sqlite.prepare(
+  `SELECT * FROM instagib_ranked_seasons WHERE season_id = ? AND games > 0 ORDER BY rating DESC, wins DESC LIMIT ?`,
 );
 export type RankedLeaderEntry = {
   id: string;
@@ -1833,9 +2141,10 @@ export type RankedLeaderEntry = {
   admin: boolean;
   verified: boolean;
 };
-export function getRankedLeaderboard(limit: number): RankedLeaderEntry[] {
+export function getRankedLeaderboard(limit: number, season = true): RankedLeaderEntry[] {
   const n = Math.max(1, Math.min(100, Math.floor(limit)));
-  const rows = rankedLeaderboardStmt.all(n) as RankedRow[];
+  const current = currentRankedSeason();
+  const rows = (season ? seasonLeaderboardStmt.all(current.id, n) : rankedLeaderboardStmt.all(n)) as RankedRow[];
   const base: RankedLeaderEntry[] = rows.map((r) => ({
     id: r.player_id,
     userName: r.user_name,

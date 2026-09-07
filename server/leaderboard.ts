@@ -12,7 +12,9 @@ import { getLeaderboard, getPlayerRank, type LeaderWindow } from './db';
 import { accountId } from './auth';
 
 type Sort = 'kills' | 'wins' | 'accuracy';
+type Mode = 'ffa' | 'duel' | 'tdm' | 'ranked';
 const SORTS: readonly Sort[] = ['kills', 'wins', 'accuracy'];
+const MODES: readonly Mode[] = ['ffa', 'duel', 'tdm', 'ranked'];
 const DEFAULT_SORT: Sort = 'kills';
 const DEFAULT_LIMIT = 25;
 const WINDOWS: readonly LeaderWindow[] = ['all', 'daily', 'weekly'];
@@ -23,6 +25,10 @@ function parseSort(raw: unknown): Sort {
 
 function parseWindow(raw: unknown): LeaderWindow {
   return WINDOWS.includes(raw as LeaderWindow) ? (raw as LeaderWindow) : 'all';
+}
+
+function parseMode(raw: unknown): Mode | undefined {
+  return MODES.includes(raw as Mode) ? (raw as Mode) : undefined;
 }
 
 function parseLimit(raw: unknown): number {
@@ -37,12 +43,13 @@ leaderboardRouter.get('/leaderboard', (req, res) => {
   const sort = parseSort(req.query.sort);
   const window = parseWindow(req.query.window);
   const limit = parseLimit(req.query.limit);
-  const leaderboard = getLeaderboard({ sort, limit, window });
+  const mode = parseMode(req.query.mode);
+  const leaderboard = getLeaderboard({ sort, limit, window, mode });
   // If the caller is a logged-in account, also return their own rank + entry so
   // the client can pin "you are #N" even when they're outside the top-N. This is
   // the same identity (the igsession account) progression is keyed off, so the
   // pinned row matches the player's recorded stats. Guests resolve to '' → null.
   const id = accountId(req);
-  const you = id ? getPlayerRank(id, sort, window) : null;
-  res.json({ leaderboard, sort, window, count: leaderboard.length, you });
+  const you = id ? getPlayerRank(id, sort, window, mode) : null;
+  res.json({ leaderboard, sort, window, mode: mode ?? 'all', count: leaderboard.length, you });
 });

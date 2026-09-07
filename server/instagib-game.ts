@@ -62,9 +62,11 @@ import {
 import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
 import {
   findUserById,
+  getPlayerLevel,
   getRankedProfile,
   getRankedRating,
   recordRankedResult,
+  RANKED_MIN_LEVEL,
   unlockedSetFor,
 } from './db';
 import { accountIdFromCookieHeader } from './auth';
@@ -394,7 +396,7 @@ function sanitizeCard(
 
 // The flair text shown under a player's name / on their killcard for their
 // equipped title. Static titles use their manifest text; the live 'ranked' title
-// resolves to the player's CURRENT standing — top-10 → "#N", otherwise their tier
+// resolves to the player's CURRENT SEASON standing — top-10 → "#N", otherwise their tier
 // name, and '' if they've never played ranked. Resolved server-side so the badge
 // is authoritative (a client can't fake "#1") and stays live as ratings move.
 function resolveTitleText(playerId: string, titleId: string): string {
@@ -402,8 +404,8 @@ function resolveTitleText(playerId: string, titleId: string): string {
   if (t.dynamic === 'ranked') {
     if (!playerId) return '';
     const p = getRankedProfile(playerId);
-    if (!p || p.games === 0) return '';
-    return p.rank >= 1 && p.rank <= 10 ? `#${p.rank}` : rankedTierName(p.rating);
+    if (!p || p.season.games === 0) return '';
+    return p.season.rank >= 1 && p.season.rank <= 10 ? `#${p.season.rank}` : rankedTierName(p.season.rating);
   }
   return t.text;
 }
@@ -1797,6 +1799,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
           // Ranked Duel is account-only — a guest has no persistent rating.
           if (!record.playerId) {
             sendRaw(socket, { type: 'ranked-status', state: 'idle', reason: 'account' });
+            break;
+          }
+          if (getPlayerLevel(record.playerId) < RANKED_MIN_LEVEL) {
+            sendRaw(socket, { type: 'ranked-status', state: 'idle', reason: 'level' });
             break;
           }
           if (record.roomId || record.spectating) break; // can't queue mid-match

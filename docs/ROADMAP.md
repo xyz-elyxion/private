@@ -73,11 +73,13 @@ The spine everything else hangs off. Spec in
 - [x] **Leaderboard time windows** — All-time / Weekly / Daily (`instagib_period_stats`),
       sortable by kills / wins / accuracy, with your own rank pinned and an
       accuracy min-games floor.
-- [ ] Hidden MMR per mode (Glicko-2/Elo) updated from match results.
-- [ ] Ranked queue with placement matches + visible rank tiers (Bronze →
-      Grandmaster). Rank is **separate** from account level.
-- [ ] Seasonal leaderboards (rank + season reset).
-- [ ] Mode-specific leaderboards (Duel ladder is the natural flagship).
+- [x] Hidden MMR per mode (Elo) updated from authoritative ranked Duel results.
+- [x] Ranked queue with placement matches + visible rank tiers (Bronze →
+      Grandmaster). Rank is **separate** from account level; queue unlocks at
+      account level 10 so new players learn first.
+- [x] Seasonal leaderboards (12-week seasonal Duel rating + season reset).
+- [x] Mode-specific leaderboards (All modes / FFA / Duel / TDM / Ranked Duel),
+      with daily/weekly windows and pinned personal rank.
 
 **Risk:** matchmaking quality needs population; gate ranked behind a min level so
 new players learn first. Keep casual queues unranked and always available.

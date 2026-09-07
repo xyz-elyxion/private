@@ -190,7 +190,8 @@ export const WEEKLY_CHALLENGE_DIFFICULTY: BotDifficulty = 'easy';
 export const WEEKLY_CHALLENGE_MODE: GameMode = 'ffa';
 export const WEEKLY_CHALLENGE_FRAG_LIMIT = 20; // first to this many frags ends the run
 
-// Ranked Elo tiers (purely cosmetic — there is NO rating gate to play ranked).
+// Ranked Elo tiers are cosmetic; queue eligibility is a separate server-side
+// account-level gate (currently level 10).
 // Shared client+server so the ladder, the playercard, and the dynamic rank title
 // all label a rating the same way. Ordered high→low; the first whose `min` you
 // meet is your tier. Base rating is 1000 (see server RANKED_BASE_RATING).

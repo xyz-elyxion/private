@@ -284,13 +284,23 @@ manage the Locker + daily/weekly challenges. Definitions live in the THREE-free
 `igpid` cookie also rides the WS upgrade so the game server can **ownership-check**
 cosmetic equips.
 
-`GET /api/leaderboard?sort=kills|wins|accuracy&window=all|weekly|daily&limit=N`
-(`server/leaderboard.ts`) — one prepared statement per (sort × window), no user
+`GET /api/leaderboard?sort=kills|wins|accuracy&window=all|weekly|daily&mode=all|ffa|duel|tdm|ranked&limit=N`
+(`server/leaderboard.ts`) — one prepared statement per (sort × window × mode), no user
 input reaching SQL. `all` reads `instagib_stats`; `weekly`/`daily` read
 `instagib_period_stats` (buckets keyed `d:YYYYMMDD` / `w:<Monday>`, upserted on
-online matches only). It pins the caller's own rank, floors the accuracy board at
+online matches only). A mode filter reads the corresponding mode bucket, including
+mode-plus-window buckets, so casual FFA/Duel/TDM and Ranked Duel standings remain
+separate. It pins the caller's own rank, floors the accuracy board at
 ≥5 games, and only surfaces players with `total_games > 0`. To keep the board from
 being trivially inflated, `POST /api/stats` is rate-limited (a dependency-free
 in-memory sliding window: ~30 submits per identity per minute, keyed by the player
 cookie or IP).
+
+Ranked Duel uses `instagib_ranked` for lifetime Elo history and
+`instagib_ranked_seasons` for the current 12-week season. The season bucket is
+keyed by a deterministic season id, starts every 12 weeks, and resets ratings,
+placements, and standings without deleting lifetime history. The ranked queue is
+account-only and server-gated at account level 10; the queue reports the rejection
+reason to the lobby when a player is not yet eligible. `GET /api/ranked/me` and
+`GET /api/ranked/leaderboard` expose current-season rating/rank and reset metadata.
 ```

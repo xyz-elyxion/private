@@ -17,6 +17,7 @@ import {
   openCase,
   recordMatch,
   setEquipped,
+  type MatchMode,
 } from './db';
 import { accountId } from './auth';
 
@@ -116,11 +117,11 @@ statsRouter.post('/stats', (req, res) => {
   const wins = body.won === true ? 1 : 0;
   const offline = body.offline === true;
   const accuracy = shotsFired > 0 ? (shotsHit / shotsFired) * 100 : 0;
-  // Game mode is metadata for the audit row only (drives the admin dashboard's
-  // mode breakdown). Whitelisted so a forged body can't pollute the breakdown.
-  const mode =
+  // Game mode is persisted in mode-specific leaderboard buckets and the audit row.
+  // Whitelisted so a forged body can't pollute either breakdown.
+  const mode: MatchMode | undefined =
     typeof body.mode === 'string' && ['ffa', 'duel', 'tdm', 'ranked'].includes(body.mode)
-      ? body.mode
+      ? (body.mode as MatchMode)
       : undefined;
 
   // Leaderboard name is the account username (moderated at registration), never
@@ -139,6 +140,7 @@ statsRouter.post('/stats', (req, res) => {
     shotsHit,
     accuracy,
     offline,
+    mode,
     now: Date.now(),
   });
 
