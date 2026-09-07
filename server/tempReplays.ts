@@ -57,8 +57,8 @@ const uploadSweep = setInterval(() => {
 uploadSweep.unref?.();
 
 // Expired share links die in the background (row-cap trim happens on insert).
-const expirySweep = setInterval(() => {
-  const n = sweepTempReplays();
+const expirySweep = setInterval(async () => {
+  const n = await sweepTempReplays();
   if (n > 0) console.log(`[replays] swept ${n} expired temp replay(s)`);
 }, 30 * 60_000);
 expirySweep.unref?.();

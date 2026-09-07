@@ -203,8 +203,9 @@ app.use('/api/admin', adminRouter);
 // redeploy to claim your account.
 {
   const admins = adminUsernamesFromEnv();
-  const n = syncAdminsFromEnv(admins);
-  if (admins.length) console.log(`[admin] ADMIN_USERNAMES=[${admins.join(', ')}] — ${n} synced`);
+  void syncAdminsFromEnv(admins).then((n) => {
+    if (admins.length) console.log(`[admin] ADMIN_USERNAMES=[${admins.join(', ')}] — ${n} synced`);
+  }).catch((err) => console.error('[admin] failed to sync configured admins', err));
 }
 
 // Static client + SPA fallback only in production: with a dist/ build the Node

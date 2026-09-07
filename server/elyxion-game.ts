@@ -62,6 +62,7 @@ import type { AABB, CardPayload, Vec3 } from '../src/game/types';
 import {
   DEFAULT_RAIL_COLOR,
   DEFAULT_RAILGUN_FINISH,
+  defaultUnlockedIds,
   isCard,
   isEmote,
   isHat,
@@ -395,8 +396,14 @@ type ChatBroadcast = {
 // Does this connection's progression identity own the given cosmetic id? Read
 // fresh each time so an item just bought in the Locker is immediately equippable
 // (defaults + anonymous players always pass for default-unlocked ids).
-function owns(record: { playerId: string }, id: string): boolean {
-  return unlockedSetFor(record.playerId).has(id);
+async function owns(record: { playerId: string }, id: string): Promise<boolean> {
+  if (!record.playerId) return defaultUnlockedIds().includes(id);
+  let owned = ownedCosmeticCache.get(record.playerId);
+  if (!owned) {
+    owned = await unlockedSetFor(record.playerId);
+    ownedCosmeticCache.set(record.playerId, owned);
+  }
+  return owned.has(id);
 }
 
 // Per-connection room-creation budget: a client may mint at most ROOM_BUDGET
@@ -457,11 +464,23 @@ function sanitizeCard(
 // resolves to the player's CURRENT standing — top-10 → "#N", otherwise their tier
 // name, and '' if they've never played ranked. Resolved server-side so the badge
 // is authoritative (a client can't fake "#1") and stays live as ratings move.
+const rankedProfileCache = new Map<string, Awaited<ReturnType<typeof getRankedProfile>>>();
+const ownedCosmeticCache = new Map<string, Set<string>>();
+
+function refreshRankedProfile(playerId: string): void {
+  if (!playerId) return;
+  void getRankedProfile(playerId).then((profile) => rankedProfileCache.set(playerId, profile)).catch(() => undefined);
+}
+
+// Hot-path profile rendering uses the last async PostgreSQL snapshot. A cache miss
+// is deliberately conservative and refreshes in the background rather than
+// stalling the realtime snapshot loop on network I/O.
 function resolveTitleText(playerId: string, titleId: string): string {
   const t = titleById(titleId);
   if (t.dynamic === 'ranked') {
     if (!playerId) return '';
-    const p = getRankedProfile(playerId);
+    refreshRankedProfile(playerId);
+    const p = rankedProfileCache.get(playerId);
     if (!p || p.games === 0) return '';
     return p.rank >= 1 && p.rank <= 10 ? `#${p.rank}` : rankedTierName(p.rating);
   }
@@ -1110,7 +1129,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     if (room.isRanked && room.state === 'active' && room.members.size === 1) {
       const remainingId = room.members.values().next().value;
       const remaining = remainingId ? clients.get(remainingId) : undefined;
-      if (remaining) endRankedMatch(room, remaining, record);
+      if (remaining)        void endRankedMatch(room, remaining, record);
     }
     broadcastRoomList();
     schedulePresence(); // this player's inMatch flag just cleared
@@ -1294,19 +1313,19 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // ban later lifts those captured IPs too (true "unban"). `bannedUntil` is the
   // epoch ms the ban lifts (0 = permanent); captured IPs inherit the same
   // expiry so a timed ban can't be outlasted by reconnecting as a guest.
-  const banByName = (name: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
+  const banByName = async (name: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
     const targets = liveByName(name);
     const actorName = actor?.name ?? 'moderator';
     for (const t of targets) {
-      addIpBan(t.ip, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
+      await addIpBan(t.ip, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
       // An online GUEST target also gets their stable uuid captured (tied to
       // this name ban, so /unban <name> lifts it too). Their per-room name
       // renumbers every reconnect, so the uuid — not the IP alone — is now what
       // keeps the ban on them.
       if (t.guestId)
-        addGuestBan(t.guestId, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
+        await addGuestBan(t.guestId, reason, actorName, name.toLowerCase(), Date.now(), bannedUntil);
     }
-    addBan(name, reason, actorName, undefined, undefined, Date.now(), bannedUntil);
+    await addBan(name, reason, actorName, undefined, undefined, Date.now(), bannedUntil);
     acLog({
       kind: 'ban',
       target: name.trim(),
@@ -1326,12 +1345,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // uuid on the same address — can't dodge it. Mirrors banByName with the uuid
   // as the handle; an offline guest (e.g. banned from their content) just gets
   // the persisted row and is refused at their next connect.
-  const banGuest = (guestId: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
+  const banGuest = async (guestId: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
     const g = guestId.trim().toLowerCase();
     const targets = liveByGuest(g);
     const actorName = actor?.name ?? 'moderator';
-    for (const t of targets) addIpBan(t.ip, reason, actorName, g, Date.now(), bannedUntil);
-    addGuestBan(g, reason, actorName, '', Date.now(), bannedUntil);
+    for (const t of targets) await addIpBan(t.ip, reason, actorName, g, Date.now(), bannedUntil);
+    await addGuestBan(g, reason, actorName, '', Date.now(), bannedUntil);
     acLog({
       kind: 'ban',
       target: g,
@@ -1353,8 +1372,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
   // Direct IP ban (/banip, REST { ip }): blocks the address at connect for
   // everyone on it, and boots whoever is online on it right now.
-  const banIpAddress = (ip: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
-    addIpBan(ip, reason, actor?.name ?? 'moderator', '', Date.now(), bannedUntil);
+  const banIpAddress = async (ip: string, reason: string, actor?: Moderator, bannedUntil: number = 0) => {
+    await addIpBan(ip, reason, actor?.name ?? 'moderator', '', Date.now(), bannedUntil);
     acLog({
       kind: 'ban',
       target: ip.trim(),
@@ -1380,18 +1399,18 @@ export function attachElyxionWs(wss: WebSocketServer) {
     bannedUntil: number;
     target: string;
   };
-  const activeBanFor = (rec: ClientRecord): ActiveBan | undefined => {
-    const nameBan = getBanByName(rec.name);
+  const activeBanFor = async (rec: ClientRecord): Promise<ActiveBan | undefined> => {
+    const nameBan = await getBanByName(rec.name);
     if (nameBan) return { kind: 'name', reason: nameBan.reason, bannedUntil: nameBan.bannedUntil, target: nameBan.name };
     // Guest-uuid bans apply only while the caller IS a guest — registering an
     // account on the same browser is a fresh, separate identity, so a ban on
     // the old anonymous uuid must not lock the new account out.
     if (!rec.playerId && rec.guestId) {
-      const guestBan = getBanByGuestId(rec.guestId);
+      const guestBan = await getBanByGuestId(rec.guestId);
       if (guestBan)
         return { kind: 'guest', reason: guestBan.reason, bannedUntil: guestBan.bannedUntil, target: guestBan.guestId };
     }
-    const ipBan = getBanByIp(rec.ip);
+    const ipBan = await getBanByIp(rec.ip);
     if (ipBan) return { kind: 'ip', reason: ipBan.reason, bannedUntil: ipBan.bannedUntil, target: ipBan.ip };
     return undefined;
   };
@@ -1399,9 +1418,9 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // A banned player trying to join/spectate: tell them (with the ban's reason
   // and, for timed bans, when it lifts), then close the socket — they must not
   // sit in the lobby browsing either.
-  const rejectBanned = (rec: ClientRecord) => {
+  const rejectBanned = async (rec: ClientRecord) => {
     rec.moderatedAt = Date.now();
-    const ban = activeBanFor(rec);
+    const ban = await activeBanFor(rec);
     const display = ban ? banDisplayReason(ban) : 'banned at join';
     acLog({
       kind: 'block',
@@ -1422,15 +1441,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // existing ban for unban — and everything after it is the reason. If nothing
   // resolves (e.g. banning an offline player), fall back to first-token name +
   // rest as reason, which is what most admins type anyway.
-  const resolveTarget = (
+  const resolveTarget = async (
     rest: string,
-    resolves: (name: string) => boolean,
-  ): { name: string; reason: string } => {
+    resolves: (name: string) => boolean | Promise<boolean>,
+  ): Promise<{ name: string; reason: string }> => {
     const parts = rest.trim().split(/\s+/).filter(Boolean);
     if (parts.length === 0) return { name: '', reason: '' };
     for (let i = parts.length; i >= 1; i--) {
       const name = parts.slice(0, i).join(' ');
-      if (resolves(name)) return { name, reason: parts.slice(i).join(' ') };
+      if (await resolves(name)) return { name, reason: parts.slice(i).join(' ') };
     }
     return { name: parts[0], reason: parts.slice(1).join(' ') };
   };
@@ -1454,13 +1473,13 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // Returns the result line to ack, or null (not a command — the caller moves
   // on; for a live-target action the ack was already sent to the room by
   // ejectClient).
-  const modCommand = (text: string, actor: ClientRecord): string | null => {
+  const modCommand = async (text: string, actor: ClientRecord): Promise<string | null> => {
     const m = /^\/(kick|ban|unban|bans|banip|unbanip)\b[\s\S]*$/i.exec(text);
     if (!m) return null;
     const verbL = m[1].toLowerCase();
     const rest = text.slice(m[0].indexOf(m[1]) + m[1].length).trim();
     if (verbL === 'bans') {
-      const bans = listBans();
+      const bans = await listBans();
       if (bans.length === 0) return 'No active bans.';
       return `Active bans: ${bans
         .map((b) =>
@@ -1480,17 +1499,17 @@ export function attachElyxionWs(wss: WebSocketServer) {
       if (!ip) return `Usage: /${verbL} <ip> [duration] [reason]`;
       if (verbL === 'banip') {
         const dur = parseBanDuration(restParts.join(' ').trim().slice(0, 200));
-        const r = banIpAddress(ip, dur.rest, actor, dur.durationMs > 0 ? Date.now() + dur.durationMs : 0);
+        const r = await banIpAddress(ip, dur.rest, actor, dur.durationMs > 0 ? Date.now() + dur.durationMs : 0);
         return r.found ? null : `Banned IP ${ip} (nobody online on it).`;
       }
-      const okIp = removeIpBan(ip);
+      const okIp = await removeIpBan(ip);
       if (okIp) acLog({ kind: 'unban', target: ip.trim(), actor: actor.name, detail: 'ip' });
       return okIp ? `Unbanned IP ${ip}.` : `IP ${ip} wasn't banned.`;
     }
     let target = rest;
     let reason = '';
     if (verbL === 'kick') {
-      const r = resolveTarget(rest, (n) => liveByName(n).length > 0);
+      const r = await resolveTarget(rest, (n) => liveByName(n).length > 0);
       target = r.name;
       reason = r.reason;
       if (target) {
@@ -1498,23 +1517,23 @@ export function attachElyxionWs(wss: WebSocketServer) {
         return hit.found ? null : `Couldn't find “${target}” online.`;
       }
     } else if (verbL === 'ban') {
-      const r = resolveTarget(rest, (n) => liveByName(n).length > 0);
+      const r = await resolveTarget(rest, (n) => liveByName(n).length > 0);
       target = r.name;
       const dur = parseBanDuration(r.reason);
       reason = dur.rest;
       if (target) {
-        const hit = banByName(target, reason, actor, dur.durationMs > 0 ? Date.now() + dur.durationMs : 0);
+        const hit = await banByName(target, reason, actor, dur.durationMs > 0 ? Date.now() + dur.durationMs : 0);
         return hit.found ? null : `Banned “${target}” (they weren't online).`;
       }
     } else {
       // unban: longest prefix that matches an existing NAME ban (captured IPs
       // lift with it — see removeBan)
-      const r = resolveTarget(rest, (n) => isBannedName(n));
+      const r = await resolveTarget(rest, async (n) => await isBannedName(n));
       target = r.name;
       reason = r.reason;
     }
     if (!target) return `Usage: /${verbL} <name> [reason]`;
-    const ok = removeBan(target);
+    const ok = await removeBan(target);
     if (ok) acLog({ kind: 'unban', target, actor: actor.name, detail: 'name' });
     return ok ? `Unbanned “${target}”.` : `“${target}” wasn't banned.`;
   };
@@ -1835,7 +1854,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // both players + spectators, and freezes the room so no more shots land — the
   // clients show the result then return to the lobby and the room reaps empty.
   // `loserOverride` is the departed player on a forfeit (already out of members).
-  const endRankedMatch = (room: Room, winner: ClientRecord, loserOverride?: ClientRecord) => {
+  const endRankedMatch = async (room: Room, winner: ClientRecord, loserOverride?: ClientRecord) => {
     if (room.state !== 'active') return; // guard against double-resolve
     const loserId = loserOverride ? null : [...room.members].find((id) => id !== winner.id);
     const loser = loserOverride ?? (loserId ? clients.get(loserId) : undefined);
@@ -1855,10 +1874,10 @@ export function attachElyxionWs(wss: WebSocketServer) {
       times.push(now);
       recentRankedPairs.set(key, times);
     }
-    const rating =
-      legit && loser
-        ? recordRankedResult(winner.playerId, winner.name, loser.playerId, loser.name, now, weight)
-        : null;
+          const rating =
+            legit && loser
+              ? await recordRankedResult(winner.playerId, winner.name, loser.playerId, loser.name, now, weight)
+              : null;
     room.state = 'voting'; // reuse the shot-freeze guard; no actual map vote for ranked
     room.vote = null;
     const payload = {
@@ -2182,7 +2201,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
   };
 
   // ── Connection ────────────────────────────────────────────────────────
-  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }, ip?: string) => {
+  wss.on('connection', async (socket: WebSocket, req?: { headers?: { cookie?: string } }, ip?: string) => {
     const id = genId();
     const now = Date.now();
     // The progression identity (the logged-in account behind the httpOnly
@@ -2203,7 +2222,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a
     // per-room "Guest N" on join (assignGuestName). This is the only name other
     // players ever see, so a modified client can't inject a slur via `name`.
-    const account = playerId ? findUserById(playerId) : undefined;
+    const account = playerId ? await findUserById(playerId) : undefined;
     const accountName = account?.username;
     const record: ClientRecord = {
       id,
@@ -2276,7 +2295,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // name renumbers every session), or a banned IP, is refused before it can
     // browse the lobby or join anything. Reaped by handleDisconnect
     // (moderatedAt → immediate reap).
-    const preBan = activeBanFor(record);
+    const preBan = await activeBanFor(record);
     if (preBan) {
       record.moderatedAt = Date.now();
       acLog({
@@ -2296,7 +2315,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       return;
     }
 
-    socket.on('message', (raw, isBinary) => {
+    socket.on('message', async (raw, isBinary) => {
       const ts = Date.now();
       // Inbound message-rate guard (#2): a flood of pos/shoot/list is a cheap
       // DoS. Count per rolling second and close a socket that blows past the cap.
@@ -2368,7 +2387,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // blocked; the raw command is never broadcast — the server acks with
           // a System line (or the room announcement from ejectClient) instead.
           if (record.admin && text.startsWith('/')) {
-            const result = modCommand(text, record);
+            const result = await modCommand(text, record);
             if (result !== null) {
               const cmdRoom = rooms.get(record.spectating ?? record.roomId ?? '') ?? null;
               if (cmdRoom) broadcastSystem(cmdRoom, result);
@@ -2523,7 +2542,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
             sendRaw(socket, { type: 'ranked-status', state: 'idle', reason: 'in-match' });
             break;
           }
-          rankedQueue.set(record.id, { rating: getRankedRating(record.playerId), joinedAt: ts });
+          rankedQueue.set(record.id, { rating: await getRankedRating(record.playerId), joinedAt: ts });
           sendRaw(socket, { type: 'ranked-status', state: 'searching', size: rankedQueue.size, since: ts });
           break;
         }
@@ -2557,8 +2576,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
         case 'join': {
           rankedQueue.delete(record.id); // joining a room → leave the ranked queue
-          if (activeBanFor(record)) {
-            rejectBanned(record);
+          if (await activeBanFor(record)) {
+            await rejectBanned(record);
             break;
           }
           const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
@@ -2579,8 +2598,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // exactly what you can't join but should be able to watch. Spectators
           // never enter members, so they're excluded from snapshots, shots,
           // teams, and votes; they only receive the room's broadcasts + state.
-          if (activeBanFor(record)) {
-            rejectBanned(record);
+          if (await activeBanFor(record)) {
+            await rejectBanned(record);
             break;
           }
           const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
@@ -2627,8 +2646,8 @@ export function attachElyxionWs(wss: WebSocketServer) {
         case 'resume': {
           // A reconnecting client presents its previous resume token to reclaim
           // its in-match slot + score. On miss/expiry, fall back to a fresh join.
-          if (activeBanFor(record)) {
-            rejectBanned(record); // a ban must also block a mid-grace reclaim
+          if (await activeBanFor(record)) {
+            await rejectBanned(record); // a ban must also block a mid-grace reclaim
             break;
           }
           const token = typeof msg.token === 'string' ? msg.token : '';
@@ -2684,14 +2703,14 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // bare. bumpMeta only fires on an actual change (debounces the burst of
           // equip messages a client sends right after the welcome handshake).
           const next =
-            typeof msg.id === 'string' && isHat(msg.id) && owns(record, msg.id) ? msg.id : 'hat.none';
+            typeof msg.id === 'string' && isHat(msg.id) && await owns(record, msg.id) ? msg.id : 'hat.none';
           if (next !== record.hat) { record.hat = next; bumpMeta(record); }
           break;
         }
 
         case 'unusual': {
           const next =
-            typeof msg.id === 'string' && isUnusual(msg.id) && owns(record, msg.id)
+            typeof msg.id === 'string' && isUnusual(msg.id) && await owns(record, msg.id)
               ? msg.id
               : 'unusual.none';
           if (next !== record.unusual) { record.unusual = next; bumpMeta(record); }
@@ -2700,7 +2719,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
         case 'emote': {
           const next =
-            typeof msg.id === 'string' && isEmote(msg.id) && owns(record, msg.id)
+            typeof msg.id === 'string' && isEmote(msg.id) && await owns(record, msg.id)
               ? msg.id
               : 'emote.cheer';
           if (next !== record.emote) { record.emote = next; bumpMeta(record); }
@@ -2709,7 +2728,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
         case 'nameColor': {
           const next =
-            typeof msg.id === 'string' && isNameColor(msg.id) && owns(record, msg.id)
+            typeof msg.id === 'string' && isNameColor(msg.id) && await owns(record, msg.id)
               ? msg.id
               : 'name.default';
           if (next !== record.nameColor) { record.nameColor = next; bumpMeta(record); }
@@ -2718,7 +2737,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
         case 'spawnEffect': {
           const next =
-            typeof msg.id === 'string' && isSpawnEffect(msg.id) && owns(record, msg.id)
+            typeof msg.id === 'string' && isSpawnEffect(msg.id) && await owns(record, msg.id)
               ? msg.id
               : 'spawn.beam';
           if (next !== record.spawnEffect) { record.spawnEffect = next; bumpMeta(record); }
@@ -2731,7 +2750,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // title it hasn't earned), then echo via meta. Keep the killcard's title
           // in sync so a mid-match equip updates the card others see too.
           const next =
-            typeof msg.id === 'string' && isTitle(msg.id) && owns(record, msg.id)
+            typeof msg.id === 'string' && isTitle(msg.id) && await owns(record, msg.id)
               ? msg.id
               : 'title.none';
           if (next !== record.title) {
@@ -2746,7 +2765,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // Rail-beam color — echoed so other players + spectators render this
           // player's beam in their chosen color (was previously local-only).
           const next =
-            typeof msg.id === 'string' && isRailColor(msg.id) && owns(record, msg.id)
+            typeof msg.id === 'string' && isRailColor(msg.id) && await owns(record, msg.id)
               ? msg.id
               : DEFAULT_RAIL_COLOR;
           if (next !== record.railColor) { record.railColor = next; bumpMeta(record); }
@@ -2757,7 +2776,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
           // Railgun finish (gun skin) — echoed so the 3rd-person gun on this
           // player + the spectator viewmodel use the right skin.
           const next =
-            typeof msg.id === 'string' && isRailgunFinish(msg.id) && owns(record, msg.id)
+            typeof msg.id === 'string' && isRailgunFinish(msg.id) && await owns(record, msg.id)
               ? msg.id
               : DEFAULT_RAILGUN_FINISH;
           if (next !== record.railgunFinish) { record.railgunFinish = next; bumpMeta(record); }
@@ -2793,7 +2812,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
         }
 
         case 'card':
-          record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId), {
+          record.card = sanitizeCard(msg.card, record.name, await unlockedSetFor(record.playerId), {
             admin: record.admin,
             verified: record.verified,
             title: resolveTitleText(record.playerId, record.title),
@@ -3267,7 +3286,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
   // office IP — is allowed to match freely. Match-fixing is neutralized by the
   // diminishing-Elo-vs-repeat-opponent rule in endRankedMatch, not by blocking
   // matches. Pairs spawn a private ranked room — both clients are 'matched' in.
-  const rankedTimer = setInterval(() => {
+  const rankedTimer = setInterval(async () => {
     const now = Date.now();
     // Prune stale entries (socket gone, or the client moved into a match/spectate).
     for (const [id] of rankedQueue) {
@@ -3331,11 +3350,11 @@ export function attachElyxionWs(wss: WebSocketServer) {
     }
   }, 1500);
 
-  const sweepTimer = setInterval(() => {
+  const sweepTimer = setInterval(async () => {
     const now = Date.now();
     // Lapsed timed bans are inert at read time (expiry-aware lookups), but
     // delete the rows so the ban tables don't grow forever.
-    const swept = sweepExpiredBans(now);
+    const swept = await sweepExpiredBans(now);
     if (swept.nameBans + swept.ipBans + swept.guestBans > 0) {
       acLog({
         kind: 'unban',
@@ -3476,23 +3495,23 @@ export function attachElyxionWs(wss: WebSocketServer) {
         banGuest(guestId, reason, { name: actorName }, bannedUntil),
       banIp: (ip: string, reason: string, actorName: string, bannedUntil: number = 0) =>
         banIpAddress(ip, reason, { name: actorName }, bannedUntil),
-      unban: (name: string, actorName: string) => {
-        const ok = removeBan(name);
+      unban: async (name: string, actorName: string) => {
+        const ok = await removeBan(name);
         if (ok) acLog({ kind: 'unban', target: name.trim(), actor: actorName, detail: 'name' });
         return ok;
       },
-      unbanGuest: (guestId: string, actorName: string) => {
+      unbanGuest: async (guestId: string, actorName: string) => {
         const g = guestId.trim().toLowerCase();
-        const ok = removeGuestBan(g);
+        const ok = await removeGuestBan(g);
         if (ok) acLog({ kind: 'unban', target: g, actor: actorName, detail: 'guest' });
         return ok;
       },
-      unbanIp: (ip: string, actorName: string) => {
-        const ok = removeIpBan(ip);
+      unbanIp: async (ip: string, actorName: string) => {
+        const ok = await removeIpBan(ip);
         if (ok) acLog({ kind: 'unban', target: ip.trim(), actor: actorName, detail: 'ip' });
         return ok;
       },
-      list: () => listBans(),
+      list: async () => listBans(),
       // Live players + guests (incl. guests' uuids/IPs) for the admin UI's
       // online list + guest moderation.
       online: () => onlinePlayers(),

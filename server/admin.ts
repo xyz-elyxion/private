@@ -103,32 +103,23 @@ type BanListEntry = {
   bannedUntil: number; // epoch ms the ban lifts; 0 = permanent
 };
 type ModerationActions = {
-  kick: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  kick: (name: string, reason: string, actorName: string) => { found: boolean; names: string[] } | Promise<{ found: boolean; names: string[] }>;
   // Kick a guest by their anonymous uuid (the igpid cookie) — targets every
   // live connection carrying that identity.
-  kickGuest: (guestId: string, reason: string, actorName: string) => { found: boolean; names: string[] };
+  kickGuest: (guestId: string, reason: string, actorName: string) => { found: boolean; names: string[] } | Promise<{ found: boolean; names: string[] }>;
   // Name ban — auto-captures the online target's IP AND guest uuid so a
   // reconnecting guest can't dodge it by renumbering their "Guest N" name.
   // `bannedUntil`: epoch ms the ban lifts (0 = permanent).
-  ban: (name: string, reason: string, actorName: string, bannedUntil?: number) => {
-    found: boolean;
-    names: string[];
-  };
+  ban: (name: string, reason: string, actorName: string, bannedUntil?: number) => { found: boolean; names: string[] } | Promise<{ found: boolean; names: string[] }>;
   // Guest-uuid ban — persists (refused at the guest's next connect even with a
   // fresh name/IP), auto-captures the online guest's IP, and boots them now.
-  banGuest: (guestId: string, reason: string, actorName: string, bannedUntil?: number) => {
-    found: boolean;
-    names: string[];
-  };
+  banGuest: (guestId: string, reason: string, actorName: string, bannedUntil?: number) => { found: boolean; names: string[] } | Promise<{ found: boolean; names: string[] }>;
   // Direct IP ban — blocks every connection from that address, now + future.
-  banIp: (ip: string, reason: string, actorName: string, bannedUntil?: number) => {
-    found: boolean;
-    names: string[];
-  };
-  unban: (name: string, actorName: string) => boolean;
-  unbanGuest: (guestId: string, actorName: string) => boolean;
-  unbanIp: (ip: string, actorName: string) => boolean;
-  list: () => BanListEntry[];
+  banIp: (ip: string, reason: string, actorName: string, bannedUntil?: number) => { found: boolean; names: string[] } | Promise<{ found: boolean; names: string[] }>;
+  unban: (name: string, actorName: string) => boolean | Promise<boolean>;
+  unbanGuest: (guestId: string, actorName: string) => boolean | Promise<boolean>;
+  unbanIp: (ip: string, actorName: string) => boolean | Promise<boolean>;
+  list: () => BanListEntry[] | Promise<BanListEntry[]>;
   // Live players + guests (guests carry their uuid/IP for moderation).
   online: () => OnlinePlayer[];
 };
