@@ -10,7 +10,7 @@ export const announcementsRouter = Router();
 
 // Active announcements, newest first. No-store: it's a tiny document and admins
 // expect an edit to be live on the next page load (no stale-cache surprises).
-announcementsRouter.get('/announcements', (_req, res) => {
+announcementsRouter.get('/announcements', async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ announcements: listActiveAnnouncements() });
+  res.json({ announcements: await listActiveAnnouncements() });
 });

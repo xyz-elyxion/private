@@ -44,7 +44,7 @@ const KILL_TOLERANCE = 2;
 // Submit a finished challenge run. `won` = you reached the frag cap before any
 // bot. Returns the updated standing + whether the client should now upload this
 // run's replay (it's the player's new board-defining run).
-challengeRouter.post('/challenge/weekly', (req: Request, res) => {
+challengeRouter.post('/challenge/weekly', async (req: Request, res) => {
   const id = accountId(req);
   if (!id) {
     res.status(401).json({ error: 'account_required' });
@@ -60,8 +60,8 @@ challengeRouter.post('/challenge/weekly', (req: Request, res) => {
   const kills = clampInt(body.kills, 0, WEEKLY_CHALLENGE_FRAG_LIMIT);
   const won = body.won === true && kills >= WEEKLY_CHALLENGE_FRAG_LIMIT; // a win means you hit the cap
   const timeMs = won ? clampInt(body.timeMs, MIN_WIN_MS, MAX_WIN_MS) : 0;
-  const account = findUserById(id);
-  const result = recordWeeklyChallenge(id, account?.username ?? 'Player', kills, won, timeMs, now);
+  const account = await findUserById(id);
+  const result = await recordWeeklyChallenge(id, account?.username ?? 'Player', kills, won, timeMs, now);
   if (!result) {
     res.status(401).json({ error: 'account_required' });
     return;
@@ -76,7 +76,7 @@ challengeRouter.post('/challenge/weekly', (req: Request, res) => {
 challengeRouter.post(
   '/challenge/weekly/replay',
   express.raw({ type: 'application/octet-stream', limit: MAX_REPLAY_BYTES }),
-  (req: Request, res) => {
+  async (req: Request, res) => {
     const id = accountId(req);
     if (!id) {
       res.status(401).json({ error: 'account_required' });
@@ -98,7 +98,7 @@ challengeRouter.post(
     }
     // The replay must correspond to the player's current board entry (which the
     // immediately-preceding submit set). Reject anything that doesn't line up.
-    const me = getWeeklyChallengeMe(id);
+    const me = await getWeeklyChallengeMe(id);
     if (!me) {
       res.status(409).json({ error: 'no_entry' });
       return;
@@ -116,7 +116,7 @@ challengeRouter.post(
       res.status(400).json({ error: 'kills_mismatch' });
       return;
     }
-    storeWeeklyReplay(
+    await storeWeeklyReplay(
       id,
       new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
       { durationMs: summary.durationMs, kills: summary.localKills, won: summary.won },
@@ -127,13 +127,13 @@ challengeRouter.post(
 
 // Serve a player's stored run for the week as raw replay-codec bytes. Public —
 // anyone can rewatch any board entry's run.
-challengeRouter.get('/challenge/weekly/replay', (req: Request, res) => {
+challengeRouter.get('/challenge/weekly/replay', async (req: Request, res) => {
   const player = typeof req.query.player === 'string' ? req.query.player : '';
   if (!player) {
     res.status(400).json({ error: 'player_required' });
     return;
   }
-  const rec = getWeeklyReplayGz(player);
+  const rec = await getWeeklyReplayGz(player);
   if (!rec) {
     res.status(404).json({ error: 'not_found' });
     return;
@@ -156,10 +156,10 @@ challengeRouter.get('/challenge/weekly/replay', (req: Request, res) => {
 });
 
 // The current week's board + the caller's standing + the run parameters.
-challengeRouter.get('/challenge/weekly/leaderboard', (req: Request, res) => {
+challengeRouter.get('/challenge/weekly/leaderboard', async (req: Request, res) => {
   res.json({
-    entries: getWeeklyChallengeLeaderboard(50),
-    me: getWeeklyChallengeMe(accountId(req)),
+    entries: await getWeeklyChallengeLeaderboard(50),
+    me: await getWeeklyChallengeMe(accountId(req)),
     map: WEEKLY_CHALLENGE_MAP,
     fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT,
   });

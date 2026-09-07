@@ -169,28 +169,35 @@ function tokenOk(req: Request): boolean {
 const TOKEN_ADMIN: AccountInfo = { id: 'api-token', username: 'api-token', isAdmin: true, isVerified: false };
 
 // The current request's admin account, or null if the caller isn't an admin.
-function currentAdmin(req: Request): AccountInfo | null {
+function currentAdmin(req: Request): Promise<AccountInfo | null> {
   const id = accountId(req);
-  if (!id) return null;
-  const u = findUserById(id);
-  return u?.isAdmin ? u : null;
+  if (!id) return Promise.resolve(null);
+  return findUserById(id)
+    .then((u) => (u?.isAdmin ? u : null))
+    .catch(() => null);
 }
 
+// Express 4 does not catch rejected promises from async middleware, so the
+// async admin lookup is wrapped in .then/.catch — a db failure answers 500
+// instead of leaving the request hanging.
 const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
-  const admin = currentAdmin(req);
-  if (admin) {
-    (req as AdminRequest).admin = admin;
-    (req as AdminRequest).adminVia = 'session';
-    next();
-    return;
-  }
-  if (tokenOk(req)) {
-    (req as AdminRequest).admin = TOKEN_ADMIN;
-    (req as AdminRequest).adminVia = 'token';
-    next();
-    return;
-  }
-  res.status(403).json({ error: 'forbidden' });
+  currentAdmin(req)
+    .then((admin) => {
+      if (admin) {
+        (req as AdminRequest).admin = admin;
+        (req as AdminRequest).adminVia = 'session';
+        next();
+        return;
+      }
+      if (tokenOk(req)) {
+        (req as AdminRequest).admin = TOKEN_ADMIN;
+        (req as AdminRequest).adminVia = 'token';
+        next();
+        return;
+      }
+      res.status(403).json({ error: 'forbidden' });
+    })
+    .catch(() => res.status(500).json({ error: 'server_error' }));
 };
 adminRouter.use(requireAdmin);
 
@@ -222,16 +229,16 @@ const cleanGuestId = (v: unknown): string => {
 
 
 // Set/clear a player's verified blue-check (Krunker-style), by username.
-adminRouter.post('/verify', (req, res) => {
+adminRouter.post('/verify', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const target = findAccountByName(cleanUsername(body.username).toLowerCase());
+  const target = await findAccountByName(cleanUsername(body.username).toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
   const value = body.verified !== false; // default true
-  setVerified(target.id, value);
+  await setVerified(target.id, value);
   const admin = (req as AdminRequest).admin;
   logEvent({
     event: value ? 'admin.verify' : 'admin.unverify',
@@ -245,16 +252,16 @@ adminRouter.post('/verify', (req, res) => {
 });
 
 // Promote/demote an admin, by username.
-adminRouter.post('/grant', (req, res) => {
+adminRouter.post('/grant', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const target = findAccountByName(cleanUsername(body.username).toLowerCase());
+  const target = await findAccountByName(cleanUsername(body.username).toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
   const value = body.admin !== false; // default true
-  setAdmin(target.id, value);
+  await setAdmin(target.id, value);
   const admin = (req as AdminRequest).admin;
   logEvent({
     event: value ? 'admin.grant' : 'admin.revoke',
@@ -268,8 +275,8 @@ adminRouter.post('/grant', (req, res) => {
 });
 
 // Look up a player's current flags so the admin UI can show/toggle state.
-adminRouter.get('/lookup', (req, res) => {
-  const target = findAccountByName(cleanUsername(req.query.username).toLowerCase());
+adminRouter.get('/lookup', async (req, res) => {
+  const target = await findAccountByName(cleanUsername(req.query.username).toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
     return;
@@ -279,7 +286,7 @@ adminRouter.get('/lookup', (req, res) => {
 
 // Replace an account password. Passwords never enter the database or audit log in
 // plaintext; revoking all sessions also signs the account out everywhere.
-adminRouter.post('/password', (req, res) => {
+adminRouter.post('/password', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const username = cleanUsername(body.username);
@@ -288,14 +295,14 @@ adminRouter.post('/password', (req, res) => {
     res.status(400).json({ error: 'bad_password' });
     return;
   }
-  const target = findAccountByName(username.toLowerCase());
+  const target = await findAccountByName(username.toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
   const salt = randomBytes(16).toString('hex');
   const hash = scryptSync(password, salt, 64).toString('hex');
-  if (!setPasswordHash(target.id, hash, salt)) {
+  if (!(await setPasswordHash(target.id, hash, salt))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -314,7 +321,7 @@ adminRouter.post('/password', (req, res) => {
 // Add credits to an account's existing balance. This is deliberately additive,
 // bounded, and whole-number-only so an admin action cannot accidentally replace
 // or create a negative balance.
-adminRouter.post('/credits', (req, res) => {
+adminRouter.post('/credits', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const username = cleanUsername(body.username);
@@ -323,12 +330,12 @@ adminRouter.post('/credits', (req, res) => {
     res.status(400).json({ error: 'bad_amount' });
     return;
   }
-  const target = findAccountByName(username.toLowerCase());
+  const target = await findAccountByName(username.toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
-  const credits = grantCredits(target.id, amount);
+  const credits = await grantCredits(target.id, amount);
   if (credits == null) {
     res.status(500).json({ error: 'server_error' });
     return;
@@ -347,7 +354,7 @@ adminRouter.post('/credits', (req, res) => {
 
 // Update a player feedback row's moderation status (open → ack → resolved /
 // spam). Session-only: a read-only token may not mutate. Audit-logged.
-adminRouter.post('/feedback/:id/status', (req, res) => {
+adminRouter.post('/feedback/:id/status', async (req, res) => {
   if (denyToken(req, res)) return;
   const id = parseInt(req.params.id, 10);
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -360,7 +367,7 @@ adminRouter.post('/feedback/:id/status', (req, res) => {
     res.status(400).json({ error: 'bad_status' });
     return;
   }
-  if (!setFeedbackStatus(id, status as FeedbackStatus)) {
+  if (!(await setFeedbackStatus(id, status as FeedbackStatus))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -382,21 +389,23 @@ adminRouter.post('/feedback/:id/status', (req, res) => {
 
 // All tickets, newest first, keyset-paginated by id, optional status filter.
 // Includes each ticket's reply thread so the admin UI renders full conversations.
-adminRouter.get('/support/tickets', (req, res) => {
+adminRouter.get('/support/tickets', async (req, res) => {
   const status = typeof req.query.status === 'string' ? req.query.status : '';
   const before = parseInt(String(req.query.before ?? ''), 10);
   const limit = parseInt(String(req.query.limit ?? ''), 10);
-  const tickets = listTickets({
-    limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
-    beforeId: Number.isFinite(before) && before > 0 ? before : 0,
-    status,
-  }).map((t) => ({ ...t, replies: listReplies(t.id) }));
-  res.json({ tickets, counts: ticketCounts() });
+  const tickets = (
+    await listTickets({
+      limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
+      beforeId: Number.isFinite(before) && before > 0 ? before : 0,
+      status,
+    })
+  ).map(async (t) => ({ ...t, replies: await listReplies(t.id) }));
+  res.json({ tickets: await Promise.all(tickets), counts: await ticketCounts() });
 });
 
 // Update a ticket's moderation status (open → ack → resolved → closed).
 // Session-only + audit-logged, mirroring the feedback status route.
-adminRouter.post('/support/tickets/:id/status', (req, res) => {
+adminRouter.post('/support/tickets/:id/status', async (req, res) => {
   if (denyToken(req, res)) return;
   const id = parseInt(req.params.id, 10);
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -409,7 +418,7 @@ adminRouter.post('/support/tickets/:id/status', (req, res) => {
     res.status(400).json({ error: 'bad_status' });
     return;
   }
-  if (!setTicketStatus(id, status as TicketStatus)) {
+  if (!(await setTicketStatus(id, status as TicketStatus))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -427,7 +436,7 @@ adminRouter.post('/support/tickets/:id/status', (req, res) => {
 
 // Reply to a ticket (the player sees it on /support). An 'open' ticket is
 // implicitly acked by the first reply. Session-only + audit-logged.
-adminRouter.post('/support/tickets/:id/reply', (req, res) => {
+adminRouter.post('/support/tickets/:id/reply', async (req, res) => {
   if (denyToken(req, res)) return;
   const id = parseInt(req.params.id, 10);
   const body = typeof (req.body ?? {}).text === 'string' ? (req.body as { text: string }).text.trim() : '';
@@ -439,13 +448,13 @@ adminRouter.post('/support/tickets/:id/reply', (req, res) => {
     res.status(400).json({ error: 'bad_body' });
     return;
   }
-  const ticket = getTicket(id);
+  const ticket = await getTicket(id);
   if (!ticket) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
   const admin = (req as unknown as AdminRequest).admin;
-  const replyId = addTicketReply(id, admin.username, body);
+  const replyId = await addTicketReply(id, admin.username, body);
   if (!replyId) {
     res.status(500).json({ error: 'server_error' });
     return;
@@ -464,13 +473,13 @@ adminRouter.post('/support/tickets/:id/reply', (req, res) => {
 // ── Violations / warnings (admin side) ─────────────────────────────────────
 // The list is readable with either admin session or read-only API token. Issuing,
 // dismissing, and reviewing appeals require a real admin session.
-adminRouter.get('/violations', (req, res) => {
+adminRouter.get('/violations', async (req, res) => {
   const limit = parseInt(String(req.query.limit ?? ''), 10);
-  const rows = listViolations({ limit: Number.isFinite(limit) && limit > 0 ? limit : 100 });
-  res.json({ violations: rows, counts: violationCounts() });
+  const rows = await listViolations({ limit: Number.isFinite(limit) && limit > 0 ? limit : 100 });
+  res.json({ violations: rows, counts: await violationCounts() });
 });
 
-adminRouter.post('/violations', (req, res) => {
+adminRouter.post('/violations', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const username = cleanUsername(body.username);
@@ -489,7 +498,7 @@ adminRouter.post('/violations', (req, res) => {
   let targetId = playerId;
   let targetName = username || 'Guest';
   if (username) {
-    const target = findAccountByName(username.toLowerCase());
+    const target = await findAccountByName(username.toLowerCase());
     if (!target) {
       res.status(404).json({ error: 'not_found' });
       return;
@@ -505,7 +514,7 @@ adminRouter.post('/violations', (req, res) => {
   }
   const admin = (req as AdminRequest).admin;
   const now = Date.now();
-  const id = issueViolation({
+  const id = await issueViolation({
     playerId: targetId,
     playerName: targetName,
     severity: severity as ViolationSeverity,
@@ -529,7 +538,7 @@ adminRouter.post('/violations', (req, res) => {
   res.json({ ok: true, id, severity, playerId: targetId, playerName: targetName });
 });
 
-adminRouter.post('/violations/:id/status', (req, res) => {
+adminRouter.post('/violations/:id/status', async (req, res) => {
   if (denyToken(req, res)) return;
   const id = parseInt(req.params.id, 10);
   const status = (req.body as Record<string, unknown> | undefined)?.status;
@@ -537,7 +546,7 @@ adminRouter.post('/violations/:id/status', (req, res) => {
     res.status(400).json({ error: 'bad_status' });
     return;
   }
-  if (!setViolationStatus(id, status as ViolationStatus)) {
+  if (!(await setViolationStatus(id, status as ViolationStatus))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -546,7 +555,7 @@ adminRouter.post('/violations/:id/status', (req, res) => {
   res.json({ ok: true, id, status });
 });
 
-adminRouter.post('/violations/:id/appeal', (req, res) => {
+adminRouter.post('/violations/:id/appeal', async (req, res) => {
   if (denyToken(req, res)) return;
   const id = parseInt(req.params.id, 10);
   const appealStatus = (req.body as Record<string, unknown> | undefined)?.status;
@@ -555,7 +564,7 @@ adminRouter.post('/violations/:id/appeal', (req, res) => {
     return;
   }
   const admin = (req as unknown as AdminRequest).admin;
-  if (!reviewViolationAppeal(id, appealStatus as Exclude<ViolationAppealStatus, 'none' | 'pending'>, admin.username)) {
+  if (!(await reviewViolationAppeal(id, appealStatus as Exclude<ViolationAppealStatus, 'none' | 'pending'>, admin.username))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -567,10 +576,10 @@ adminRouter.post('/violations/:id/appeal', (req, res) => {
 // Recent messages across all channels, newest first, keyset-paginated — plus
 // soft-delete. The list is read-only → token-readable; deletes mutate →
 // session-only (denyToken) + audit-logged.
-adminRouter.get('/community/messages', (req, res) => {
+adminRouter.get('/community/messages', async (req, res) => {
   const before = parseInt(String(req.query.before ?? ''), 10);
   const limit = parseInt(String(req.query.limit ?? ''), 10);
-  const messages = listAllCommunityMessages({
+  const messages = await listAllCommunityMessages({
     limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
     beforeId: Number.isFinite(before) && before > 0 ? before : 0,
   });
@@ -579,14 +588,14 @@ adminRouter.get('/community/messages', (req, res) => {
 
 // Soft-delete a community message (hidden everywhere; kept for audit).
 // Session-only + audit-logged, mirroring the other moderation mutations.
-adminRouter.post('/community/messages/:id/delete', (req, res) => {
+adminRouter.post('/community/messages/:id/delete', async (req, res) => {
   if (denyToken(req, res)) return;
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id) || id <= 0) {
     res.status(400).json({ error: 'bad_id' });
     return;
   }
-  if (!deleteCommunityMessage(id)) {
+  if (!(await deleteCommunityMessage(id))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -606,14 +615,14 @@ adminRouter.post('/community/messages/:id/delete', (req, res) => {
 // announcements). The management list is read-only → token-readable; posting
 // and deleting mutate → session-only (denyToken) + audit-logged, mirroring the
 // other moderation mutations.
-adminRouter.get('/announcements', (_req, res) => {
-  res.json({ announcements: listAnnouncements(100) });
+adminRouter.get('/announcements', async (_req, res) => {
+  res.json({ announcements: await listAnnouncements(100) });
 });
 
 // Post a new announcement: { text, durationMs? }. durationMs 0/absent = stays
 // until manually deleted; otherwise it auto-expires (hidden from players) after
 // that long. Appears on the landing page immediately.
-adminRouter.post('/announcements', (req, res) => {
+adminRouter.post('/announcements', async (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -627,7 +636,7 @@ adminRouter.post('/announcements', (req, res) => {
       : 0;
   const admin = (req as AdminRequest).admin;
   const now = Date.now();
-  const id = createAnnouncement({
+  const id = await createAnnouncement({
     text,
     author: admin.username,
     now,
@@ -650,14 +659,14 @@ adminRouter.post('/announcements', (req, res) => {
 
 // Remove an announcement (hidden from the landing page immediately; the row is
 // soft-deleted and stays in the audit trail). Session-only + audit-logged.
-adminRouter.delete('/announcements/:id', (req, res) => {
+adminRouter.delete('/announcements/:id', async (req, res) => {
   if (denyToken(req, res)) return;
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id) || id <= 0) {
     res.status(400).json({ error: 'bad_id' });
     return;
   }
-  if (!deleteAnnouncement(id)) {
+  if (!(await deleteAnnouncement(id))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -860,11 +869,11 @@ adminRouter.get('/online', (_req, res) => {
 
 // Recent audit events for moderation review / the future metrics dashboard.
 // Optional ?event= filter and ?limit= (clamped server-side).
-adminRouter.get('/audit', (req, res) => {
+adminRouter.get('/audit', async (req, res) => {
   const rawLimit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 100;
   const event =
     typeof req.query.event === 'string' && req.query.event ? req.query.event : undefined;
-  res.json({ events: getAuditLog(Number.isFinite(rawLimit) ? rawLimit : 100, event) });
+  res.json({ events: await getAuditLog(Number.isFinite(rawLimit) ? rawLimit : 100, event) });
 });
 
 // ── Metrics dashboard (read-only aggregates) ─────────────────────────────────
@@ -875,31 +884,31 @@ const intParam = (v: unknown, fallback: number): number => {
 };
 
 // Headline KPIs + 24h/7d/30d activity windows + live concurrency.
-adminRouter.get('/metrics/overview', (_req, res) => {
-  res.json({ overview: getMetricsOverview() });
+adminRouter.get('/metrics/overview', async (_req, res) => {
+  res.json({ overview: await getMetricsOverview() });
 });
 
 // Dense daily series (matches / logins / registrations / active players).
-adminRouter.get('/metrics/timeseries', (req, res) => {
-  res.json({ series: getMetricsTimeseries(intParam(req.query.days, 30)) });
+adminRouter.get('/metrics/timeseries', async (req, res) => {
+  res.json({ series: await getMetricsTimeseries(intParam(req.query.days, 30)) });
 });
 
 // D1/D7 cohort retention by registration day.
-adminRouter.get('/metrics/retention', (req, res) => {
-  res.json({ cohorts: getRetention(intParam(req.query.days, 14)) });
+adminRouter.get('/metrics/retention', async (req, res) => {
+  res.json({ cohorts: await getRetention(intParam(req.query.days, 14)) });
 });
 
 // Recent recorded matches, keyset-paginated by audit id (?before=<lastId>).
-adminRouter.get('/metrics/matches', (req, res) => {
+adminRouter.get('/metrics/matches', async (req, res) => {
   const before = intParam(req.query.before, 0);
-  res.json({ matches: getRecentMatches(intParam(req.query.limit, 50), before > 0 ? before : undefined) });
+  res.json({ matches: await getRecentMatches(intParam(req.query.limit, 50), before > 0 ? before : undefined) });
 });
 
 // Searchable player table (?sort=kills|games|level|accuracy|xp|recent &q=&limit=).
-adminRouter.get('/metrics/players', (req, res) => {
+adminRouter.get('/metrics/players', async (req, res) => {
   const sort = typeof req.query.sort === 'string' ? req.query.sort : undefined;
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
-  res.json({ players: getPlayersTable({ sort, q, limit: intParam(req.query.limit, 100) }) });
+  res.json({ players: await getPlayersTable({ sort, q, limit: intParam(req.query.limit, 100) }) });
 });
 
 // Live concurrency right now (online players / players in a match / open rooms).
@@ -911,34 +920,34 @@ adminRouter.get('/metrics/live', (_req, res) => {
 // Player-submitted feedback / bug reports, newest first, keyset-paginated by id
 // (?before=<lastId>); optional ?status= and ?type= (bug/feature/general)
 // filters. Read-only (token or session).
-adminRouter.get('/metrics/feedback', (req, res) => {
+adminRouter.get('/metrics/feedback', async (req, res) => {
   const before = intParam(req.query.before, 0);
   const status = typeof req.query.status === 'string' ? req.query.status : undefined;
   const type = typeof req.query.type === 'string' ? req.query.type : undefined;
   res.json({
-    feedback: listFeedback({
+    feedback: await listFeedback({
       limit: intParam(req.query.limit, 50),
       beforeId: before > 0 ? before : undefined,
       status,
       type,
     }),
-    counts: feedbackCounts(),
-    typeCounts: feedbackTypeCounts(),
+    counts: await feedbackCounts(),
+    typeCounts: await feedbackTypeCounts(),
   });
 });
 
 // Weekly-challenge participation this week (+ the fixed run params).
-adminRouter.get('/metrics/weekly', (_req, res) => {
+adminRouter.get('/metrics/weekly', async (_req, res) => {
   res.json({
-    weekly: { ...getWeeklyChallengeStats(), map: WEEKLY_CHALLENGE_MAP, fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT },
+    weekly: { ...(await getWeeklyChallengeStats()), map: WEEKLY_CHALLENGE_MAP, fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT },
   });
 });
 
 // Tally a recent slice of matches by game mode + online/offline split — a cheap
 // "what's actually being played" read for the report (mode lives in match audit
 // detail; historical rows without it fall under 'unknown').
-function modeBreakdown(limit: number) {
-  const rows = getRecentMatches(limit);
+async function modeBreakdown(limit: number) {
+  const rows = await getRecentMatches(limit);
   const byMode: Record<string, number> = {};
   let online = 0;
   let offline = 0;
@@ -955,17 +964,17 @@ function modeBreakdown(limit: number) {
 // recent daily traffic + what's being played + the weekly challenge. Everything a
 // dashboard or an agent needs in a single GET. `days` (default 14) sizes the
 // timeseries; `sample` (default 200, max 200) sizes the mode tally.
-adminRouter.get('/metrics/report', (req, res) => {
+adminRouter.get('/metrics/report', async (req, res) => {
   const days = intParam(req.query.days, 14);
   const sample = intParam(req.query.sample, 200);
   res.json({
     generatedAt: Date.now(),
     via: (req as AdminRequest).adminVia,
     live: liveSource(),
-    overview: getMetricsOverview(),
-    timeseries: getMetricsTimeseries(days),
-    recentModeBreakdown: modeBreakdown(sample),
-    weekly: { ...getWeeklyChallengeStats(), map: WEEKLY_CHALLENGE_MAP, fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT },
+    overview: await getMetricsOverview(),
+    timeseries: await getMetricsTimeseries(days),
+    recentModeBreakdown: await modeBreakdown(sample),
+    weekly: { ...(await getWeeklyChallengeStats()), map: WEEKLY_CHALLENGE_MAP, fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT },
     // What the anticheat caught (counts over its retained window).
     anticheat: acCounts(),
   });

@@ -2,6 +2,7 @@
 // model). Progression keys off the account id — guests save nothing. Passwords
 // are scrypt-hashed (Node built-in, no dependency) with a per-user salt and
 // compared in constant time. The session is an opaque httpOnly cookie token.
+// All db.ts calls are awaited (the store is PostgreSQL-backed now).
 
 import { Router, type Request, type Response } from 'express';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
@@ -19,7 +20,7 @@ import { containsProfanity, isReservedName } from './profanity';
 
 // Usernames designated as admins via the ADMIN_USERNAMES env var (comma- or
 // space-separated, case-insensitive). Used to auto-promote on registration and,
-// on boot, to sync existing accounts (see syncAdminsFromEnv in server/index.ts).
+// on boot, to sync existing accounts (see syncAdminsFromEnv in server/app.ts).
 export function adminUsernamesFromEnv(): string[] {
   return (process.env.ADMIN_USERNAMES ?? '')
     .split(/[,\s]+/)
@@ -78,7 +79,8 @@ function cookieFromHeader(header: string | undefined, name: string): string {
 }
 
 // The account id behind a request's session cookie ('' = guest). This IS the
-// progression identity used by the stats API.
+// progression identity used by the stats API. Synchronous: reads the write-
+// through session cache maintained by db.ts (see userIdFromSession there).
 export function accountId(req: Request): string {
   const token = req.cookies?.[SESSION_COOKIE];
   return typeof token === 'string' ? userIdFromSession(token) : '';
@@ -124,8 +126,6 @@ export function guestSetCookieHeader(uuid: string): string {
   return `${GUEST_COOKIE}=${uuid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE / 1000}${secure}`;
 }
 
-
-
 // Lightweight per-IP attempt limiter so register/login can't be brute-forced.
 const attempts = new Map<string, { n: number; resetAt: number }>();
 const ATTEMPT_WINDOW = 60_000;
@@ -150,9 +150,9 @@ export const authRouter = Router();
 // gets their anonymous igpid minted here (first /me sets the cookie), so the
 // very first page the game client or any page opens seeds the guest identity
 // that the WS + content routes then key off.
-authRouter.get('/auth/me', (req, res) => {
+authRouter.get('/auth/me', async (req, res) => {
   const id = accountId(req);
-  const user = id ? findUserById(id) : undefined;
+  const user = id ? await findUserById(id) : undefined;
   if (!user) ensureGuestId(req, res);
   res.json({
     user: user
@@ -161,7 +161,7 @@ authRouter.get('/auth/me', (req, res) => {
   });
 });
 
-authRouter.post('/auth/register', (req, res) => {
+authRouter.post('/auth/register', async (req, res) => {
   if (rateLimited(req.ip ?? 'unknown', Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
@@ -190,13 +190,13 @@ authRouter.post('/auth/register', (req, res) => {
     return;
   }
   const lower = username.toLowerCase();
-  if (findUserByName(lower)) {
+  if (await findUserByName(lower)) {
     res.status(409).json({ error: 'taken' });
     return;
   }
   const salt = randomBytes(16).toString('hex');
   const id = genId();
-  createUser({
+  await createUser({
     id,
     username,
     usernameLower: lower,
@@ -208,15 +208,15 @@ authRouter.post('/auth/register', (req, res) => {
   // Auto-promote if this username is configured as an admin (lets you claim your
   // account right after deploy: register the name in ADMIN_USERNAMES → admin).
   const isAdmin = adminUsernamesFromEnv().includes(lower);
-  if (isAdmin) setAdmin(id, true);
+  if (isAdmin) await setAdmin(id, true);
   const token = genToken();
-  createSession(token, id, Date.now());
+  await createSession(token, id, Date.now());
   res.cookie(SESSION_COOKIE, token, cookieOpts);
   logEvent({ event: 'register', actorId: id, actorName: username, ip: req.ip, detail: isAdmin ? { admin: true } : undefined });
   res.json({ user: { username, isAdmin, isVerified: false } });
 });
 
-authRouter.post('/auth/login', (req, res) => {
+authRouter.post('/auth/login', async (req, res) => {
   if (rateLimited(req.ip ?? 'unknown', Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
@@ -224,7 +224,7 @@ authRouter.post('/auth/login', (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const username = typeof body.username === 'string' ? body.username.trim() : '';
   const password = typeof body.password === 'string' ? body.password : '';
-  const user = findUserByName(username.toLowerCase());
+  const user = await findUserByName(username.toLowerCase());
   // Always run the hash even on unknown users so timing doesn't leak existence.
   const salt = user?.pw_salt ?? 'x';
   const calc = hashPw(password, salt);
@@ -235,18 +235,18 @@ authRouter.post('/auth/login', (req, res) => {
     return;
   }
   const token = genToken();
-  createSession(token, user!.id, Date.now());
+  await createSession(token, user!.id, Date.now());
   res.cookie(SESSION_COOKIE, token, cookieOpts);
-  const acct = findUserById(user!.id);
+  const acct = await findUserById(user!.id);
   logEvent({ event: 'login', actorId: user!.id, actorName: user!.username, ip: req.ip });
   res.json({
     user: { username: user!.username, isAdmin: !!acct?.isAdmin, isVerified: !!acct?.isVerified },
   });
 });
 
-authRouter.post('/auth/logout', (req, res) => {
+authRouter.post('/auth/logout', async (req, res) => {
   const token = req.cookies?.[SESSION_COOKIE];
-  if (typeof token === 'string') deleteSession(token);
+  if (typeof token === 'string') await deleteSession(token);
   res.clearCookie(SESSION_COOKIE, { path: '/' });
   res.json({ ok: true });
 });

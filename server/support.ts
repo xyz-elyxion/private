@@ -69,7 +69,7 @@ function str(req: Request, ...keys: string[]): string {
   return '';
 }
 
-supportRouter.post('/support/tickets', (req, res) => {
+supportRouter.post('/support/tickets', async (req, res) => {
   const now = Date.now();
   const id = accountId(req);
   const rateKey = id || req.ip || 'unknown';
@@ -97,14 +97,14 @@ supportRouter.post('/support/tickets', (req, res) => {
 
   // Display name: trust the account username when logged in; otherwise the
   // client-supplied name (cosmetic only); otherwise Guest.
-  const account = id ? findUserById(id) : null;
+  const account = id ? await findUserById(id) : null;
   const playerName = account?.username || str(req, 'name').slice(0, 32) || 'Guest';
   // Attribution: accounts by their account id; guests by their stable igpid
   // uuid (minted on first ticket) so a guest's thread follows one identity the
   // admin can moderate (reply + ban-by-uuid from the ticket).
   const playerId = id || ensureGuestId(req, res);
 
-  const newId = submitTicket({
+  const newId = await submitTicket({
     playerId,
     playerName,
     category,
@@ -137,15 +137,15 @@ supportRouter.post('/support/tickets', (req, res) => {
 // account id; guests key off their stable igpid uuid (tickets opened in the
 // same browser are attributed to it), so a guest's open thread is visible back
 // to them. No identity at all → an empty list — the form still works.
-supportRouter.get('/support/tickets', (req, res) => {
+supportRouter.get('/support/tickets', async (req, res) => {
   const id = accountId(req);
   const identity = id || guestId(req);
   if (!identity) {
     res.json({ tickets: [] });
     return;
   }
-  const tickets = listTickets({ limit: 20, playerId: identity });
-  const withReplies = tickets.map((t) => ({ ...t, replies: listReplies(t.id) }));
+  const tickets = await listTickets({ limit: 20, playerId: identity });
+  const withReplies = await Promise.all(tickets.map(async (t) => ({ ...t, replies: await listReplies(t.id) })));
   res.json({ tickets: withReplies });
 });
 
@@ -157,7 +157,7 @@ const REPLY_MAX = 2000;
 // The author is the logged-in account when present, else the browser's guest
 // identity (igpid uuid) — a guest's reply is attributable to the same uuid their
 // ticket is keyed to. Rate-limited like submissions, audit-logged.
-supportRouter.post('/support/tickets/:id/replies', (req, res) => {
+supportRouter.post('/support/tickets/:id/replies', async (req, res) => {
   const identity = accountId(req) || guestId(req);
   if (!identity) {
     res.status(401).json({ error: 'unauthorized' });
@@ -180,7 +180,7 @@ supportRouter.post('/support/tickets/:id/replies', (req, res) => {
     return;
   }
 
-  const ticket = getTicket(id);
+  const ticket = await getTicket(id);
   if (!ticket) {
     res.status(404).json({ error: 'not_found' });
     return;
@@ -191,11 +191,11 @@ supportRouter.post('/support/tickets/:id/replies', (req, res) => {
     return;
   }
 
-  const account = identity ? findUserById(identity) : null;
+  const account = identity ? await findUserById(identity) : null;
   // Author: the account username, else the name the guest opened the ticket
   // under (keeps the thread's voice consistent for the admin side).
   const author = account?.username || ticket.playerName || 'Guest';
-  const replyId = addPlayerTicketReply(id, author, text, now);
+  const replyId = await addPlayerTicketReply(id, author, text, now);
   if (!replyId) {
     res.status(500).json({ error: 'server_error' });
     return;

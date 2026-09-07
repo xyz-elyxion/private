@@ -11,13 +11,13 @@ export const rankedRouter = Router();
 
 // The caller's own ranked profile (null for guests / never-played). The lobby's
 // "your rank" card reads this.
-rankedRouter.get('/ranked/me', (req: Request, res) => {
-  res.json({ profile: getRankedProfile(accountId(req)) });
+rankedRouter.get('/ranked/me', async (req: Request, res) => {
+  res.json({ profile: await getRankedProfile(accountId(req)) });
 });
 
 // The top of the ladder, plus the caller's own standing pinned (so the UI can
 // show "you are #N" even when you're off the top page).
-rankedRouter.get('/ranked/leaderboard', (req: Request, res) => {
-  const entries = getRankedLeaderboard(50);
-  res.json({ entries, me: getRankedProfile(accountId(req)) });
+rankedRouter.get('/ranked/leaderboard', async (req: Request, res) => {
+  const entries = await getRankedLeaderboard(50);
+  res.json({ entries, me: await getRankedProfile(accountId(req)) });
 });

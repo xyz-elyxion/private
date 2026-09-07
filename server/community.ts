@@ -59,7 +59,7 @@ communityRouter.get('/community/channels', (_req, res) => {
 });
 
 // Recent messages in a channel, newest first (the client reverses for display).
-communityRouter.get('/community/messages', (req, res) => {
+communityRouter.get('/community/messages', async (req, res) => {
   const channel = asChannel(req.query.channel);
   if (!channel) {
     res.status(400).json({ error: 'bad_channel' });
@@ -67,7 +67,7 @@ communityRouter.get('/community/messages', (req, res) => {
   }
   const before = parseInt(String(req.query.before ?? ''), 10);
   const limit = parseInt(String(req.query.limit ?? ''), 10);
-  const messages = listCommunityMessages({
+  const messages = await listCommunityMessages({
     channel,
     limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
     beforeId: Number.isFinite(before) && before > 0 ? before : 0,
@@ -78,7 +78,7 @@ communityRouter.get('/community/messages', (req, res) => {
 // Send a chat message. Identity is server-authoritative: the account username
 // when logged in, else "Guest". Content is length-capped and run through the
 // same profanity filter as account registration + in-game chat.
-communityRouter.post('/community/messages', (req, res) => {
+communityRouter.post('/community/messages', async (req, res) => {
   const now = Date.now();
   const id = accountId(req);
   const rateKey = id || req.ip || 'unknown';
@@ -107,14 +107,14 @@ communityRouter.post('/community/messages', (req, res) => {
     return;
   }
 
-  const account = id ? findUserById(id) : null;
+  const account = id ? await findUserById(id) : null;
   const playerName = account?.username || 'Guest';
   // Attribution: accounts by their account id; guests by their stable igpid
   // uuid (minted here on first guest post) so all of one guest's content ties
   // to a single identity an admin can moderate (soft-delete + ban-by-uuid).
   const playerId = id || ensureGuestId(req, res);
 
-  const newId = postCommunityMessage({
+  const newId = await postCommunityMessage({
     channel,
     playerId,
     playerName,

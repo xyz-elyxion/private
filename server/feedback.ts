@@ -58,7 +58,7 @@ function str(req: Request, ...keys: string[]): string {
   return '';
 }
 
-feedbackRouter.post('/feedback', (req, res) => {
+feedbackRouter.post('/feedback', async (req, res) => {
   const now = Date.now();
   const id = accountId(req);
   const rateKey = id || req.ip || 'unknown';
@@ -86,14 +86,14 @@ feedbackRouter.post('/feedback', (req, res) => {
 
   // Display name: trust the account username when logged in; otherwise the
   // client-supplied name (cosmetic only); otherwise Guest.
-  const account = id ? findUserById(id) : null;
+  const account = id ? await findUserById(id) : null;
   const playerName = account?.username || str(req, 'name').slice(0, 32) || 'Guest';
   // Attribution: accounts by their account id; guests by their stable igpid
   // uuid (minted on first guest submit) so admin moderation can tie the row to
   // one guest identity and ban it from here.
   const playerId = id || ensureGuestId(req, res);
 
-  const newId = submitFeedback({
+  const newId = await submitFeedback({
     playerId,
     playerName,
     type,

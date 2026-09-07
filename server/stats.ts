@@ -83,12 +83,12 @@ rateSweep.unref?.();
 
 export const statsRouter = Router();
 
-statsRouter.get('/stats', (req, res) => {
+statsRouter.get('/stats', async (req, res) => {
   const id = playerId(req);
-  res.json({ stats: getStats(id) });
+  res.json({ stats: await getStats(id) });
 });
 
-statsRouter.post('/stats', (req, res) => {
+statsRouter.post('/stats', async (req, res) => {
   // Rate-limit before doing any work. Prefer the existing cookie id (read
   // directly, before playerId() may mint a fresh one) and fall back to the
   // request IP for cookie-less callers. On exceed, reject without recording.
@@ -126,8 +126,8 @@ statsRouter.post('/stats', (req, res) => {
   // Leaderboard name is the account username (moderated at registration), never
   // the client-supplied display name — so the standings can't show a forged
   // slur. Guests (id === '') don't record a row at all; the fallback is defensive.
-  const account = id ? findUserById(id) : undefined;
-  const result = recordMatch({
+  const account = id ? await findUserById(id) : undefined;
+  const result = await recordMatch({
     playerId: id,
     userName: account?.username ?? cleanName(body.name),
     kills,
@@ -164,13 +164,13 @@ statsRouter.post('/stats', (req, res) => {
 });
 
 // Full profile for the lobby (level/XP/credits/unlocked/equipped + career stats).
-statsRouter.get('/profile', (req, res) => {
+statsRouter.get('/profile', async (req, res) => {
   const id = playerId(req);
-  res.json({ profile: getProfile(id) });
+  res.json({ profile: await getProfile(id) });
 });
 
 // Equip an owned cosmetic. Rate-limited + server-validated.
-statsRouter.post('/equip', (req, res) => {
+statsRouter.post('/equip', async (req, res) => {
   const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
@@ -180,12 +180,12 @@ statsRouter.post('/equip', (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const slot = typeof body.slot === 'string' ? body.slot : '';
   const cosmeticId = typeof body.id === 'string' ? body.id : '';
-  const result = setEquipped(id, slot, cosmeticId);
+  const result = await setEquipped(id, slot, cosmeticId);
   res.status(result.ok ? 200 : 400).json(result);
 });
 
 // Buy a credits-priced cosmetic. Rate-limited + server-validated.
-statsRouter.post('/shop/buy', (req, res) => {
+statsRouter.post('/shop/buy', async (req, res) => {
   const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
@@ -194,29 +194,29 @@ statsRouter.post('/shop/buy', (req, res) => {
   const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const cosmeticId = typeof body.id === 'string' ? body.id : '';
-  const result = buyCosmetic(id, cosmeticId);
+  const result = await buyCosmetic(id, cosmeticId);
   res.status(result.ok ? 200 : 400).json(result);
 });
 
 // Open a hat case (credits-funded, server-authoritative roll). Rate-limited.
-statsRouter.post('/shop/open-case', (req, res) => {
+statsRouter.post('/shop/open-case', async (req, res) => {
   const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
   const id = playerId(req);
-  res.status(200).json(openCase(id));
+  res.status(200).json(await openCase(id));
 });
 
 // Current daily/weekly challenges with progress + claim state.
-statsRouter.get('/challenges', (req, res) => {
+statsRouter.get('/challenges', async (req, res) => {
   const id = playerId(req);
-  res.json({ challenges: getChallenges(id, Date.now()) });
+  res.json({ challenges: await getChallenges(id, Date.now()) });
 });
 
 // Claim a completed challenge's reward. Rate-limited + server-validated.
-statsRouter.post('/challenges/claim', (req, res) => {
+statsRouter.post('/challenges/claim', async (req, res) => {
   const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
@@ -225,6 +225,6 @@ statsRouter.post('/challenges/claim', (req, res) => {
   const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const challengeId = typeof body.id === 'string' ? body.id : '';
-  const result = claimChallenge(id, challengeId, Date.now());
+  const result = await claimChallenge(id, challengeId, Date.now());
   res.status(result.ok ? 200 : 400).json(result);
 });

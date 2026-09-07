@@ -23,18 +23,18 @@ function identity(req: Parameters<typeof accountId>[0]): string {
 
 // The caller's own warnings/strikes. A guest receives an igpid cookie on the
 // first request, so violations issued against that browser remain visible.
-violationsRouter.get('/violations', (req, res) => {
+violationsRouter.get('/violations', async (req, res) => {
   const id = identity(req);
   if (!id) {
     ensureGuestId(req, res);
     res.json({ violations: [] });
     return;
   }
-  res.json({ violations: listViolations({ playerId: id, limit: 100 }) });
+  res.json({ violations: await listViolations({ playerId: id, limit: 100 }) });
 });
 
 // Submit or replace an appeal for an active violation owned by this caller.
-violationsRouter.post('/violations/:id/appeal', (req, res) => {
+violationsRouter.post('/violations/:id/appeal', async (req, res) => {
   const id = identity(req);
   if (!id) {
     res.status(401).json({ error: 'unauthorized' });
@@ -50,7 +50,7 @@ violationsRouter.post('/violations/:id/appeal', (req, res) => {
     res.status(400).json({ error: 'bad_appeal' });
     return;
   }
-  const violation = getViolation(violationId);
+  const violation = await getViolation(violationId);
   if (!violation || violation.playerId !== id) {
     res.status(404).json({ error: 'not_found' });
     return;
@@ -59,11 +59,11 @@ violationsRouter.post('/violations/:id/appeal', (req, res) => {
     res.status(409).json({ error: 'not_active' });
     return;
   }
-  if (!submitViolationAppeal(violationId, id, text)) {
+  if (!(await submitViolationAppeal(violationId, id, text))) {
     res.status(409).json({ error: 'appeal_unavailable' });
     return;
   }
-  const account = accountId(req) ? findUserById(id) : undefined;
+  const account = accountId(req) ? await findUserById(id) : undefined;
   logEvent({
     event: 'violation.appeal',
     actorId: id,

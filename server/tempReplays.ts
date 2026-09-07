@@ -125,7 +125,7 @@ function deriveSummary(bytes: Uint8Array) {
 tempReplaysRouter.post(
   '/replays',
   express.raw({ type: 'application/octet-stream', limit: MAX_REPLAY_BYTES }),
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     const now = Date.now();
     const id = accountId(req);
     const rateKey = id || req.ip || 'unknown';
@@ -171,7 +171,7 @@ tempReplaysRouter.post(
     let code = '';
     for (let attempt = 0; attempt < 5; attempt++) {
       const candidate = randomCode();
-      if (storeTempReplay({
+      if (await storeTempReplay({
         code: candidate,
         dataGz: gz,
         rawBytes: bytes.length,
@@ -199,13 +199,13 @@ tempReplaysRouter.post(
 // "My replays": the uploading account's still-active temporary replays (no
 // blobs — just the summary cards). Session-only: guests upload anonymously and
 // can't claim a list; a read-only API token has no account.
-tempReplaysRouter.get('/replays/mine', (req: Request, res: Response) => {
+tempReplaysRouter.get('/replays/mine', async (req: Request, res: Response) => {
   const id = accountId(req);
   if (!id) {
     res.status(401).json({ error: 'login_required' });
     return;
   }
-  const rows = listTempReplaysForUser(id);
+  const rows = await listTempReplaysForUser(id);
   const replays = rows.map((r: MyReplayRow) => {
     let stats = { runner: { kills: 0, deaths: 0, headshots: 0, shots: 0 } };
     try {
@@ -233,7 +233,7 @@ tempReplaysRouter.get('/replays/mine', (req: Request, res: Response) => {
 
 // Remove one of YOUR temporary replays (owner-only). 404 when the code isn't
 // yours (or is already gone/expired).
-tempReplaysRouter.delete('/replays/:code', (req: Request, res: Response) => {
+tempReplaysRouter.delete('/replays/:code', async (req: Request, res: Response) => {
   const id = accountId(req);
   if (!id) {
     res.status(401).json({ error: 'login_required' });
@@ -244,7 +244,7 @@ tempReplaysRouter.delete('/replays/:code', (req: Request, res: Response) => {
     res.status(400).json({ error: 'bad_code' });
     return;
   }
-  if (!deleteTempReplayForUser(code, id)) {
+  if (!(await deleteTempReplayForUser(code, id))) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
@@ -253,14 +253,14 @@ tempReplaysRouter.delete('/replays/:code', (req: Request, res: Response) => {
 
 // Owner-only source download for the replay editor. Public share links remain
 // read-only; this route prevents one account from editing another's recording.
-tempReplaysRouter.get('/replays/:code/edit-source', (req: Request, res: Response) => {
+tempReplaysRouter.get('/replays/:code/edit-source', async (req: Request, res: Response) => {
   const id = accountId(req);
   if (!id) {
     res.status(401).json({ error: 'login_required' });
     return;
   }
   const code = String(req.params.code ?? '');
-  const source = getTempReplayBlobForUser(code, id);
+  const source = await getTempReplayBlobForUser(code, id);
   if (!source) {
     res.status(404).json({ error: 'not_found' });
     return;
@@ -273,13 +273,13 @@ tempReplaysRouter.get('/replays/:code/edit-source', (req: Request, res: Response
 });
 
 // Share-link metadata (header info for the recap page — no blob download).
-tempReplaysRouter.get('/replays/:code/meta', (req: Request, res: Response) => {
+tempReplaysRouter.get('/replays/:code/meta', async (req: Request, res: Response) => {
   const code = String(req.params.code ?? '');
   if (!code) {
     res.status(400).json({ error: 'bad_code' });
     return;
   }
-  const meta = getTempReplayMeta(code);
+  const meta = await getTempReplayMeta(code);
   if (!meta) {
     res.status(404).json({ error: 'not_found' });
     return;
@@ -290,9 +290,9 @@ tempReplaysRouter.get('/replays/:code/meta', (req: Request, res: Response) => {
 // The recording itself, raw replay-codec bytes (served gzip-encoded — the
 // browser inflates transparently, and the client codec works on the inflated
 // bytes either way).
-tempReplaysRouter.get('/replays/:code', (req: Request, res: Response) => {
+tempReplaysRouter.get('/replays/:code', async (req: Request, res: Response) => {
   const code = String(req.params.code ?? '');
-  const gz = getTempReplayBlob(code);
+  const gz = await getTempReplayBlob(code);
   if (!gz) {
     res.status(404).json({ error: 'not_found' });
     return;

@@ -1,45 +1,8 @@
-import { Pool } from 'pg';
+// Player reports: stored in the SAME PostgreSQL database as every other app
+// table (shared pool from db.ts — DATABASE_URL is the single source of truth).
 import { Router, type Request } from 'express';
 import { accountId, ensureGuestId, guestId } from './auth';
-import { findUserById } from './db';
-
-// Player reports are kept in PostgreSQL so they remain available independently
-// from the legacy SQLite store. DATABASE_URL is supplied through runtime env.
-const databaseUrl = process.env.DATABASE_URL?.trim();
-const pool = databaseUrl
-  ? new Pool({
-      connectionString: databaseUrl,
-      ssl: databaseUrl.includes('supabase.co') ? { rejectUnauthorized: false } : undefined,
-      max: 5,
-      idleTimeoutMillis: 30_000,
-    })
-  : null;
-
-let schemaReady: Promise<void> | null = null;
-function ensureSchema(): Promise<void> {
-  if (!pool) return Promise.reject(new Error('DATABASE_URL is not configured'));
-  schemaReady ??= pool
-    .query(`
-      CREATE TABLE IF NOT EXISTS elyxion_player_reports (
-        id            BIGSERIAL PRIMARY KEY,
-        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        reporter_id   TEXT NOT NULL DEFAULT '',
-        reporter_name TEXT NOT NULL DEFAULT 'Guest',
-        target_id     TEXT NOT NULL,
-        target_name   TEXT NOT NULL,
-        reason        TEXT NOT NULL,
-        details       TEXT NOT NULL DEFAULT '',
-        ip            TEXT NOT NULL DEFAULT '',
-        user_agent    TEXT NOT NULL DEFAULT ''
-      );
-      CREATE INDEX IF NOT EXISTS idx_elyxion_player_reports_created
-        ON elyxion_player_reports (created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_elyxion_player_reports_target
-        ON elyxion_player_reports (target_id, created_at DESC);
-    `)
-    .then(() => undefined);
-  return schemaReady;
-}
+import { dbReady, findUserById } from './db';
 
 const RATE_WINDOW_MS = 10 * 60_000;
 const RATE_MAX_POSTS = 6;
@@ -84,10 +47,6 @@ export const reportsRouter = Router();
 
 reportsRouter.post('/reports', async (req, res) => {
   const now = Date.now();
-  if (!pool) {
-    res.status(503).json({ error: 'reports_unavailable' });
-    return;
-  }
   const rateKey = identity(req);
   if (!allowPost(rateKey, now)) {
     res.status(429).json({ error: 'rate_limited' });
@@ -105,26 +64,30 @@ reportsRouter.post('/reports', async (req, res) => {
   }
 
   const reporterId = accountId(req) || ensureGuestId(req, res);
-  const account = reporterId ? findUserById(reporterId) : null;
+  const account = reporterId ? await findUserById(reporterId) : null;
   const reporterName = account?.username || 'Guest';
 
   try {
-    await ensureSchema();
-    const result = await pool.query<{ id: string }>(
-      `INSERT INTO elyxion_player_reports
-        (reporter_id, reporter_name, target_id, target_name, reason, details, ip, user_agent)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id`,
-      [
-        reporterId,
-        reporterName,
-        targetId,
-        targetName,
-        reason,
-        details,
-        (req.ip ?? '').slice(0, 64),
-        (req.get('user-agent') ?? '').slice(0, 256),
-      ],
+    await dbReady();
+    // Table lives in the shared schema (created with the rest of the app's
+    // tables in db.ts's ensureSchema — see elyxion_player_reports there).
+    const result = await import('./db').then(({ pool }) =>
+      pool!.query<{ id: string }>(
+        `INSERT INTO elyxion_player_reports
+          (reporter_id, reporter_name, target_id, target_name, reason, details, ip, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id`,
+        [
+          reporterId,
+          reporterName,
+          targetId,
+          targetName,
+          reason,
+          details,
+          (req.ip ?? '').slice(0, 64),
+          (req.get('user-agent') ?? '').slice(0, 256),
+        ],
+      ),
     );
     res.json({ ok: true, id: result.rows[0]?.id ?? '' });
   } catch (err) {
