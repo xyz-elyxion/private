@@ -32,7 +32,7 @@ const strArg = (name: string, fallback: string): string => {
 };
 
 const args: Args = {
-  url: strArg('url', 'ws://localhost:8799/ws/elyxion'),
+  url: strArg('url', 'ws://localhost:8799/ws/instagib'),
   players: Math.max(2, Math.min(8, Math.round(numArg('players', 8)))),
   durationSec: Math.max(2, numArg('duration', 12)),
   warmupSec: Math.max(0, numArg('warmup', 2)),

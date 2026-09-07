@@ -3,7 +3,7 @@ import { RemotePlayer } from './remote-player';
 import type { BotModel } from './bots';
 import type { RemotePlayerSnapshot } from './net';
 import type { Vec3 } from './types';
-import { EYE_HEIGHT, MAX_HEALTH, MULTIKILL_WINDOW_SEC, TEAM_COLORS } from './constants';
+import { EYE_HEIGHT, MULTIKILL_WINDOW_SEC, TEAM_COLORS } from './constants';
 import {
   REPLAY_VERSION,
   type ReplayActorProfile,
@@ -17,6 +17,7 @@ import {
 // The pure data shapes live in replay-codec (so the server can import them too);
 // re-export here so existing call sites keep importing them from './replay'.
 export type {
+  ReplayActorKind,
   ReplayActorProfile,
   ReplayPose,
   ReplayFrame,
@@ -603,9 +604,7 @@ function seedSnapshot(profile: ReplayActorProfile, pose: ReplayPose): RemotePlay
     pitch: pose.pitch,
     frags: 0,
     deaths: 0,
-    health: MAX_HEALTH,
     invulnMs: 0,
-    crouched: false,
     team: profile.team,
     hat: profile.hat,
     unusual: profile.unusual,

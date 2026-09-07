@@ -3,14 +3,14 @@
 // credits, never power. See docs/progression.md §7.
 //
 // Definitions are a static manifest; the DB only stores per-player progress
-// (elyxion_challenges). Which challenges are "active" for a player in a given
+// (instagib_challenges). Which challenges are "active" for a player in a given
 // period is derived deterministically from (player_id, period) — no scheduler.
 
-type ChallengePeriod = 'daily' | 'weekly';
+export type ChallengePeriod = 'daily' | 'weekly';
 export type ChallengeMetric = 'kills' | 'headshots' | 'wins' | 'streak' | 'games';
 // How a match's metric folds into progress: 'add' accumulates across matches,
 // 'max' keeps the best single match (e.g. a kill-streak).
-type ChallengeTrack = 'add' | 'max';
+export type ChallengeTrack = 'add' | 'max';
 
 export type ChallengeDef = {
   id: string; // 'daily:headshots'

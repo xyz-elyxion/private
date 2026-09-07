@@ -1,0 +1,238 @@
+#!/usr/bin/env node
+
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const packageJson = JSON.parse(
+  fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'),
+);
+
+const help = `Instagib Arena CLI v${packageJson.version}
+
+Usage:
+  instagib <command> [options]
+
+Commands:
+  dev                 Run Vite and the game server together with live reload
+  dev:web             Run only the Vite client
+  dev:server          Run only the game server with live reload
+  build               Build the production client into dist/
+  start               Start the production Node server
+  serve               Build the client, then start the production server
+  preview             Preview the Vite production build
+  lan                 Print URLs for opening the app from another LAN device
+  load                Run the netcode load harness
+  typecheck           Type-check the client and server
+  lint                Run ESLint
+  run <file> [...]    Run a TypeScript or JavaScript file through tsx
+  watch <file> [...]  Run a TypeScript or JavaScript file through tsx watch
+  help                Show this help
+
+Examples:
+  instagib dev
+  instagib serve
+  instagib lan --server
+  instagib load --players 8 --duration 12
+  instagib run scripts/netcode-load.ts --players 2
+
+Options passed after a command are forwarded to the underlying tool.
+`;
+
+const binName = (name) => {
+  const suffix = process.platform === 'win32' ? '.cmd' : '';
+  return path.join(projectRoot, 'node_modules', '.bin', `${name}${suffix}`);
+};
+
+const spawnProcess = (command, args = [], options = {}) => {
+  const child = spawn(command, args, {
+    cwd: projectRoot,
+    env: { ...process.env, ...options.env },
+    stdio: 'inherit',
+    shell: !isPortable && process.platform === 'win32',
+  });
+
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (signal) resolve(130);
+      else resolve(code ?? 1);
+    });
+  });
+};
+
+const isPortable = process.env.INSTAGIB_PORTABLE === '1';
+const toolScripts = {
+  eslint: 'node_modules/eslint/bin/eslint.js',
+  tsc: 'node_modules/typescript/bin/tsc',
+  tsx: 'node_modules/tsx/dist/cli.mjs',
+  vite: 'node_modules/vite/bin/vite.js',
+};
+
+const toolInvocation = (name, args = []) => {
+  if (isPortable) {
+    const script = toolScripts[name];
+    if (!script) throw new Error(`No portable entry point configured for ${name}`);
+    return { command: process.execPath, args: [path.join(projectRoot, script), ...args] };
+  }
+  return { command: binName(name), args };
+};
+
+const runBin = (name, args = [], options = {}) => {
+  const invocation = toolInvocation(name, args);
+  return spawnProcess(invocation.command, invocation.args, options);
+};
+
+const runNode = (script, args = [], options = {}) =>
+  spawnProcess(process.execPath, [path.join(projectRoot, script), ...args], options);
+
+const ensureNative = () => (isPortable ? Promise.resolve(0) : runNode('scripts/ensure-native.mjs'));
+
+const stopChild = (child, signal = 'SIGTERM') => {
+  if (!child.killed) child.kill(signal);
+};
+
+const runDev = async () => {
+  const nativeCode = await ensureNative();
+  if (nativeCode !== 0) return nativeCode;
+
+  const vite = toolInvocation('vite');
+  const tsx = toolInvocation('tsx', ['watch', 'server/index.ts']);
+  const children = [
+    {
+      name: 'web',
+      child: spawn(vite.command, vite.args, {
+        cwd: projectRoot,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: !isPortable && process.platform === 'win32',
+      }),
+    },
+    {
+      name: 'server',
+      child: spawn(tsx.command, tsx.args, {
+        cwd: projectRoot,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: !isPortable && process.platform === 'win32',
+      }),
+    },
+  ];
+
+  for (const { name, child } of children) {
+    child.stdout?.on('data', (chunk) => process.stdout.write(`[${name}] ${chunk}`));
+    child.stderr?.on('data', (chunk) => process.stderr.write(`[${name}] ${chunk}`));
+    child.once('error', (error) => {
+      console.error(`[${name}] ${error.message}`);
+    });
+  }
+
+  let shuttingDown = false;
+  let remaining = children.length;
+  let result = 0;
+  const terminate = (signal) => {
+    for (const { child } of children) stopChild(child, signal);
+  };
+  const shutdown = (signal, code) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    result = code;
+    terminate(signal);
+  };
+  process.once('SIGINT', () => shutdown('SIGINT', 130));
+  process.once('SIGTERM', () => shutdown('SIGTERM', 143));
+
+  return new Promise((resolve) => {
+    for (const { child } of children) {
+      child.once('exit', (code, signal) => {
+        remaining -= 1;
+        if (!shuttingDown) shutdown('SIGTERM', signal ? 130 : code ?? 1);
+        if (remaining === 0) resolve(result);
+      });
+    }
+  });
+};
+
+const runCommand = async (command, args) => {
+  switch (command) {
+    case 'dev':
+      return runDev();
+    case 'dev:web':
+      return runBin('vite', args);
+    case 'dev:server': {
+      const nativeCode = await ensureNative();
+      return nativeCode === 0 ? runBin('tsx', ['watch', 'server/index.ts', ...args]) : nativeCode;
+    }
+    case 'build':
+      return runBin('vite', ['build', ...args]);
+    case 'start': {
+      const nativeCode = await ensureNative();
+      return nativeCode === 0
+        ? runBin('tsx', ['server/index.ts', ...args], { env: { NODE_ENV: 'production' } })
+        : nativeCode;
+    }
+    case 'serve': {
+      const buildCode = await runBin('vite', ['build', ...args]);
+      if (buildCode !== 0) return buildCode;
+      const nativeCode = await ensureNative();
+      return nativeCode === 0
+        ? runBin('tsx', ['server/index.ts'], { env: { NODE_ENV: 'production' } })
+        : nativeCode;
+    }
+    case 'preview':
+      return runBin('vite', ['preview', ...args]);
+    case 'lan':
+      return runNode('scripts/lan-url.mjs', args);
+    case 'load':
+    case 'netcode:load':
+      return runBin('tsx', ['scripts/netcode-load.ts', ...args]);
+    case 'typecheck':
+      return runBin('tsc', ['-p', 'tsconfig.json', '--noEmit']).then(async (code) =>
+        code === 0 ? runBin('tsc', ['-p', 'tsconfig.server.json', '--noEmit']) : code,
+      );
+    case 'lint':
+      return runBin('eslint', ['.', ...args]);
+    case 'run':
+      if (!args[0]) {
+        console.error('Usage: instagib run <file> [args...]');
+        return 2;
+      }
+      return runBin('tsx', args);
+    case 'watch':
+      if (!args[0]) {
+        console.error('Usage: instagib watch <file> [args...]');
+        return 2;
+      }
+      return runBin('tsx', ['watch', ...args]);
+    case 'help':
+      console.log(help);
+      return 0;
+    default:
+      console.error(`Unknown command: ${command}\n`);
+      console.error(help);
+      return 2;
+  }
+};
+
+const rawArgs = process.argv.slice(2);
+const first = rawArgs[0];
+
+if (!first || first === '--help' || first === '-h') {
+  console.log(help);
+  process.exitCode = 0;
+} else if (first === '--version' || first === '-v') {
+  console.log(packageJson.version);
+  process.exitCode = 0;
+} else {
+  runCommand(first, rawArgs.slice(1))
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      console.error(`[instagib] ${error.message}`);
+      process.exitCode = 1;
+    });
+}

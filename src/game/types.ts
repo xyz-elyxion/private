@@ -6,8 +6,6 @@ export type AABB = { min: Vec3; max: Vec3 };
 
 export type EntityId = string;
 
-export type WeaponType = import('./constants').WeaponType;
-
 export type InputState = {
   forward: boolean;
   back: boolean;
@@ -22,8 +20,6 @@ export type InputState = {
   fire: boolean;
   firePressed: boolean;
   zoom: boolean; // held → narrow FOV
-  crouch: boolean; // held → lower stance
-  slidePressed: boolean; // edge → start a ground slide
   scoreboard: boolean;
   chatPressed: boolean; // edge: the chat key was just pressed (open the composer)
   yawDelta: number;
@@ -34,9 +30,7 @@ export type BotState = {
   id: EntityId;
   name: string;
   pos: Vec3;
-  health: number;
   alive: boolean;
-  bodyguard?: boolean;
   respawnTimer: number;
   moveTimer: number;
 };
@@ -91,7 +85,7 @@ export type KillfeedEntry = {
   killer: string;
   killerLocal: boolean;
   victim: string;
-  weapon: WeaponType;
+  weapon: 'rail';
   special: 'mid-air' | 'headshot' | null;
   remaining: number;
   total: number;
@@ -181,7 +175,7 @@ export type KillcamState = {
   dirAngle?: number;
 };
 
-type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
 // End-of-match map vote (multiplayer). While non-null the pointer is released
 // and the vote overlay is shown; the countdown self-ticks off `endsAtClient`
@@ -229,16 +223,10 @@ export type NetDebugStats = {
 
 export type HudState = {
   frags: number;
-  health: number;
-  weaponType: WeaponType;
   railCooldown: number;
   dashCooldown: number;
   airJumpsLeft: number;
-  abilityReady: boolean; // the equipped RMB ability can be used now
-  abilityType: import('./constants').AbilityType;
-  abilityCooldown: number;
-  abilityActive: boolean;
-  admin: boolean;
+  boostReady: boolean; // a boostable surface is in range under the crosshair
   speed: number;
   locked: boolean;
   currentStreak: number;
@@ -277,9 +265,6 @@ export type HudState = {
   // Spectator HUD: who you're watching + the roster you can cycle through, and
   // the watched player's crosshair (share-code). null when not spectating.
   spectator: SpectatorHud | null;
-  // Corner minimap data (map layout + every visible entity). Always present;
-  // the React HUD draws it bottom-right above the cooldown cluster.
-  minimap: MinimapState;
 };
 
 export type SpectatorHud = {
@@ -289,29 +274,6 @@ export type SpectatorHud = {
   count: number; // number of watchable players
   players: { id: string; name: string }[]; // ordered switch list
   crosshairCode: string; // watched player's crosshair share-code ('' = default)
-};
-
-// Live top-down tactical map data, assembled by the engine at HUD rate (~20Hz)
-// from the sim + network snapshots. The React HUD renders the layout + entity
-// dots on a 2D canvas; nothing here is authoritative (positions come from the
-// same interpolated views the 3D render uses).
-export type MinimapState = {
-  bounds: AABB; // play-space in world x/z (drawn + letterboxed)
-  boxes: AABB[]; // static cover geometry, outlined so the layout reads
-  // Local player (null while spectating — you have no body in the match).
-  me: { x: number; z: number; yaw: number } | null;
-  // Spectator POV target — highlighted with a ring; null outside spectator mode.
-  watchedId: string | null;
-  // Every visible entity + facing. Yaws all use the player/remote convention
-  // (bots are converted +π at the source, mirroring the replay sampler).
-  players: {
-    id: string;
-    x: number;
-    z: number;
-    yaw: number;
-    team: number | null; // TDM team (0/1); null in FFA/Duel
-    kind: 'remote' | 'bot' | 'bodyguard';
-  }[];
 };
 
 export type TrainingHud = {

@@ -25,56 +25,40 @@ export type SoundClipName =
 
 // Announcer voice packs. The default ('legacy') uses the flat SOUND_URLS files
 // below + the procedural/TTS fallback — unchanged behavior. Other packs are sets
-// of generated clips under /sounds/elyxion/announcer/<id>/<clip>.mp3 (see
+// of generated clips under /sounds/instagib/announcer/<id>/<clip>.mp3 (see
 // scripts/gen-announcers.mjs). Only ANNOUNCER_CLIPS are pack-swappable; weapon SFX
 // (fire/hit/kill/reload-ready) always use SOUND_URLS.
-export type AnnouncerPackId = 'legacy' | 'memes';
+export type AnnouncerPackId = 'legacy' | 'kuon';
 export type AnnouncerPack = { id: AnnouncerPackId; name: string; blurb: string };
 export const ANNOUNCER_PACKS: ReadonlyArray<AnnouncerPack> = [
   { id: 'legacy', name: 'Classic', blurb: 'Original deep-voice announcer' },
-  { id: 'memes', name: 'Memes', blurb: 'Unhinged meme callouts for your killstreaks' },
+  { id: 'kuon', name: 'Kuon (Anime)', blurb: 'Cheerful Japanese anime VO' },
 ];
 export const DEFAULT_ANNOUNCER_PACK: AnnouncerPackId = 'legacy';
 
-// The meme pack contains one fixed MP3 for these events. Other announcer events
-// fall back to the Classic file/TTS when no meme clip was supplied.
-const MEME_CLIPS: ReadonlySet<SoundClipName> = new Set<SoundClipName>([
-  'double-kill',
-  'triple-kill',
-  'quad-kill',
-  'penta-kill',
-  'killing-spree',
-  'rampage',
-  'dominating',
-  'unstoppable',
-  'godlike',
-  'headshot',
-  'humiliation',
-]);
-
 // User-supplied .ogg files override the procedural / TTS fallback when present.
 // Drop CC-licensed clips at these public/ paths. See plan §6.
-const SOUND_URLS: Record<SoundClipName, string> = {
-  'fire':          '/sounds/elyxion/rail-fire.ogg',
-  'hit':           '/sounds/elyxion/hit.ogg',
-  'kill':          '/sounds/elyxion/kill.ogg',
-  'reload-ready':  '/sounds/elyxion/reload-ready.ogg',
-  'first-blood':   '/sounds/elyxion/first-blood.ogg',
-  'double-kill':   '/sounds/elyxion/double-kill.ogg',
-  'triple-kill':   '/sounds/elyxion/triple-kill.ogg',
-  'quad-kill':     '/sounds/elyxion/quad-kill.ogg',
-  'penta-kill':    '/sounds/elyxion/penta-kill.ogg',
-  'killing-spree': '/sounds/elyxion/killing-spree.ogg',
-  'rampage':       '/sounds/elyxion/rampage.ogg',
-  'dominating':    '/sounds/elyxion/dominating.ogg',
-  'unstoppable':   '/sounds/elyxion/unstoppable.ogg',
-  'godlike':       '/sounds/elyxion/godlike.ogg',
-  'headshot':      '/sounds/elyxion/headshot.ogg',
-  'humiliation':   '/sounds/elyxion/humiliation.ogg',
-  'comeback':      '/sounds/elyxion/comeback.ogg',
-  'match-point':   '/sounds/elyxion/match-point.ogg',
-  'victory':       '/sounds/elyxion/victory.ogg',
-  'defeat':        '/sounds/elyxion/defeat.ogg',
+export const SOUND_URLS: Record<SoundClipName, string> = {
+  'fire':          '/sounds/instagib/rail-fire.ogg',
+  'hit':           '/sounds/instagib/hit.ogg',
+  'kill':          '/sounds/instagib/kill.ogg',
+  'reload-ready':  '/sounds/instagib/reload-ready.ogg',
+  'first-blood':   '/sounds/instagib/first-blood.ogg',
+  'double-kill':   '/sounds/instagib/double-kill.ogg',
+  'triple-kill':   '/sounds/instagib/triple-kill.ogg',
+  'quad-kill':     '/sounds/instagib/quad-kill.ogg',
+  'penta-kill':    '/sounds/instagib/penta-kill.ogg',
+  'killing-spree': '/sounds/instagib/killing-spree.ogg',
+  'rampage':       '/sounds/instagib/rampage.ogg',
+  'dominating':    '/sounds/instagib/dominating.ogg',
+  'unstoppable':   '/sounds/instagib/unstoppable.ogg',
+  'godlike':       '/sounds/instagib/godlike.ogg',
+  'headshot':      '/sounds/instagib/headshot.ogg',
+  'humiliation':   '/sounds/instagib/humiliation.ogg',
+  'comeback':      '/sounds/instagib/comeback.ogg',
+  'match-point':   '/sounds/instagib/match-point.ogg',
+  'victory':       '/sounds/instagib/victory.ogg',
+  'defeat':        '/sounds/instagib/defeat.ogg',
   'spawn':         '', // deploy/encouragement — pack-only (no legacy file or TTS)
 };
 
@@ -176,11 +160,9 @@ export class SoundManager {
     this.initVoice();
   }
 
-  // URL of one announcer clip for the active pack. Meme clips use the exact
-  // event filename; generated packs (if added later) can use numbered variants.
+  // URL of one announcer line variant (1-indexed) for the active pack.
   private announcerVariantUrl(name: SoundClipName, idx: number): string {
-    if (this.pack === 'memes') return `/sounds/elyxion/announcer/memes/${name}.mp3`;
-    return `/sounds/elyxion/announcer/${this.pack}/${name}_${idx}.mp3`;
+    return `/sounds/instagib/announcer/${this.pack}/${name}_${idx}.mp3`;
   }
 
   // Pick a variant index (1..count) for a clip, avoiding an immediate repeat so
@@ -205,9 +187,7 @@ export class SoundManager {
   private preloadPack() {
     if (!this.ctx || this.pack === 'legacy') return;
     for (const name of ANNOUNCER_CLIPS) {
-      const count = this.pack === 'memes'
-        ? (MEME_CLIPS.has(name) ? 1 : 0)
-        : announcerVariantCount(this.pack, name);
+      const count = announcerVariantCount(this.pack, name);
       for (let i = 1; i <= count; i++) void this.loadClip(this.announcerVariantUrl(name, i)).catch(() => {});
     }
   }
@@ -237,13 +217,8 @@ export class SoundManager {
     if (isAnnouncer && !this.announcerEnabled) return;
     const bus = (isAnnouncer ? this.announcerBus : this.sfxBus) ?? this.master;
     // Pack announcer clips have N line variants → pick one (no immediate repeat);
-    // the fixed meme clips count as one variant. Everything else (Classic
-    // announcer, SFX, or a meme event without a supplied file) uses SOUND_URLS.
-    const variants = isAnnouncer
-      ? this.pack === 'memes'
-        ? (MEME_CLIPS.has(name) ? 1 : 0)
-        : announcerVariantCount(this.pack, name)
-      : 0;
+    // everything else (legacy announcer, SFX) uses the flat SOUND_URLS file.
+    const variants = isAnnouncer ? announcerVariantCount(this.pack, name) : 0;
     const url = variants > 0 ? this.announcerVariantUrl(name, this.pickVariant(name, variants)) : SOUND_URLS[name];
     const buf = url ? this.buffers.get(url) : undefined;
     if (buf) {

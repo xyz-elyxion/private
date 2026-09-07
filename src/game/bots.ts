@@ -13,7 +13,6 @@ import {
   BOT_MOVE_INTERVAL_MIN,
   BOT_RADIUS,
   BOT_RESPAWN_DELAY,
-  LOCAL_RESPAWN_INVULN_SEC,
   DASH_COOLDOWN,
   DASH_DURATION,
   DASH_SPEED,
@@ -21,16 +20,12 @@ import {
   GRAVITY,
   JUMP_SPEED,
   MAX_HORIZONTAL_SPEED,
-  MAX_HEALTH,
   WALK_SPEED,
-  WEAPON_SPECS,
   type BotDifficulty,
-  type WeaponType,
 } from './constants';
 import { movePlayer, rayAabb, type ArenaMap } from './map';
-import { shotDirections } from './weapon';
 import { LocomotionBlender } from './locomotion';
-import { attachWeaponToSoldier, WeaponHold } from './weapon-model';
+import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
 import { WornHat } from './hats';
 import { HATS, UNUSUALS } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
@@ -47,7 +42,6 @@ function randomUnusualId(): string {
 }
 
 const BOT_NAMES = ['Vex', 'Razor', 'Strafe', 'Pyro', 'Vandal', 'Frost', 'Pulse', 'Echo'];
-const BOT_WEAPONS: readonly WeaponType[] = ['assault', 'smg', 'shotgun', 'sniper', 'railgun'];
 const BOT_FACING_LERP = 12;
 // Preferred engagement distance band — bots back off when closer than MIN and
 // close the gap when farther than MAX, otherwise circle-strafe.
@@ -86,24 +80,10 @@ const BOT_MOVE: Record<BotDifficulty, BotMove> = {
 };
 
 // An enemy a bot can target (the local player or another bot).
-export type BotTarget = {
-  id: string;
-  pos: Vec3;
-  team?: number | null;
-  bodyguard?: boolean;
-  spawnProtected?: boolean;
-};
+export type BotTarget = { id: string; pos: Vec3; team?: number | null };
 // A bot's decision to fire this tick — resolved by Game against the world.
-export type BotFireIntent = {
-  botId: string;
-  botName: string;
-  bodyguard?: boolean;
-  origin: Vec3;
-  dir: Vec3;
-  rays: { dir: Vec3; maxDist: number }[];
-  team: number | null;
-  weapon: WeaponType;
-};
+export type BotFireIntent = { botId: string; botName: string; origin: Vec3; dir: Vec3; team: number | null };
+const MODEL_SCALE = 1.0;
 // Soldier.glb actually faces -Z at identity (confirmed: when camera is at
 // +Z we see the model's back). Movement direction comes back as
 // atan2(dx, dz) which is 0 for wishdir +Z, so we add π to rotate the
@@ -116,18 +96,6 @@ export type BotModel = {
   animations: THREE.AnimationClip[];
 };
 
-// Normalize every character asset to the gameplay actor height and put its feet
-// on the actor origin. This keeps bots, bodyguards, and remote players visually
-// consistent even if a GLB was authored with a different unit scale or origin.
-export function normalizeModelHeight(model: THREE.Object3D, targetHeight: number): void {
-  const bounds = new THREE.Box3().setFromObject(model);
-  const height = bounds.max.y - bounds.min.y;
-  if (!Number.isFinite(height) || height <= 1e-5) return;
-  const scale = targetHeight / height;
-  model.scale.setScalar(scale);
-  model.position.y = -bounds.min.y * scale;
-}
-
 // Module-level cache so React StrictMode's double-mount (and any future
 // remount) doesn't trigger two concurrent GLTFLoader runs. Two concurrent
 // loaders both create blob: URLs for the embedded textures; when the first
@@ -139,24 +107,24 @@ let cachedModelLoadCount = 0;
 
 export async function loadBotModel(url: string): Promise<BotModel | null> {
   if (cachedModelPromise) {
-    console.info('[elyxion] bot model: reusing cached load');
+    console.info('[instagib] bot model: reusing cached load');
     return cachedModelPromise;
   }
   // Three.js's own resource cache helps when blob URLs are re-fetched.
   THREE.Cache.enabled = true;
   cachedModelLoadCount += 1;
   const loadId = cachedModelLoadCount;
-  console.info(`[elyxion] bot model: starting fresh load #${loadId} (${url})`);
+  console.info(`[instagib] bot model: starting fresh load #${loadId} (${url})`);
   cachedModelPromise = (async () => {
     try {
       const loader = new GLTFLoader();
       const gltf = await loader.loadAsync(url);
       console.info(
-        `[elyxion] bot model: load #${loadId} resolved (${gltf.animations.length} animations, ${gltf.scene.children.length} root children)`,
+        `[instagib] bot model: load #${loadId} resolved (${gltf.animations.length} animations, ${gltf.scene.children.length} root children)`,
       );
       return { scene: gltf.scene, animations: gltf.animations };
     } catch (err) {
-      console.warn(`[elyxion] bot model: load #${loadId} failed`, err);
+      console.warn(`[instagib] bot model: load #${loadId} failed`, err);
       cachedModelPromise = null; // permit retry next mount
       return null;
     }
@@ -193,7 +161,6 @@ export function pickFreeSpot(
   map: ArenaMap,
   avoid: Vec3 | Vec3[] | null = null,
   radius = BOT_RADIUS,
-  minAvoidDistance = 5,
 ): Vec3 {
   // Accept one point or many — spawn clear of EVERY live opponent, not just one,
   // so you don't drop into someone's crosshair.
@@ -218,7 +185,7 @@ export function pickFreeSpot(
       // First clear spot is a safe fallback; keep searching for one far from
       // every avoid point so we don't telefrag/stack on a live opponent.
       if (!fallback) fallback = { x, y, z };
-      if (avoidList.every((a) => Math.hypot(x - a.x, z - a.z) > minAvoidDistance)) {
+      if (avoidList.every((a) => Math.hypot(x - a.x, z - a.z) > 5)) {
         return { x, y, z };
       }
     }
@@ -341,42 +308,35 @@ export class Bot {
   private actions: Partial<Record<ActionKey, THREE.AnimationAction>> = {};
   private loco: LocomotionBlender | null = null;
   private hold: WeaponHold | null = null;
-  private weaponGroup: THREE.Group | null = null;
   private fallbackBody: THREE.Mesh | null = null;
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
-  protected target: Vec3;
-  protected readonly bodyguard: boolean;
-  protected ownerPos: Vec3 | null = null;
+  private target: Vec3;
   private roamStuckTimer = 0; // accrues while a roaming bot makes no progress → forces an unstick
-  protected team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color
+  private team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color
   private nameColor = '#ffd1d8'; // current nameplate color (team-tinted in TDM)
-  protected facing = 0;
+  private facing = 0;
   private dyingTimer = 0;
   // Vertical physics so bots obey gravity (fall off ledges) and auto-step up
   // ramps/cover instead of being glued to the ground plane (#7).
-  protected vel: Vec3 = { x: 0, y: 0, z: 0 };
-  protected onGround = false;
+  private vel: Vec3 = { x: 0, y: 0, z: 0 };
+  private onGround = false;
   // ── Human-like movement state (jump / double-jump / dash / boost) ──
-  protected mv: BotMove;
-  protected airJumpsLeft = AIR_JUMPS;   // reset to AIR_JUMPS on ground contact
+  private mv: BotMove;
+  private airJumpsLeft = AIR_JUMPS;     // reset to AIR_JUMPS on ground contact
   private decideTimer = 0;              // movement re-decision clock
-  protected dashTimer = 0;              // >0 while a dash burst is active
-  protected dashCooldown = 0;
+  private dashTimer = 0;                // >0 while a dash burst is active
+  private dashCooldown = 0;
   private dashDir: Vec3 = { x: 0, y: 0, z: 0 };
-  protected boostCooldown = 0;
+  private boostCooldown = 0;
   private jumping = false;              // true between takeoff and landing (drives the jump anim)
   private wasOnGround = true;           // for landing-edge detection
   private shotAtTimer = 0;              // counts down after the bot is recently shot near; raises dodge reactivity
-  private spawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
   // Combat state
-  protected diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
+  private diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
   private engagedId: string | null = null; // current target id, null = roaming
   private seenForSec = 0; // how long the current target has been visible (reaction gate)
   private shootCooldown = 0;
-  private weaponType: WeaponType;
-  private weaponSwitchTimer = rand(7, 13);
-  private shotSeed = 0;
   private strafeSign = Math.random() < 0.5 ? -1 : 1;
   private strafeFlipTimer = rand(1.2, 3); // randomly reverse strafe so juking isn't metronomic
   // Human-like aim: a smoothed point that chases the target. A laggy chase
@@ -394,13 +354,7 @@ export class Bot {
     scene: THREE.Scene,
     model: BotModel | null,
     difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
-    bodyguard = false,
-    weapon: WeaponType = 'railgun',
-    initialFacing = 0,
   ) {
-    this.bodyguard = bodyguard;
-    this.facing = initialFacing;
-    this.weaponType = weapon;
     this.diff = BOT_DIFFICULTY[difficulty];
     this.mv = BOT_MOVE[difficulty];
     this.decideTimer = rand(0, this.mv.decideInterval); // desync decision clocks across bots
@@ -408,9 +362,7 @@ export class Bot {
       id,
       name,
       pos: { ...spawn },
-      health: MAX_HEALTH,
       alive: true,
-      bodyguard,
       respawnTimer: 0,
       moveTimer: rand(BOT_MOVE_INTERVAL_MIN, BOT_MOVE_INTERVAL_MAX),
     };
@@ -427,7 +379,6 @@ export class Bot {
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
     this.group.position.set(spawn.x, spawn.y, spawn.z);
-    this.applyFacing();
     scene.add(this.group);
     // LocomotionBlender (created in installModel) already starts in idle.
   }
@@ -435,12 +386,7 @@ export class Bot {
   // Returns a fire intent when the bot decides to shoot this tick, else null.
   // `enemies` is every targetable entity (player + other bots); the bot filters
   // itself out by id.
-  // Shared per-tick bookkeeping (animation, timers, death/respawn) used by every
-  // bot brain. Returns false when the tick ended here — the bot is frozen in the
-  // pre-match countdown, mid-death-anim, or respawning, so no brain decisions or
-  // fire should happen this tick. Returns true when the bot is alive and active.
-  // Shared lifecycle for animation, timers, death, respawn, and collision.
-  protected stepShell(dt: number, map: ArenaMap, frozen: boolean): boolean {
+  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
     if (this.mixer) this.mixer.update(dt);
     // Pin the gun-carry pose over the animated arms while alive; let the death
     // clip flail freely when dead.
@@ -449,29 +395,26 @@ export class Bot {
     // put — no movement, decisions, or fire until the match goes live.
     if (frozen) {
       this.vel = { x: 0, y: 0, z: 0 };
-      return false;
+      return null;
     }
     if (this.shootCooldown > 0) this.shootCooldown = Math.max(0, this.shootCooldown - dt);
-    if (this.weaponSwitchTimer > 0) this.weaponSwitchTimer = Math.max(0, this.weaponSwitchTimer - dt);
     // Movement timers (run while alive; harmless while dead since velocity is zeroed).
     if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     if (this.boostCooldown > 0) this.boostCooldown = Math.max(0, this.boostCooldown - dt);
     if (this.shotAtTimer > 0) this.shotAtTimer = Math.max(0, this.shotAtTimer - dt);
-    if (this.spawnInvuln > 0) this.spawnInvuln = Math.max(0, this.spawnInvuln - dt);
     if (this.decideTimer > 0) this.decideTimer -= dt;
 
     if (!this.state.alive) {
       if (this.dyingTimer > 0) {
         this.dyingTimer -= dt;
         if (this.dyingTimer <= 0) this.group.visible = false;
-        return false;
+        return null;
       }
       this.state.respawnTimer -= dt;
       if (this.state.respawnTimer <= 0) {
         const spot = pickFreeSpot(map, null);
         this.state.pos = spot;
-        this.state.health = MAX_HEALTH;
         this.target = { ...spot };
         this.vel = { x: 0, y: 0, z: 0 };
         this.onGround = false;
@@ -479,12 +422,9 @@ export class Bot {
         this.dashTimer = 0;
         this.dashCooldown = 0;
         this.boostCooldown = 0;
-        this.shootCooldown = 0;
-        this.weaponSwitchTimer = rand(7, 13);
         this.jumping = false;
         this.wasOnGround = true;
         this.shotAtTimer = 0;
-        this.spawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
         this.decideTimer = rand(0, this.mv.decideInterval);
         this.group.position.set(spot.x, spot.y, spot.z);
         this.state.alive = true;
@@ -497,27 +437,15 @@ export class Bot {
         this.actions.death?.stop(); // clear the clamped death pose
         this.loco?.start();
       }
-      return false;
+      return null;
     }
-    if (this.weaponSwitchTimer <= 0) {
-      this.switchWeapon();
-      this.weaponSwitchTimer = rand(8, 15);
-    }
-    return true;
-  }
-
-  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
-    if (!this.stepShell(dt, map, frozen)) return null;
 
     // ── Acquire the nearest enemy that's in range AND in line of sight ──
     const eye = this.eyePos();
     let best: BotTarget | null = null;
     let bestDist = Infinity;
     for (const e of enemies) {
-      if (e.id === this.state.id || e.spawnProtected) continue;
-      // The bodyguard protects its owner. Hostile bots may damage the guard,
-      // while a guard ignores the player and any other allied guard.
-      if (this.bodyguard ? e.id === 'player' || e.bodyguard : false) continue;
+      if (e.id === this.state.id) continue;
       // TDM: never acquire a teammate (friendly fire is off).
       if (this.team != null && e.team != null && e.team === this.team) continue;
       const d = Math.hypot(e.pos.x - this.state.pos.x, e.pos.z - this.state.pos.z);
@@ -564,11 +492,8 @@ export class Bot {
       this.applyFacing();
       // Fire once reaction time has elapsed and the weapon is off cooldown.
       if (this.seenForSec >= this.diff.reaction && this.shootCooldown <= 0) {
-        // Jitter each weapon's own cadence ±15% so bots visibly respect their
-        // equipped weapon: SMGs fire rapidly, while snipers take deliberate shots.
-        const difficultyRate = this.diff.fireCooldown / 1.2;
-        const weaponCooldown = WEAPON_SPECS[this.weaponType].cooldown * difficultyRate;
-        this.shootCooldown = weaponCooldown * (0.85 + Math.random() * 0.3);
+        // Jitter the cadence ±15% so bots don't fire on a metronome.
+        this.shootCooldown = this.diff.fireCooldown * (0.85 + Math.random() * 0.3);
         return this.buildFireIntent(eye);
       }
       return null;
@@ -577,24 +502,6 @@ export class Bot {
     // ── No target: roam toward a wander point ──
     this.engagedId = null;
     this.seenForSec = 0;
-    if (this.bodyguard && this.ownerPos) {
-      const dx = this.ownerPos.x - this.state.pos.x;
-      const dz = this.ownerPos.z - this.state.pos.z;
-      const followDist = Math.hypot(dx, dz);
-      if (followDist <= 3) {
-        // Keep the guard's last combat/travel heading; it should not mirror the
-        // owner's camera while standing nearby.
-        const beforeX = this.state.pos.x;
-        const beforeZ = this.state.pos.z;
-        this.integrate(dt, map, { x: 0, z: 0 });
-        this.updateLoco(beforeX, beforeZ, dt);
-        return null;
-      }
-      // Follow the owner directly instead of orbiting an offset computed from
-      // the current look angle. That offset could make the guard strafe or move
-      // backward while still facing its old heading, which read as moonwalking.
-      this.target = { ...this.ownerPos };
-    }
     this.aimSeeded = false; // re-acquire aim from scratch on the next target
     this.lastTargetId = null;
     const px = this.state.pos.x;
@@ -648,7 +555,7 @@ export class Bot {
   // of stopping dead; and a positive vel.y (from a jump/double-jump/boost) lofts
   // the bot up before gravity reclaims it. Landing resets the air-jump budget
   // and drops out of the jump animation.
-  protected integrate(dt: number, map: ArenaMap, desired: { x: number; z: number }): { blocked: boolean } {
+  private integrate(dt: number, map: ArenaMap, desired: { x: number; z: number }): { blocked: boolean } {
     const size: Vec3 = { x: BOT_RADIUS * 2, y: BOT_HEIGHT, z: BOT_RADIUS * 2 };
 
     // Resolve the horizontal displacement to actually apply this tick.
@@ -736,7 +643,7 @@ export class Bot {
 
   // Ground jump (or wall-clearing hop). Launches straight up at JUMP_SPEED and
   // plays the jump clip un-blended for the airtime.
-  protected doJump() {
+  private doJump() {
     this.vel.y = JUMP_SPEED;
     this.onGround = false;
     this.startJumpAnim();
@@ -744,7 +651,7 @@ export class Bot {
 
   // Mid-air second hop — spends an air jump. Optionally redirect horizontal
   // momentum toward `dir` so a double-jump can also be a sideways dodge.
-  protected doAirJump(dir?: { x: number; z: number }) {
+  private doAirJump(dir?: { x: number; z: number }) {
     if (this.airJumpsLeft <= 0) return false;
     this.airJumpsLeft -= 1;
     this.vel.y = JUMP_SPEED;
@@ -759,7 +666,7 @@ export class Bot {
   }
 
   // Start a ground dash burst in the given horizontal direction.
-  protected doDash(dirX: number, dirZ: number) {
+  private doDash(dirX: number, dirZ: number) {
     const len = Math.hypot(dirX, dirZ);
     if (len < 1e-4) return;
     this.dashDir = { x: dirX / len, y: 0, z: dirZ / len };
@@ -771,7 +678,7 @@ export class Bot {
   // current heading) like the player's floor-boost, used to gain height or bail.
   // Bots take NO self-damage. Cancels downward velocity first so a falling bot
   // still gets the full launch.
-  protected doBoost(headX: number, headZ: number) {
+  private doBoost(headX: number, headZ: number) {
     if (this.vel.y < 0) this.vel.y = 0;
     const len = Math.hypot(headX, headZ) || 1;
     const fx = headX / len;
@@ -905,12 +812,12 @@ export class Bot {
   }
 
   // Drive the locomotion blend from how far the bot actually moved this tick.
-  protected updateLoco(prevX: number, prevZ: number, dt: number) {
+  private updateLoco(prevX: number, prevZ: number, dt: number) {
     const moved = Math.hypot(this.state.pos.x - prevX, this.state.pos.z - prevZ);
     this.loco?.update(dt > 0 ? moved / dt : 0, dt);
   }
 
-  protected eyePos(): Vec3 {
+  private eyePos(): Vec3 {
     return {
       x: this.state.pos.x,
       y: this.state.pos.y + BOT_HEIGHT * BOT_EYE_FRAC,
@@ -920,7 +827,7 @@ export class Bot {
 
   // Raycast eye → target center against the map; blocked if a box is hit before
   // reaching the target.
-  protected hasLineOfSight(eye: Vec3, targetPos: Vec3, map: ArenaMap): boolean {
+  private hasLineOfSight(eye: Vec3, targetPos: Vec3, map: ArenaMap): boolean {
     const tc = { x: targetPos.x, y: targetPos.y + BOT_HEIGHT * 0.5, z: targetPos.z };
     const dx = tc.x - eye.x;
     const dy = tc.y - eye.y;
@@ -966,7 +873,7 @@ export class Bot {
     return { x: mx * step, z: mz * step };
   }
 
-  protected roam(dt: number, map: ArenaMap) {
+  private roam(dt: number, map: ArenaMap) {
     const dx = this.target.x - this.state.pos.x;
     const dz = this.target.z - this.state.pos.z;
     const distSq = dx * dx + dz * dz;
@@ -1034,17 +941,9 @@ export class Bot {
     return {
       botId: this.state.id,
       botName: this.state.name,
-      bodyguard: this.state.bodyguard,
       origin: { ...eye },
       dir: { x: dx / l2, y: dy / l2, z: dz / l2 },
       team: this.team,
-      weapon: this.weaponType,
-      rays: shotDirections(new THREE.Vector3(dx / l2, dy / l2, dz / l2), this.weaponType, ++this.shotSeed)
-        .map((shotDir) => ({
-          dir: { x: shotDir.x, y: shotDir.y, z: shotDir.z },
-          maxDist: WEAPON_SPECS[this.weaponType].range,
-        })),
-
     };
   }
 
@@ -1065,14 +964,6 @@ export class Bot {
   }
   getTeam(): number | null {
     return this.team;
-  }
-
-  setOwnerPosition(pos: Vec3 | null) {
-    this.ownerPos = pos ? { ...pos } : null;
-  }
-
-  isSpawnProtected(): boolean {
-    return this.spawnInvuln > 0;
   }
 
   kill() {
@@ -1125,7 +1016,6 @@ export class Bot {
 
   dispose(scene: THREE.Scene) {
     this.hat?.dispose();
-    this.disposeWeaponGroup();
     scene.remove(this.group);
     if (this.fallbackBody) {
       this.fallbackBody.geometry.dispose();
@@ -1141,29 +1031,6 @@ export class Bot {
     if (this.mixer) this.mixer.stopAllAction();
   }
 
-  private switchWeapon() {
-    const options = BOT_WEAPONS.filter((type) => type !== this.weaponType);
-    const next = options[Math.floor(Math.random() * options.length)] ?? 'railgun';
-    this.weaponType = next;
-    if (!this.modelRoot) return;
-    this.disposeWeaponGroup();
-    this.weaponGroup = attachWeaponToSoldier(this.modelRoot, BOT_HEIGHT, this.weaponType);
-  }
-
-  private disposeWeaponGroup() {
-    if (!this.weaponGroup) return;
-    this.weaponGroup.parent?.remove(this.weaponGroup);
-    this.weaponGroup.traverse((obj) => {
-      const mesh = obj as THREE.Mesh & THREE.Line;
-      const geometry = (mesh as unknown as { geometry?: THREE.BufferGeometry }).geometry;
-      if (geometry) geometry.dispose();
-      const material = (mesh as unknown as { material?: THREE.Material | THREE.Material[] }).material;
-      if (Array.isArray(material)) material.forEach((mat) => mat.dispose());
-      else if (material) material.dispose();
-    });
-    this.weaponGroup = null;
-  }
-
   private installModel(model: BotModel) {
     const cloned = SkeletonUtils.clone(model.scene);
     // Defensive: force a clean rest transform regardless of what the
@@ -1171,7 +1038,7 @@ export class Bot {
     // partial axis writes leaving residual X/Z rotation in place.
     cloned.position.set(0, 0, 0);
     cloned.rotation.set(0, 0, 0);
-    normalizeModelHeight(cloned, BOT_HEIGHT);
+    cloned.scale.setScalar(MODEL_SCALE);
     // Tag the whole subtree so Game.disposeScene() skips disposing the
     // shared geometry / materials / textures from the cached source.
     cloned.traverse((obj) => {
@@ -1182,7 +1049,7 @@ export class Bot {
     this.hat = new WornHat(this.group, cloned);
     void this.hat.setHat(randomHatId());
     if (Math.random() < 0.6) this.hat.setUnusual(randomUnusualId());
-    this.weaponGroup = attachWeaponToSoldier(cloned, BOT_HEIGHT, this.weaponType);
+    attachRailgunToSoldier(cloned, BOT_HEIGHT);
     this.hold = new WeaponHold(cloned);
     this.mixer = new THREE.AnimationMixer(cloned);
 
@@ -1234,7 +1101,7 @@ export class Bot {
     this.group.add(this.fallbackHead);
   }
 
-  protected applyFacing() {
+  private applyFacing() {
     if (this.modelRoot) {
       // Always set ALL axes — don't leave .x / .z dangling.
       this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);
@@ -1275,105 +1142,9 @@ export class BotManager {
     const names = pickN(BOT_NAMES, count);
     for (let i = 0; i < count; i++) {
       const spawn = pickFreeSpot(map, playerSpawn);
-      const bot = new Bot(
-        `bot-${i}`,
-        names[i] ?? `Bot${i}`,
-        spawn,
-        scene,
-        model,
-        difficulty,
-        false,
-        BOT_WEAPONS[i % BOT_WEAPONS.length],
-      );
+      const bot = new Bot(`bot-${i}`, names[i] ?? `Bot${i}`, spawn, scene, model, difficulty);
       this.bots.push(bot);
     }
-  }
-
-  summonBodyguard(
-    scene: THREE.Scene,
-    map: ArenaMap,
-    ownerPos: Vec3,
-    model: BotModel | null,
-    difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
-    ownerFacing = 0,
-  ): Bot | null {
-    const existing = this.bots.find((b) => b.state.bodyguard);
-    if (existing) return existing;
-    const spawn = pickFreeSpot(map, [ownerPos, ...this.bots.filter((b) => b.state.alive).map((b) => b.state.pos)]);
-    const guard = new Bot(
-      'bodyguard',
-      'Bodyguard',
-      spawn,
-      scene,
-      model,
-      difficulty,
-      true,
-      'assault',
-      ownerFacing,
-    );
-    guard.setOwnerPosition(ownerPos);
-    this.bots.push(guard);
-    return guard;
-  }
-
-  summonAdminBodyguards(
-    scene: THREE.Scene,
-    map: ArenaMap,
-    ownerPos: Vec3,
-    model: BotModel | null,
-    difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
-    ownerFacing = 0,
-    count = 10,
-  ): Bot[] {
-    if (this.bots.some((b) => b.state.bodyguard)) return this.bots.filter((b) => b.state.bodyguard);
-    const guards: Bot[] = [];
-    const avoid: Vec3[] = [ownerPos, ...this.bots.filter((b) => b.state.alive).map((b) => b.state.pos)];
-    const radius = 4.5;
-    for (let i = 0; i < count; i++) {
-      const angle = (Math.PI * 2 * i) / count;
-      const desired = {
-        x: ownerPos.x + Math.cos(angle) * radius,
-        y: ownerPos.y,
-        z: ownerPos.z + Math.sin(angle) * radius,
-      };
-      // Use the map-aware picker for every guard. The desired ring is only a
-      // spread hint; forcing those coordinates can put several guards inside
-      // the same cover piece or outside a small arena.
-      const spawn = pickFreeSpot(map, avoid, BOT_RADIUS, 3.5);
-      const guard = new Bot(
-        `admin-bodyguard-${i}`,
-        `Bodyguard ${i + 1}`,
-        spawn,
-        scene,
-        model,
-        difficulty,
-        true,
-        'assault',
-        ownerFacing,
-      );
-      guard.setOwnerPosition(ownerPos);
-      guards.push(guard);
-      this.bots.push(guard);
-      avoid.push(spawn);
-    }
-    return guards;
-  }
-
-  dismissBodyguard(scene: THREE.Scene, guard?: Bot) {
-    const target = guard ?? this.bots.find((b) => b.state.bodyguard);
-    if (!target) return;
-    target.dispose(scene);
-    this.bots = this.bots.filter((b) => b !== target);
-  }
-
-  dismissAllBodyguards(scene: THREE.Scene) {
-    const guards = this.bots.filter((b) => b.state.bodyguard);
-    for (const guard of guards) guard.dispose(scene);
-    this.bots = this.bots.filter((b) => !b.state.bodyguard);
-  }
-
-  bodyguard(): Bot | null {
-    return this.bots.find((b) => b.state.bodyguard) ?? null;
   }
 
   // Steps every bot and returns the fire intents they produced this tick.

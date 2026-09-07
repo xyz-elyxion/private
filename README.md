@@ -1,25 +1,25 @@
 <div align="center">
 
-# ⚡ Elyxion
+# ⚡ Instagib Arena
 
 **One railgun. One shot. One kill.**
 
 A browser-based, server-authoritative, Quake-style instagib FPS.<br/>
 No health bars, no loadouts — the whole game is **aim and movement**.
 
-<a href="https://xyz-elyxion.onrender.com"><strong>▶ &nbsp;PLAY NOW — xyz-elyxion.onrender.com</strong></a><br/>
+<a href="https://instagib.win"><strong>▶ &nbsp;PLAY NOW — instagib.win</strong></a><br/>
 <sub>free · no download · no install · optional account</sub>
 
 <br/>
 
-[![CI](https://github.com/8tp/elyxion/actions/workflows/ci.yml/badge.svg)](https://github.com/8tp/elyxion/actions/workflows/ci.yml)
+[![CI](https://github.com/8tp/instagib-arena/actions/workflows/ci.yml/badge.svg)](https://github.com/8tp/instagib-arena/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![TypeScript](https://img.shields.io/badge/TypeScript-end_to_end-3178c6.svg)](tsconfig.json)
 
 <br/>
 
-<img src="public/og-image.png" alt="Elyxion — a browser-based Quake-style instagib FPS" width="720" />
+<img src="public/og-image.png" alt="Instagib Arena — a browser-based Quake-style instagib FPS" width="720" />
 
 <sub>Raw **Three.js** rendering · **64 Hz binary netcode** with lag compensation · one **Node** process (Express + `ws` + SQLite)</sub>
 
@@ -94,23 +94,70 @@ interesting parts are all in this repo.
 [`fnm`](https://github.com/Schniz/fnm) or `nvm`, e.g. `fnm use 20.19.0`.
 
 ```bash
-git clone https://github.com/8tp/elyxion.git
-cd elyxion
+git clone https://github.com/8tp/instagib-arena.git
+cd instagib-arena
 npm install
-npm run dev
+npm run cli -- dev
+# or, after npm link, use the shorter `instagib dev` command
 ```
 
-`npm run dev` is a single Vite process on a **single port** (<http://localhost:8787>):
-`server/vite-plugin.ts` mounts the Express app (all `/api` routes) and the
-`/ws/elyxion` game WebSocket directly inside the Vite dev server, so the client,
-the API, the game socket, and HMR all live on the same origin — exactly like
-production, no proxy, no second terminal. Open <http://localhost:8787> and hit
-**Enter the arena**.
+The project includes a small Node-style CLI. `npm run cli -- <command>` works
+without installing anything globally; `npm link` exposes the same executable as
+`instagib <command>`. The default `dev` command runs two processes together:
 
-For scripts / load tests that don't need a browser, `npm run dev:server` still
-runs the game server standalone (API + socket only, no client).
+- **Vite** dev server on <http://localhost:5173> — the client, with HMR.
+- **Game server** on `:8787` — the WebSocket game + APIs.
+
+Vite proxies `/api` and `/ws/instagib` to the game server, so the browser always
+talks to a **single origin** — exactly like production. Open
+<http://localhost:5173> and hit **Enter the arena**.
+
+You can also run them separately: `npm run cli -- dev:web` and
+`npm run cli -- dev:server`.
+
+Useful CLI commands:
+
+```bash
+instagib dev                         # Vite + game server with live reload
+instagib serve                       # build and serve the production app
+instagib lan --server                # print the production LAN URL
+instagib load --players 8            # run the netcode load harness
+instagib run scripts/netcode-load.ts --players 2
+instagib --help
+```
+
+The existing npm scripts remain available as aliases for compatibility.
+
+### Portable packages (no Node.js installation)
+
+You can distribute the app as a self-contained folder for Linux, macOS, or
+Windows. Each folder includes its own Node runtime and dependencies, so users
+do not need to install Node.js or npm.
+
+Build the package on the target platform after installing the project dependencies; the command also builds the client:
+
+```bash
+npm run package:portable
+```
+
+To choose a target explicitly:
+
+```bash
+npm run package:portable -- --target=linux-x64
+npm run package:portable -- --target=macos-arm64
+npm run package:portable -- --target=windows-x64
+```
+
+The package is written to `release/instagib-arena-<target>/`. Distribute that
+entire folder. On Windows run `instagib.cmd start`; on macOS/Linux run
+`./instagib start`. The generated package also includes a `README.txt`.
+
+For cross-platform builds, use the **Portable packages** GitHub Actions workflow
+from the repository's Actions tab. It creates downloadable artifacts for Linux,
+macOS, and Windows without requiring Node.js on the recipient's computer.
 
 ### Production
+
 
 ```bash
 npm run build      # vite build -> dist/
@@ -121,7 +168,7 @@ npm run serve
 
 In production the **single Node server** (default port `8787`) serves the built
 client from `dist/`, the APIs under `/api`, and the game socket at
-`/ws/elyxion` — all on one port. Put any TLS terminator / reverse proxy /
+`/ws/instagib` — all on one port. Put any TLS terminator / reverse proxy /
 CDN in front of it; the WebSocket rides the same origin. See
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the Railway + Cloudflare setup
 the live site runs on.
@@ -136,8 +183,7 @@ the live site runs on.
 | Left click         | Fire railgun (one shot, one kill)   |
 | `W` `A` `S` `D`    | Move                                |
 | `Space`            | Jump (double-jump in the air)       |
-| `Q`                | Dash (directional, on a cooldown)   |
-| `E`                | Zoom / aim (hold)                   |
+| `Shift`            | Dash (directional, on a cooldown)   |
 | Jump into a wall   | Wall-jump                           |
 | `Esc`              | Release mouse / open the menu       |
 
@@ -174,7 +220,7 @@ optional:
 | `PORT`          | `8787`             | Port the Node server listens on.                               |
 | `HOST`          | `0.0.0.0` (prod)   | Bind address.                                                  |
 | `DATA_DIR`      | `./data`           | Directory for runtime data (the SQLite DB).                    |
-| `DATABASE_PATH` | `./data/elyxion.sqlite` | Explicit DB file path (overrides `DATA_DIR`).           |
+| `DATABASE_PATH` | `./data/instagib.sqlite` | Explicit DB file path (overrides `DATA_DIR`).           |
 | `APP_BASE_URL`  | _(unset)_          | Production WebSocket origin allow-list. When set, only browsers loading the app from this origin may open the game socket. Unset = same-origin only. |
 | `ADMIN_USERNAMES` | _(unset)_        | Comma-separated account names auto-promoted to admin.          |
 
@@ -183,13 +229,13 @@ optional:
 ## Project structure
 
 ```
-elyxion/
+instagib-arena/
 ├─ index.html             # Vite entry (meta/OG/JSON-LD + crawlable noscript)
 ├─ vite.config.ts         # React + Tailwind plugins; dev proxy for /api + /ws
 ├─ src/
 │  ├─ main.tsx            # React root + router (/ and /play)
 │  ├─ pages/Landing.tsx   # marketing / controls splash
-│  ├─ ElyxionClient.tsx  # the game client: canvas mount, HUD, menus, lobby
+│  ├─ InstagibClient.tsx  # the game client: canvas mount, HUD, menus, lobby
 │  ├─ AdminDashboard.tsx  # /admin — metrics, players, feedback moderation
 │  └─ game/               # the Three.js engine (framework-agnostic)
 │     ├─ game.ts          #   main loop, match/HUD orchestration
@@ -205,7 +251,7 @@ elyxion/
 │     └─ …                #   audio, effects, hats, input, training, podium
 ├─ server/
 │  ├─ index.ts            # http + express static + /api + WS upgrade routing
-│  ├─ elyxion-game.ts    # authoritative game server (modes, rooms, lag comp, anti-cheat)  [brand-neutral filename]
+│  ├─ instagib-game.ts    # authoritative game server (modes, rooms, lag comp, anti-cheat)
 │  ├─ db.ts               # better-sqlite3 store (stats, accounts, feedback, audit)
 │  ├─ auth.ts             # optional username/password accounts (cookie session)
 │  ├─ admin.ts            # admin metrics API + feedback moderation
@@ -234,7 +280,7 @@ owns spawns, tunables, and the wire format without pulling in a renderer.
 | [`docs/progression.md`](docs/progression.md) | XP / levels / credits / unlock design. |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Where this is going. |
 | [`docs/distribution-kit.md`](docs/distribution-kit.md) | Launch kit: portal listings, embeds, store copy. |
-| [`docs/elyxion-plan.md`](docs/elyxion-plan.md) | The original design doc (some of it aspirational; pre-rebrand filename). |
+| [`docs/instagib-arena-plan.md`](docs/instagib-arena-plan.md) | The original design doc (some of it aspirational). |
 
 ---
 
@@ -252,7 +298,7 @@ multiplayer match results, by contrast, are server-authoritative.
 ## Audio assets
 
 Announcer voice lines and multi-kill medal callouts ship as `.ogg` files in
-`public/sounds/elyxion/`. The railgun **fire / hit / kill** SFX have no bundled
+`public/sounds/instagib/`. The railgun **fire / hit / kill** SFX have no bundled
 clip and are **synthesized procedurally** via the Web Audio API at runtime. Drop
 a matching `.ogg` at the path listed in `src/game/audio.ts` (`SOUND_URLS`) to
 override any sound; missing announcer lines fall back to speech synthesis.
@@ -263,39 +309,17 @@ override any sound; missing announcer lines fall back to speech synthesis.
 
 | Script             | What it does                                              |
 | ------------------ | -------------------------------------------------------- |
-| `npm run dev`      | Single-port dev: client + APIs + game socket + HMR in one Vite process (default :8787). |
-| `npm run dev:server` | Standalone game server (APIs + socket only — scripts / load tests).         |
+| `npm run dev`      | Vite client + game server together (dev).                |
+| `npm run cli -- <command>` | Run the Node-style `instagib` CLI without a global install. |
+| `instagib dev`     | Vite client + game server together (after `npm link`).   |
+| `npm run dev:web` / `dev:server` | Each on its own.                            |
 | `npm run build`    | Production client build to `dist/`.                      |
 | `npm start`        | Run the production server (expects `dist/`).             |
 | `npm run serve`    | `build` then `start`.                                    |
 | `npm run typecheck`| Type-check client and server projects.                   |
 | `npm run lint`     | ESLint.                                                  |
 | `npm run netcode:load` | Netcode load harness against a local server.         |
-
-### Anticheat
-
-The server is authoritative for hits and movement, so it can't be fooled into
-scoring a cheater — but modified clients can still try to *poison the game*:
-teleport/fly movement (feeds snapshots + lag-comp rewind), shots fired faster
-than the rail cooldown, rays cast from off your eye (shooting through walls),
-and statistically impossible aim. Each attempt is dropped/rejected/throttled
-server-side and recorded in the **anticheat feed** (`GET /api/admin/anticheat`,
-worker/read-only token or session; also on the admin dashboard → **Anticheat**
-tab): stopped hacks, aimbot flags, kicked/blocked/timeout actions, and every
-ban applied or lifted. The feed is in-memory and bounded.
-
-Watch it catch real cheats from the browser console (no server flags needed):
-
-1. Open the game in a browser tab and **join a match**.
-2. Open DevTools (F12) in that tab and paste
-   [`public/ac-console-demo.js`](public/ac-console-demo.js) (or open
-   `/ac-console-demo.js` on your dev server to copy it). Pasting just arms a
-   WebSocket hook and defines `window.__ac` — it does nothing yet.
-3. Run `__ac.speed()` (10 speed-hack teleports — every one is dropped and
-   logged) and `__ac.shootBurst()` (5 rapid rails — 4 rejected).
-4. See it caught on the admin dashboard → **Anticheat** tab (5s poll) or via
-   `GET /api/admin/anticheat` with your `ADMIN_API_TOKEN`.
-5. `__ac.clear()` removes the hook when you're done.
+| `npm run package:portable` | Build a self-contained no-Node package for the current platform. |
 
 ---
 
@@ -305,7 +329,7 @@ PRs and issues welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Contributions
 require agreeing to the lightweight [Contributor License Agreement](CLA.md) via
 the checkbox in the pull request template. Found a bug or have an idea? Use the
 in-game **Send feedback** button (it lands in the admin panel) or
-[open an issue](https://github.com/8tp/elyxion/issues/new/choose).
+[open an issue](https://github.com/8tp/instagib-arena/issues/new/choose).
 
 ## Security
 

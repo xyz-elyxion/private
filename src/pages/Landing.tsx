@@ -26,59 +26,9 @@ const MODES: Array<[string, string]> = [
   ['Custom / private', 'Host a lobby or share an invite code.'],
 ];
 
-// Active server announcements (posted by admins from /admin) — one-shot fetch on
-// mount; fails closed (empty) if the API is unreachable. No poll: announcements
-// are for the moment you arrive at the menu, and a page load is cheap.
-type Announcement = { id: number; text: string; author: string; createdAt: number; expiresAt: number };
-function useAnnouncements(): Announcement[] {
-  const [anns, setAnns] = useState<Announcement[]>([]);
-  useEffect(() => {
-    let active = true;
-    fetch('/api/announcements', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: { announcements?: Announcement[] } | null) => {
-        if (active && d?.announcements) setAnns(d.announcements);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
-  return anns;
-}
-
-// The announcement strip: every live server notice, stacked — a bright amber
-// bar so it reads as "read me" without fighting the deck chrome below.
-function AnnouncementBar({ announcements }: { announcements: Announcement[] }) {
-  if (announcements.length === 0) return null;
-  return (
-    <div className="mx-auto mt-4 flex w-full max-w-6xl flex-col gap-2 px-5 sm:px-8">
-      {announcements.map((a) => (
-        <div
-          key={a.id}
-          role="status"
-          className="deck-rise clip-deck-sm flex items-start gap-3 border border-amber-400/40 bg-amber-400/10 px-4 py-3"
-        >
-          <span aria-hidden="true" className="mt-0.5 shrink-0 text-amber-300">
-            ▸
-          </span>
-          <div className="min-w-0">
-            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-amber-50/95">
-              {a.text}
-            </p>
-            <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-amber-200/60">
-              Server notice · {a.author}
-            </p>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // The brand mark — same crosshair as the favicon, so the launcher, the tab
 // icon, and the in-game reticle read as one identity.
-export function CrosshairMark({ size = 22 }: { size?: number }) {
+function CrosshairMark({ size = 22 }: { size?: number }) {
   return (
     <svg
       viewBox="0 0 32 32"
@@ -111,7 +61,6 @@ function PanelHeading({ children }: { children: string }) {
 export default function Landing() {
   const coarse = useCoarsePointer();
   const live = useLiveCount();
-  const announcements = useAnnouncements();
   const [showFeedback, setShowFeedback] = useState(false);
   const navigate = useNavigate();
 
@@ -144,7 +93,7 @@ export default function Landing() {
           <div className="flex items-center gap-2.5">
             <CrosshairMark />
             <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.32em] text-white/50">
-              Elyxion
+              Instagib Arena
             </span>
           </div>
           <nav
@@ -160,23 +109,11 @@ export default function Landing() {
             <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
               Source ↗
             </a>
-            <Link to="/community" className="transition hover:text-white/90">
-              Community
-            </Link>
-            <Link to="/replays" className="transition hover:text-white/90">
-              Replays
-            </Link>
-            <Link to="/support" className="transition hover:text-white/90">
-              Support
-            </Link>
             <button type="button" onClick={() => setShowFeedback(true)} className="uppercase tracking-[0.18em] transition hover:text-white/90">
               Feedback
             </button>
           </nav>
         </header>
-
-        {/* Live server announcements (admin-posted, shown until deleted/expired) */}
-        <AnnouncementBar announcements={announcements} />
 
         {/* ── Hero (left) · field manual (right) ──────────────────────── */}
         <main className="mx-auto grid w-full max-w-6xl gap-10 px-5 pb-12 pt-12 sm:px-8 lg:min-h-[calc(100%-3.75rem)] lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14 lg:pt-0">
@@ -188,7 +125,7 @@ export default function Landing() {
               className="deck-rise mt-4 font-display text-6xl font-bold uppercase leading-[0.92] tracking-[0.04em] sm:text-7xl"
               style={{ animationDelay: '60ms' }}
             >
-              Elyxion
+              Instagib
               <br />
               <span className="text-cyan-300">Arena</span>
             </h1>
@@ -196,11 +133,11 @@ export default function Landing() {
               className="deck-rise mt-6 font-display text-sm font-semibold uppercase tracking-[0.24em] text-white/80"
               style={{ animationDelay: '120ms' }}
             >
-              One railgun. Every shot matters.
+              One railgun. One shot. One kill.
             </p>
             <p className="deck-rise mt-3 max-w-md text-[15px] leading-relaxed text-white/55" style={{ animationDelay: '150ms' }}>
-              Quake-style rail combat, free in the browser. Manage your health,
-              land precise shots, and master <span className="text-white/85">aim and movement</span>.
+              Quake-style instagib, free in the browser. The railgun always kills —
+              so the whole game is <span className="text-white/85">aim and movement</span>.
               Strafe, dash, double-jump, wall-jump.
             </p>
 
@@ -210,7 +147,7 @@ export default function Landing() {
                   Best played on a computer
                 </p>
                 <p className="mt-1.5 text-sm leading-relaxed text-white/70">
-                  Elyxion needs a <span className="text-white">mouse and keyboard</span> —
+                  Instagib Arena needs a <span className="text-white">mouse and keyboard</span> —
                   open this link on a desktop to play. You can still look around below.
                 </p>
                 <Link

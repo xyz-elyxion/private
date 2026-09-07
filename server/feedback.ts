@@ -5,7 +5,7 @@
 // length caps + a tight rate limit to blunt spam.
 
 import { Router, type Request } from 'express';
-import { accountId, ensureGuestId } from './auth';
+import { accountId } from './auth';
 import { FEEDBACK_TYPES, findUserById, logEvent, submitFeedback, type FeedbackType } from './db';
 
 export const feedbackRouter = Router();
@@ -58,7 +58,7 @@ function str(req: Request, ...keys: string[]): string {
   return '';
 }
 
-feedbackRouter.post('/feedback', async (req, res) => {
+feedbackRouter.post('/feedback', (req, res) => {
   const now = Date.now();
   const id = accountId(req);
   const rateKey = id || req.ip || 'unknown';
@@ -86,15 +86,11 @@ feedbackRouter.post('/feedback', async (req, res) => {
 
   // Display name: trust the account username when logged in; otherwise the
   // client-supplied name (cosmetic only); otherwise Guest.
-  const account = id ? await findUserById(id) : null;
+  const account = id ? findUserById(id) : null;
   const playerName = account?.username || str(req, 'name').slice(0, 32) || 'Guest';
-  // Attribution: accounts by their account id; guests by their stable igpid
-  // uuid (minted on first guest submit) so admin moderation can tie the row to
-  // one guest identity and ban it from here.
-  const playerId = id || ensureGuestId(req, res);
 
-  const newId = await submitFeedback({
-    playerId,
+  const newId = submitFeedback({
+    playerId: id,
     playerName,
     type,
     title,
@@ -110,7 +106,7 @@ feedbackRouter.post('/feedback', async (req, res) => {
 
   logEvent({
     event: 'feedback.submitted',
-    actorId: playerId,
+    actorId: id,
     actorName: playerName,
     targetId: String(newId),
     detail: { type, title },

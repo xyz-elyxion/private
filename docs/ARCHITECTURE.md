@@ -1,12 +1,12 @@
 # Architecture
 
-How Elyxion fits together: the client engine, the authoritative game
+How Instagib Arena fits together: the client engine, the authoritative game
 server, the netcode (including lag compensation and the anti-cheat boundary),
 and the wire protocol.
 
 For the high-level "what is this / how do I run it," see the
 [README](../README.md). For the original (partly aspirational) design rationale,
-see [`elyxion-plan.md`](elyxion-plan.md).
+see [`instagib-arena-plan.md`](instagib-arena-plan.md).
 
 ---
 
@@ -15,35 +15,31 @@ see [`elyxion-plan.md`](elyxion-plan.md).
 ```
                     ┌──────────────────────── browser ────────────────────────┐
                     │  React (menus / HUD / lobby)   Three.js (<canvas> world) │
-                    │            src/ElyxionClient.tsx + src/game/*           │
+                    │            src/InstagibClient.tsx + src/game/*           │
                     └───────────────┬───────────────────────────┬─────────────┘
-                                    │ /api/stats (HTTP)          │ /ws/elyxion (WS)
+                                    │ /api/stats (HTTP)          │ /ws/instagib (WS)
                                     ▼                            ▼
                     ┌──────────────────────────  Node server  ─────────────────────────┐
                     │  express: static dist/ + stats API        ws: authoritative game  │
-                    │  server/index.ts → server/stats.ts        server/elyxion-game.ts │
+                    │  server/index.ts → server/stats.ts        server/instagib-game.ts │
                     │                    → server/db.ts (SQLite)                          │
                     └────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Dev:** one Vite process, one port (`:8787`): `server/vite-plugin.ts` mounts
-  the Express app (all `/api` routes) and the `/ws/elyxion` game socket inside
-  the Vite dev server, so client + API + game socket + HMR share an origin.
-- **Prod / `npm run dev:server`:** the standalone Node entry (`server/index.ts`)
-  serves the built client *and* both endpoints from a single port. Same origin.
-- Both modes consume the shared core in `server/app.ts` (app + socket upgrade
-  handler); the standalone entry owns its `http.Server`, the Vite plugin reuses
-  Vite's.
+- **Dev:** Vite serves the client on `:5173` and proxies `/api` + `/ws` to the
+  Node server on `:8787`. One origin in the browser.
+- **Prod:** the Node server serves the built client *and* both endpoints from a
+  single port. Same origin.
 
 The browser only ever sees one origin, so the client derives its WebSocket URL
-straight from `window.location` (`ws[s]://<host>/ws/elyxion`) — no env config.
+straight from `window.location` (`ws[s]://<host>/ws/instagib`) — no env config.
 
 ---
 
 ## 2. Client engine (`src/game/`)
 
 React owns the **menus, HUD, and lobby UI**. Three.js owns the **canvas world**.
-They meet at exactly one seam: `ElyxionClient.tsx` mounts a `<canvas>`,
+They meet at exactly one seam: `InstagibClient.tsx` mounts a `<canvas>`,
 constructs a `Game`, and subscribes to a HUD listener for per-frame state
 (health-free, so: ammo cooldown, frags, killfeed, medals, banners). All
 hot-path state lives in plain objects and typed arrays — never React state — so
@@ -212,7 +208,7 @@ unranked and best-effort.
 
 ---
 
-## 7. Rooms, lobby & map voting (`server/elyxion-game.ts`)
+## 7. Rooms, lobby & map voting (`server/instagib-game.ts`)
 
 Every match is a **Room**. A socket is either a **lister** (browsing the lobby)
 or **in** exactly one room. Each room has a **mode** (`ffa` | `duel` | `tdm`)
@@ -290,8 +286,8 @@ cosmetic equips.
 
 `GET /api/leaderboard?sort=kills|wins|accuracy&window=all|weekly|daily&limit=N`
 (`server/leaderboard.ts`) — one prepared statement per (sort × window), no user
-input reaching SQL. `all` reads `elyxion_stats`; `weekly`/`daily` read
-`elyxion_period_stats` (buckets keyed `d:YYYYMMDD` / `w:<Monday>`, upserted on
+input reaching SQL. `all` reads `instagib_stats`; `weekly`/`daily` read
+`instagib_period_stats` (buckets keyed `d:YYYYMMDD` / `w:<Monday>`, upserted on
 online matches only). It pins the caller's own rank, floors the accuracy board at
 ≥5 games, and only surfaces players with `total_games > 0`. To keep the board from
 being trivially inflated, `POST /api/stats` is rate-limited (a dependency-free

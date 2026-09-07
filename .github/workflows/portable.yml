@@ -1,0 +1,37 @@
+name: Portable packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  package:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: macos-x64
+            runner: macos-13
+          - target: macos-arm64
+            runner: macos-14
+          - target: windows-x64
+            runner: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run package:portable -- --target=${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instagib-arena-${{ matrix.target }}
+          path: release/instagib-arena-${{ matrix.target }}
+          if-no-files-found: error

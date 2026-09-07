@@ -1,10 +1,10 @@
-# Elyxion — Distribution & Launch Kit
+# Instagib Arena — Distribution & Launch Kit
 
 Everything you need to list the game on portals and seed communities. Automation
 can't create accounts or submit on your behalf — those are identity-bound and
 need your login/ToS acceptance — so this kit makes each one ~10 min of copy-paste.
 
-URL: **https://xyz-elyxion.onrender.com** · Genre: browser instagib arena FPS · Price: free
+URL: **https://instagib.win** · Genre: browser instagib arena FPS · Price: free
 
 ---
 
@@ -42,18 +42,18 @@ win but gated behind the iframe fix + review. Poki is a long shot.
 
 ## Reusable copy (paste into any portal)
 
-**Name:** Elyxion
+**Name:** Instagib Arena
 
 **Tagline (≤80 chars):**
 > One shot, one kill. A free browser instagib FPS — pure aim and movement.
 
 **Short description (1–2 sentences):**
-> Elyxion is a free, Quake-style instagib FPS you play instantly in your
+> Instagib Arena is a free, Quake-style instagib FPS you play instantly in your
 > browser — no download. The railgun always one-shots, so the whole game is aim
 > and movement: strafe, dash, double-jump, wall-jump.
 
 **Long description (~150 words):**
-> Elyxion is a fast, free, browser-based arena FPS in the Quake instagib
+> Instagib Arena is a fast, free, browser-based arena FPS in the Quake instagib
 > tradition. There's one weapon — a railgun that kills in a single hit — so every
 > duel comes down to raw aim and movement. Master strafe-jumping, dashing,
 > double-jumps and wall-jumps to out-flick and out-position everyone in the server.
@@ -68,7 +68,7 @@ win but gated behind the iframe fix + review. Poki is a long shot.
 
 **Controls:**
 > WASD move · Mouse aim · Left click fire (railgun) · Space jump (double / wall) ·
-> Q dash · E zoom. Playable on desktop with mouse + keyboard.
+> Shift dash. Playable on desktop with mouse + keyboard.
 
 **Tags / keywords:**
 > instagib, fps, first-person-shooter, arena-shooter, shooter, multiplayer, io,
@@ -99,7 +99,7 @@ win but gated behind the iframe fix + review. Poki is a long shot.
 1. Create account → Dashboard → "Create new project".
 2. Kind of project: **HTML** but set "This game will be played in browser" OFF if
    you can't upload a self-contained build (multiplayer needs your backend). Use
-   the **external link** approach: add a prominent link/button to https://xyz-elyxion.onrender.com,
+   the **external link** approach: add a prominent link/button to https://instagib.win,
    or upload a tiny HTML that redirects. Simplest: project page + big "Play now" link.
 3. Paste name, tagline, long description, tags. Upload cover + screenshots.
 4. Set pricing to **Free**. Publish. Post a short **devlog** (itch surfaces these).
@@ -111,7 +111,7 @@ Pure backlinks — low effort, compounding SEO + trickle of the exact audience.
 
 ### CrazyGames (after the iframe fix)
 1. developer.crazygames.com → register as a developer.
-2. Submit a new game → provide your hosted URL (https://xyz-elyxion.onrender.com) — they iframe it.
+2. Submit a new game → provide your hosted URL (https://instagib.win) — they iframe it.
 3. **Get their embed origin**, then add it to the CSP allowlist (server/index.ts) + deploy.
 4. Integrate the CrazyGames SDK if you want ads/featuring (optional for first submit).
 5. Fill name/desc/controls/tags from this kit. Upload thumbnail + screenshots.

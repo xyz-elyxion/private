@@ -12,11 +12,8 @@
 // `toView` adapts either into a DataView. This module imports nothing.
 
 const BIN_STATE_F32 = 1; // legacy server → client state snapshot
-const BIN_POS = 2; // client → server: a position update
-const BIN_STATE = 3; // legacy quantized server → client state snapshot
-const BIN_STATE_STANCE = 4; // legacy quantized snapshot with crouch stance
-const BIN_STATE_HEALTH = 5; // quantized snapshot with health + crouch stance
-const BIN_STATE_BODYGUARD = 6; // quantized snapshot with bodyguard marker
+export const BIN_POS = 2; // client → server: a position update
+export const BIN_STATE = 3; // quantized server → client state snapshot
 
 export type BinStatePlayer = {
   id: string;
@@ -27,16 +24,12 @@ export type BinStatePlayer = {
   pitch: number;
   frags: number;
   deaths: number;
-  health: number;
   invulnMs: number;
   ping: number;
-  crouched: boolean;
-  bodyguard?: boolean;
 };
 
 const STATE_HEADER = 1 + 8 + 8 + 1; // tag + t(f64) + resumeAt(f64) + count(u8)
-const POS_BASE_BYTES = 1 + 5 * 4; // tag + 5×f32
-const POS_BYTES = POS_BASE_BYTES + 1; // plus crouch stance byte
+const POS_BYTES = 1 + 5 * 4; // tag + 5×f32
 const STATE_COORD_SCALE = 256; // 3.9mm precision, ±128m range (online maps are within ±40m)
 const STATE_ANGLE_SCALE = 32767 / Math.PI;
 
@@ -65,14 +58,11 @@ export function toView(data: ArrayBuffer | ArrayBufferView): DataView {
 
 export function encodeState(t: number, players: BinStatePlayer[], resumeAt: number): Uint8Array {
   const n = Math.min(players.length, 255);
-  const hasBodyguard = true;
   let size = STATE_HEADER;
-  for (let i = 0; i < n; i++) {
-    size += 1 + Math.min(players[i].id.length, 255) + 5 * 2 + 5 * 2 + 2;
-  }
+  for (let i = 0; i < n; i++) size += 1 + Math.min(players[i].id.length, 255) + 5 * 2 + 4 * 2;
   const dv = new DataView(new ArrayBuffer(size));
   let o = 0;
-  dv.setUint8(o, BIN_STATE_BODYGUARD); o += 1;
+  dv.setUint8(o, BIN_STATE); o += 1;
   dv.setFloat64(o, t, true); o += 8;
   dv.setFloat64(o, resumeAt, true); o += 8;
   dv.setUint8(o, n); o += 1;
@@ -88,11 +78,8 @@ export function encodeState(t: number, players: BinStatePlayer[], resumeAt: numb
     dv.setInt16(o, encodeStateAngle(p.pitch), true); o += 2;
     dv.setUint16(o, clampU16(p.frags), true); o += 2;
     dv.setUint16(o, clampU16(p.deaths), true); o += 2;
-    dv.setUint16(o, clampU16(p.health), true); o += 2;
     dv.setUint16(o, clampU16(p.invulnMs), true); o += 2;
     dv.setUint16(o, clampU16(p.ping), true); o += 2;
-    dv.setUint8(o, p.crouched ? 1 : 0); o += 1;
-    dv.setUint8(o, p.bodyguard ? 1 : 0); o += 1;
   }
   return new Uint8Array(dv.buffer);
 }
@@ -102,10 +89,7 @@ export function decodeState(
 ): { t: number; resumeAt: number; players: BinStatePlayer[] } | null {
   if (dv.byteLength < STATE_HEADER) return null;
   const tag = dv.getUint8(0);
-  const quantized = tag === BIN_STATE || tag === BIN_STATE_STANCE || tag === BIN_STATE_HEALTH || tag === BIN_STATE_BODYGUARD;
-  const hasStance = tag === BIN_STATE_STANCE || tag === BIN_STATE_HEALTH || tag === BIN_STATE_BODYGUARD;
-  const hasHealth = tag === BIN_STATE_HEALTH || tag === BIN_STATE_BODYGUARD;
-  const hasBodyguard = tag === BIN_STATE_BODYGUARD;
+  const quantized = tag === BIN_STATE;
   if (!quantized && tag !== BIN_STATE_F32) return null;
   let o = 1;
   const t = dv.getFloat64(o, true); o += 8;
@@ -119,10 +103,7 @@ export function decodeState(
     // truncated / corrupt / fragmented-short frame returns null per this
     // function's contract instead of throwing a RangeError mid-decode.
     const hotFieldBytes = quantized ? 5 * 2 : 5 * 4;
-    const stanceBytes = hasStance ? 1 : 0;
-    const bodyguardBytes = hasBodyguard ? 1 : 0;
-    const statBytes = 4 * 2 + (hasHealth ? 2 : 0);
-    if (o + idLen + hotFieldBytes + statBytes + stanceBytes + bodyguardBytes > dv.byteLength) return null;
+    if (o + idLen + hotFieldBytes + 4 * 2 > dv.byteLength) return null;
     let id = '';
     for (let j = 0; j < idLen; j++) { id += String.fromCharCode(dv.getUint8(o)); o += 1; }
     const x = quantized ? decodeStateCoord(dv.getInt16(o, true)) : dv.getFloat32(o, true); o += quantized ? 2 : 4;
@@ -132,24 +113,14 @@ export function decodeState(
     const pitch = quantized ? decodeStateAngle(dv.getInt16(o, true)) : dv.getFloat32(o, true); o += quantized ? 2 : 4;
     const frags = dv.getUint16(o, true); o += 2;
     const deaths = dv.getUint16(o, true); o += 2;
-    const health = hasHealth ? dv.getUint16(o, true) : 100; if (hasHealth) o += 2;
     const invulnMs = dv.getUint16(o, true); o += 2;
     const ping = dv.getUint16(o, true); o += 2;
-    const crouched = hasStance ? dv.getUint8(o++) !== 0 : false;
-    const bodyguard = hasBodyguard ? dv.getUint8(o++) !== 0 : false;
-    players.push({ id, x, y, z, yaw, pitch, frags, deaths, health, invulnMs, ping, crouched, bodyguard });
+    players.push({ id, x, y, z, yaw, pitch, frags, deaths, invulnMs, ping });
   }
   return { t, resumeAt, players };
 }
 
-export function encodePos(
-  x: number,
-  y: number,
-  z: number,
-  yaw: number,
-  pitch: number,
-  crouched: boolean,
-): Uint8Array {
+export function encodePos(x: number, y: number, z: number, yaw: number, pitch: number): Uint8Array {
   const dv = new DataView(new ArrayBuffer(POS_BYTES));
   dv.setUint8(0, BIN_POS);
   dv.setFloat32(1, x, true);
@@ -157,20 +128,18 @@ export function encodePos(
   dv.setFloat32(9, z, true);
   dv.setFloat32(13, yaw, true);
   dv.setFloat32(17, pitch, true);
-  dv.setUint8(21, crouched ? 1 : 0);
   return new Uint8Array(dv.buffer);
 }
 
 export function decodePos(
   dv: DataView,
-): { x: number; y: number; z: number; yaw: number; pitch: number; crouched: boolean } | null {
-  if (dv.byteLength < POS_BASE_BYTES || dv.getUint8(0) !== BIN_POS) return null;
+): { x: number; y: number; z: number; yaw: number; pitch: number } | null {
+  if (dv.byteLength < POS_BYTES || dv.getUint8(0) !== BIN_POS) return null;
   return {
     x: dv.getFloat32(1, true),
     y: dv.getFloat32(5, true),
     z: dv.getFloat32(9, true),
     yaw: dv.getFloat32(13, true),
     pitch: dv.getFloat32(17, true),
-    crouched: dv.byteLength >= POS_BYTES && dv.getUint8(21) !== 0,
   };
 }

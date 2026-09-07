@@ -1,5 +1,5 @@
-Elyxion
-Copyright (c) 2024-2026 the Elyxion maintainer (@8tp)
+Instagib Arena
+Copyright (c) 2024-2026 the Instagib Arena maintainer (@8tp)
 
 This product's SOURCE CODE is licensed under the GNU Affero General Public
 License v3.0 (see LICENSE).
@@ -8,22 +8,25 @@ GAME ASSETS are licensed SEPARATELY from the code and are NOT covered by the
 AGPL grant. Each asset retains the license under which it was obtained:
 
 ────────────────────────────────────────────────────────────────────────────
-3D models — hats (public/models/elyxion/hats/)
+3D models — hats (public/models/instagib/hats/)
   From Poly Pizza (https://poly.pizza). Most are CC-BY-3.0 (used with
   attribution); crown.glb is CC0. Full per-file credits:
-  public/models/elyxion/hats/ATTRIBUTION.md
+  public/models/instagib/hats/ATTRIBUTION.md
 
-Announcer voices — default "legacy" pack (public/sounds/elyxion/)
+Announcer voices — default "legacy" pack (public/sounds/instagib/)
   - "Announcer Kill Sounds" by Arkhados — CC-BY-3.0
   - "Classic Killstreak Announcer Voices" by Salatiel — CC-BY-SA-4.0
   Full credits + the CC-BY-SA share-alike note:
-  public/sounds/elyxion/README.md
+  public/sounds/instagib/README.md
 
-Announcer voices — "memes" pack (public/sounds/elyxion/announcer/memes/)
-  User-supplied meme audio. These files are NOT licensed under the AGPL by this
-  repository. Their use and redistribution remain the responsibility of the
-  asset owner; replace them if you do not have permission to distribute them.
+Announcer voices — "kuon" pack (public/sounds/instagib/announcer/kuon/)
+  Generated with ElevenLabs text-to-speech. This audio is NOT licensed under
+  the AGPL and is NOT placed under any open license by this repository. It is
+  included for use with the canonical deployment; its use and redistribution
+  are subject to ElevenLabs' terms and the deployer's ElevenLabs license. If
+  you fork this project, remove these files or replace them with audio you are
+  licensed to distribute — the game falls back gracefully when they are absent.
 ────────────────────────────────────────────────────────────────────────────
 
-If you redistribute Elyxion (source or a running service), keep this
+If you redistribute Instagib Arena (source or a running service), keep this
 NOTICE and the per-asset attribution files intact.

@@ -11,6 +11,9 @@ data/
 *.sqlite-shm
 *.sqlite-wal
 
+# portable release output
+release/
+
 # env
 .env
 .env.local

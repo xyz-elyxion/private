@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { installArenaShader } from './renderer';
 import { getArenaTextures } from './textures';
 import type { AABB, Vec3 } from './types';
 
@@ -21,7 +20,7 @@ export type ArenaMap = {
 
 // "Lounge" — Ratz homage: giant-furniture maze floor, a boost-only bookshelf
 // ring at 5m, a central coffee-table pad, and a floating light-fitting perch.
-const LOUNGE: ArenaMap = (() => {
+export const LOUNGE: ArenaMap = (() => {
   const boxes: AABB[] = [];
   boxes.push({ min: { x: -30, y: -1, z: -22 }, max: { x: 30, y: 0, z: 22 } });
   boxes.push({ min: { x: -30, y: 19, z: -22 }, max: { x: 30, y: 20, z: 22 } });
@@ -55,14 +54,13 @@ const LOUNGE: ArenaMap = (() => {
     boxes,
     spawn: { x: 0, y: 0.05, z: 16 },
     bounds: { min: { x: -30, y: -1, z: -22 }, max: { x: 30, y: 20, z: 22 } },
-    openTop: true,
   };
 })();
 
 // "Causeway" — open multi-platform arena. Strafe-jump 10-12m gaps between
 // floating platforms; boost off the mid-gap lamp-post pillars to extend a leap
 // or reach the central hub. Figure-8 flow. The air-strafe showcase.
-const CAUSEWAY: ArenaMap = (() => {
+export const CAUSEWAY: ArenaMap = (() => {
   const boxes: AABB[] = [];
   boxes.push({ min: { x: -35, y: -1, z: -25 }, max: { x: 35, y: 0, z: 25 } });
   boxes.push({ min: { x: -35, y: 21, z: -25 }, max: { x: 35, y: 22, z: 25 } });
@@ -97,14 +95,13 @@ const CAUSEWAY: ArenaMap = (() => {
     boxes,
     spawn: { x: 0, y: 0.05, z: 19 },
     bounds: { min: { x: -35, y: -1, z: -25 }, max: { x: 35, y: 22, z: 25 } },
-    openTop: true,
   };
 })();
 
 // "Reactor" — big tri-atrium (Lab homage). Two flat side lobes (long rail lanes
 // broken by pillars) flank a tall central reactor shaft with boost-gated
 // gantries climbing to a commanding top catwalk.
-const REACTOR: ArenaMap = (() => {
+export const REACTOR: ArenaMap = (() => {
   const boxes: AABB[] = [];
   boxes.push({ min: { x: -40, y: -1, z: -28 }, max: { x: 40, y: 0, z: 28 } });
   boxes.push({ min: { x: -40, y: 23, z: -28 }, max: { x: 40, y: 24, z: 28 } });
@@ -146,7 +143,6 @@ const REACTOR: ArenaMap = (() => {
     boxes,
     spawn: { x: -30, y: 0.05, z: 0 },
     bounds: { min: { x: -40, y: -1, z: -28 }, max: { x: 40, y: 24, z: 28 } },
-    openTop: true,
   };
 })();
 
@@ -157,7 +153,7 @@ const REACTOR: ArenaMap = (() => {
 
 // "Container Yard" — aim_rust homage: symmetric container yard, central dropbox
 // stack you climb, and a boost-only crown perch that overlooks both spawns.
-const CONTAINERYARD: ArenaMap = (() => {
+export const CONTAINERYARD: ArenaMap = (() => {
   const boxes: AABB[] = [];
   boxes.push({ min: { x: -13, y: -1, z: -11 }, max: { x: 13, y: 0, z: 11 } });
   boxes.push({ min: { x: -13, y: 12, z: -11 }, max: { x: 13, y: 13, z: 11 } }); // invisible cap
@@ -193,7 +189,7 @@ const CONTAINERYARD: ArenaMap = (() => {
 
 // "Derrick" — vertical tower duel: spiral-boost the central derrick's faces up
 // through offset gantries to a skylined crown catwalk over the whole yard.
-const DERRICK: ArenaMap = (() => {
+export const DERRICK: ArenaMap = (() => {
   const boxes: AABB[] = [];
   boxes.push({ min: { x: -12, y: -1, z: -12 }, max: { x: 12, y: 0, z: 12 } });
   boxes.push({ min: { x: -12, y: 22, z: -12 }, max: { x: 12, y: 23, z: 12 } });
@@ -233,7 +229,7 @@ const DERRICK: ArenaMap = (() => {
 // targets), a center movement gauntlet (gap-jumps at 7/10/13/16m + a strafe
 // runway), and a boost-jump tower (boost-only ledges 4.5-6m apart + a
 // wall-boost slalom). Use with the lobby's endless "Practice Range" mode.
-const TRAINING: ArenaMap = (() => {
+export const TRAINING: ArenaMap = (() => {
   const boxes: AABB[] = [];
   // floor + invisible cap (openTop hides the ceiling so the sky shows)
   boxes.push({ min: { x: -23, y: -1, z: -20 }, max: { x: 23, y: 0, z: 20 } });
@@ -289,7 +285,7 @@ const TRAINING: ArenaMap = (() => {
 // zones. Each house has an open front, a ramped upper-floor balcony overlooking
 // the road, and a boost-only roof perch. Built from our arena texture set — a
 // LAYOUT homage, not an art reproduction (we have no custom Nuketown textures).
-const NUKETOWN: ArenaMap = (() => {
+export const NUKETOWN: ArenaMap = (() => {
   const boxes: AABB[] = [];
   // floor + invisible cap (openTop → skybox shows overhead)
   boxes.push({ min: { x: -32, y: -1, z: -22 }, max: { x: 32, y: 0, z: 22 } });
@@ -381,12 +377,12 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
       roughness,
       metalness,
     });
-  const matWall = installArenaShader(surfaceMat(tex.wall, 0.8, 0.1), 0x67d8ff);
-  const matFloor = installArenaShader(surfaceMat(tex.floor, 0.9, 0.05), 0x4ab8ff);
+  const matWall = surfaceMat(tex.wall, 0.8, 0.1);
+  const matFloor = surfaceMat(tex.floor, 0.9, 0.05);
   const matCeiling = new THREE.MeshStandardMaterial({ color: 0x2c333f, roughness: 0.95 });
-  const matPlatform = installArenaShader(surfaceMat(tex.platform, 0.55, 0.2), 0x8be8ff);
-  const matCover = installArenaShader(surfaceMat(tex.cover, 0.7, 0.1), 0xff9b52);
-  const matTower = installArenaShader(surfaceMat(tex.tower, 0.7, 0.15), 0xb68cff);
+  const matPlatform = surfaceMat(tex.platform, 0.55, 0.2);
+  const matCover = surfaceMat(tex.cover, 0.7, 0.1);
+  const matTower = surfaceMat(tex.tower, 0.7, 0.15);
   for (let i = 0; i < map.boxes.length; i++) {
     // Open-air arenas keep the ceiling for collision but don't draw it, so the
     // skybox shows overhead.
@@ -560,4 +556,20 @@ export function rayAabbNormal(
   const normal: Vec3 = { x: 0, y: 0, z: 0 };
   normal[axis] = sign;
   return { t, normal };
+}
+
+export function raySphere(o: Vec3, d: Vec3, c: Vec3, r: number): number | null {
+  const ox = o.x - c.x;
+  const oy = o.y - c.y;
+  const oz = o.z - c.z;
+  const b = 2 * (ox * d.x + oy * d.y + oz * d.z);
+  const cc = ox * ox + oy * oy + oz * oz - r * r;
+  const disc = b * b - 4 * cc;
+  if (disc < 0) return null;
+  const s = Math.sqrt(disc);
+  const t1 = (-b - s) / 2;
+  const t2 = (-b + s) / 2;
+  if (t1 >= 0) return t1;
+  if (t2 >= 0) return t2;
+  return null;
 }

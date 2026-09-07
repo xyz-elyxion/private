@@ -1,4 +1,4 @@
-import { MAX_HEALTH, type GameMode } from './constants';
+import type { GameMode } from './constants';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, toView } from './netcodec';
 
@@ -12,9 +12,7 @@ export type RemotePlayerSnapshot = {
   pitch: number;
   frags: number;
   deaths: number;
-  health: number;
   invulnMs: number; // remaining spawn-protection ms, 0 = killable
-  crouched: boolean; // current crouched/slide stance
   team: number | null; // team index in TDM; null otherwise
   hat: string; // equipped hat cosmetic id
   unusual: string; // equipped unusual-effect cosmetic id
@@ -29,8 +27,6 @@ export type RemotePlayerSnapshot = {
   ping: number; // this player's reported round-trip ping (ms)
   admin: boolean; // staff badge
   verified: boolean; // verified blue check
-  bodyguard?: boolean;
-  ownerId?: string;
   receivedAt: number;
 };
 
@@ -57,13 +53,11 @@ export type KillEvent = {
   killerName: string;
   victimId: string;
   victimName: string;
-  weapon: import('./constants').WeaponType;
   headshot: boolean;
   firstBlood: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
-  ownerId?: string;
   t: number;
 };
 
@@ -79,11 +73,8 @@ type StatePlayer = {
   pitch: number;
   frags: number;
   deaths: number;
-  health: number;
   invulnMs: number;
   ping?: number;
-  crouched: boolean;
-  bodyguard?: boolean;
 };
 
 // The slow-changing per-player profile, delivered on the `meta` channel (sent
@@ -105,8 +96,6 @@ type PlayerMeta = {
   crosshair: string;
   admin: boolean;
   verified: boolean;
-  bodyguard?: boolean;
-  ownerId?: string;
 };
 
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
@@ -116,7 +105,6 @@ type KillBroadcast = {
   type: 'kill';
   killerId: string;
   killerName: string;
-  weapon?: import('./constants').WeaponType;
   victimId: string;
   victimName: string;
   headshot: boolean;
@@ -124,7 +112,6 @@ type KillBroadcast = {
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
-  ownerId?: string;
   t: number;
 };
 type JoinedMessage = {
@@ -141,7 +128,7 @@ type JoinedMessage = {
 };
 
 // Per-side rating change after a ranked match (mirrors server db.ts RankedResult).
-type RankedSide = {
+export type RankedSide = {
   id: string;
   userName: string;
   rating: number;
@@ -193,15 +180,12 @@ type VoteStartMessage = {
 type VoteUpdateMessage = { type: 'vote-update'; counts: Record<string, number> };
 type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number; spawn?: Vec3 };
 type RespawnMessage = { type: 'respawn'; x: number; y: number; z: number; reason?: string };
-type AbilityTeleportMessage = { type: 'ability-teleport'; x: number; y: number; z: number };
-type AbilityBodyguardMessage = { type: 'ability-bodyguard'; cooldownMs: number; durationMs: number };
 // In-game (room) chat broadcast — same shape as the lobby ChatMessage.
 type ChatBroadcastMessage = { type: 'chat' } & ChatMessage;
 // A rail beam fired by another player (origin → end), so we can render + sound it.
 type BeamMessage = {
   type: 'beam';
   id: string;
-  bodyguard?: boolean;
   ox: number; oy: number; oz: number;
   ex: number; ey: number; ez: number;
 };
@@ -217,14 +201,11 @@ type ServerMessage =
   | VoteResultMessage
   | RankedResultMessage
   | RespawnMessage
-  | AbilityTeleportMessage
-  | AbilityBodyguardMessage
   | BeamMessage
   | ChatBroadcastMessage
   | { type: 'join-failed'; reason: string }
   | { type: 'spectate-failed'; reason: string }
   | { type: 'spectate-ended' }
-  | { type: 'kicked'; reason: string; banned?: boolean } // moderator eject — stop reconnecting
   | { type: 'peer-joined'; clientId: string; name: string }
   | { type: 'peer-left'; clientId: string }
   | { type: 'pong'; ts: number; serverTime: number }
@@ -237,7 +218,7 @@ export type NetListener = (
   meta: { status: NetStatus; clientId: string | null; peers: number },
 ) => void;
 
-type KillListener = (ev: KillEvent) => void;
+export type KillListener = (ev: KillEvent) => void;
 
 // Room / match lifecycle events the Game subscribes to.
 export type NetEvents = {
@@ -259,8 +240,6 @@ export type NetEvents = {
   // The watched match ended / the room was reaped → return to the lobby.
   onSpectateEnded?: () => void;
   onRespawn?: (pos: Vec3, reason: string) => void;
-  onTeleport?: (pos: Vec3) => void;
-  onBodyguard?: (cooldownMs: number, durationMs: number) => void;
   onVoteStart?: (v: {
     options: string[];
     endsAtClient: number;
@@ -271,16 +250,11 @@ export type NetEvents = {
   onVoteUpdate?: (counts: Record<string, number>) => void;
   onVoteResult?: (r: { mapId: string; resumeAtClient: number; spawn?: Vec3 }) => void;
   onChat?: (m: ChatMessage) => void; // in-game (room) chat broadcast
-  // A moderator kicked (or banned) us — the socket is closing for good and must
-  // NOT reconnect. `banned` distinguishes a ban (persisted; rejoining is refused)
-  // from a transient kick (rejoin may be allowed later).
-  onKicked?: (info: { reason: string; banned: boolean }) => void;
   onBeam?: (b: {
     id: string;
-    bodyguard?: boolean;
     ox: number; oy: number; oz: number;
     ex: number; ey: number; ez: number;
-  }) => void; // another player's weapon beam → render + sound it
+  }) => void; // another player's rail beam → render + sound it
 };
 
 const RECONNECT_DELAY_MS = 1500;
@@ -369,15 +343,10 @@ export class NetClient {
   localTitleText = ''; // server-resolved flair for our own title (dynamic ranked → "#N"/tier)
   localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
   localRailgunFinish = 'gun.stock'; // equipped railgun finish id (echoed for the 3rd-person gun)
-  localWeapon: import('./constants').WeaponType = 'railgun'; // selected gameplay weapon
-  localAbility: import('./constants').AbilityType = 'bodyguard'; // selected RMB ability
   localCrosshair = ''; // equipped crosshair share-code (echoed so spectators can render it)
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
-  bodyguardCooldownMs = 0;
-  bodyguardDurationMs = 0;
   localFrags = 0;
   localDeaths = 0;
-  localHealth = MAX_HEALTH;
   localInvulnMs = 0;
   localName = ''; // your SERVER-ASSIGNED name (account username, or "Guest N"); from snapshots
   localAdmin = false; // your staff badge (server-authoritative; from snapshots)
@@ -425,10 +394,6 @@ export class NetClient {
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  // A moderator ejected us (`kicked` message) — the socket closes for good and
-  // must never reconnect (the server would just kick us again, or we'd loop
-  // forever on a ban).
-  private kicked = false;
   // Resume token from the last welcome — kept across reconnects so we can reclaim
   // our in-match slot + score instead of re-joining fresh (zeroed).
   private resumeToken: string | null = null;
@@ -440,14 +405,10 @@ export class NetClient {
     spectate?: boolean;
     listener?: NetListener;
     events: NetEvents;
-    weapon?: import('./constants').WeaponType;
-    ability?: import('./constants').AbilityType;
   }) {
     this.url = opts.url;
     this.name = opts.name;
     this.roomId = opts.roomId;
-    this.localWeapon = opts.weapon ?? 'railgun';
-    this.localAbility = opts.ability ?? 'bodyguard';
     this.spectate = opts.spectate ?? false;
     this.listener = opts.listener ?? (() => {});
     this.events = opts.events;
@@ -463,7 +424,7 @@ export class NetClient {
       // default Blob — the state snapshot arrives as a binary frame at 64Hz.
       this.ws.binaryType = 'arraybuffer';
     } catch (err) {
-      console.warn('[elyxion-net] failed to construct WebSocket', err);
+      console.warn('[instagib-net] failed to construct WebSocket', err);
       this.setStatus('error');
       this.scheduleReconnect();
       return;
@@ -530,11 +491,11 @@ export class NetClient {
     }
   }
 
-  sendPosition(x: number, y: number, z: number, yaw: number, pitch: number, crouched: boolean) {
+  sendPosition(x: number, y: number, z: number, yaw: number, pitch: number) {
     if (this.spectate) return; // observers have no position
     // The hottest client→server message (64Hz) — a compact binary frame across
     // the transport seam (the server decodes it back to a `pos` message).
-    this.sendUnreliable(encodePos(x, y, z, yaw, pitch, crouched));
+    this.sendUnreliable(encodePos(x, y, z, yaw, pitch));
   }
 
   // ── Transport seam (UDP plan Phase 1 — docs/NETCODE-UDP-PLAN.md §4) ────
@@ -562,11 +523,6 @@ export class NetClient {
     this.send({ type: 'vote', mapId });
   }
 
-  sendTeleport(pos: Vec3) {
-    if (this.spectate) return;
-    this.send({ type: 'teleport', x: pos.x, y: pos.y, z: pos.z });
-  }
-
   // In-game chat to the match room. Server sanitizes/profanity-filters/rate-limits
   // and stamps the authoritative sender identity, then broadcasts to the room
   // (sender included), so we render our own line from the echo.
@@ -577,15 +533,17 @@ export class NetClient {
   // Server-authoritative, lag-compensated shot. We send the ray + the wall
   // distance cap (so the server needn't own the geometry) + the server-clock
   // render time we were displaying others at, so the server rewinds to match.
-  sendShot(origin: Vec3, rays: { dir: Vec3; maxDist: number }[], weapon: import('./constants').WeaponType) {
+  sendShot(origin: Vec3, dir: Vec3, maxDist: number) {
     if (this.spectate) return; // observers can't fire
     this.send({
       type: 'shoot',
       ox: origin.x,
       oy: origin.y,
       oz: origin.z,
-      rays: rays.map((ray) => ({ ...ray.dir, maxDist: ray.maxDist })),
-      weapon,
+      dx: dir.x,
+      dy: dir.y,
+      dz: dir.z,
+      maxDist,
       // The EXACT delay we're currently rendering remotes at, so the server
       // rewinds targets to precisely what was on our screen (favor-the-shooter).
       renderTime: this.estimatedServerNow() - this.interpDelayMs,
@@ -653,26 +611,6 @@ export class NetClient {
   setLocalRailgunFinish(id: string): void {
     this.localRailgunFinish = id;
     this.send({ type: 'railgunFinish', id });
-  }
-
-  setLocalWeapon(type: import('./constants').WeaponType): void {
-    this.localWeapon = type;
-    this.send({ type: 'weapon', id: type });
-  }
-
-  setLocalAbility(type: import('./constants').AbilityType): void {
-    this.localAbility = type;
-    this.send({ type: 'ability', id: type });
-  }
-
-  sendBodyguard() {
-    if (this.spectate) return;
-    this.send({ type: 'bodyguard' });
-  }
-
-  sendAdminBodyguards() {
-    if (this.spectate || !this.localAdmin) return;
-    this.send({ type: 'admin-bodyguards' });
   }
 
   setLocalCrosshair(code: string): void {
@@ -821,11 +759,10 @@ export class NetClient {
     let s = this.remotes.get(b.id);
     if (!s) {
       s = { id: b.id, name: m?.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
-        frags: 0, deaths: 0, health: MAX_HEALTH, invulnMs: 0, crouched: false, team: null,
-        hat: 'hat.none', unusual: 'unusual.none',
+        frags: 0, deaths: 0, invulnMs: 0, team: null, hat: 'hat.none', unusual: 'unusual.none',
         emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', title: 'title.none',
         railColor: 'rail.cyan', railgunFinish: 'gun.stock', crosshair: '',
-        ping: 0, admin: false, verified: false, bodyguard: m?.bodyguard, ownerId: m?.ownerId, receivedAt: now };
+        ping: 0, admin: false, verified: false, receivedAt: now };
       this.remotes.set(b.id, s);
     }
     // Dynamic (per-tick snapshot):
@@ -836,9 +773,7 @@ export class NetClient {
     s.pitch = b.pitch ?? 0;
     s.frags = b.frags ?? 0;
     s.deaths = b.deaths ?? 0;
-    s.health = b.health ?? MAX_HEALTH;
     s.invulnMs = b.invulnMs ?? 0;
-    s.crouched = b.crouched ?? false;
     s.ping = b.ping ?? 0;
     // Static (meta channel):
     s.name = m?.name ?? b.id;
@@ -855,8 +790,6 @@ export class NetClient {
     s.crosshair = m?.crosshair ?? '';
     s.admin = m?.admin ?? false;
     s.verified = m?.verified ?? false;
-    s.bodyguard = m?.bodyguard ?? b.bodyguard ?? false;
-    s.ownerId = m?.ownerId;
     s.receivedAt = now;
   }
 
@@ -901,8 +834,6 @@ export class NetClient {
       this.send({ type: 'title', id: this.localTitle });
       this.send({ type: 'railColor', id: this.localRailColor });
       this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
-      this.send({ type: 'weapon', id: this.localWeapon });
-      this.send({ type: 'ability', id: this.localAbility });
       this.send({ type: 'crosshair', code: this.localCrosshair });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
@@ -951,7 +882,6 @@ export class NetClient {
           // on the `meta` channel instead — see the 'meta' handler.
           this.localFrags = p.frags ?? 0;
           this.localDeaths = p.deaths ?? 0;
-          this.localHealth = p.health ?? MAX_HEALTH;
           this.localInvulnMs = p.invulnMs ?? 0;
         } else {
           // Retain each remote's latest score so their scoreboard row survives
@@ -993,8 +923,8 @@ export class NetClient {
       if (this.metaById.size === 0) this.interpDelayMs = this.interpDelayTargetMs;
       const seen = new Set<string>();
       for (const p of msg.players) {
-        seen.add(p.id);          this.metaById.set(p.id, p);
-
+        seen.add(p.id);
+        this.metaById.set(p.id, p);
         if (p.id === this.clientId) {
           if (p.name) this.localName = p.name; // server's authoritative name for us
           this.localAdmin = !!p.admin;
@@ -1018,13 +948,11 @@ export class NetClient {
         killerName: msg.killerName,
         victimId: msg.victimId,
         victimName: msg.victimName,
-        weapon: msg.weapon ?? 'railgun',
         headshot: msg.headshot,
         firstBlood: !!msg.firstBlood,
         victimPos: msg.victimPos,
         respawnPos: msg.respawnPos,
         killerCard: msg.killerCard,
-        ownerId: msg.ownerId,
         t: msg.t,
       });
       return;
@@ -1081,16 +1009,6 @@ export class NetClient {
       this.events.onRespawn?.({ x: msg.x, y: msg.y, z: msg.z }, msg.reason ?? 'void');
       return;
     }
-    if (msg.type === 'ability-teleport') {
-      this.events.onTeleport?.({ x: msg.x, y: msg.y, z: msg.z });
-      return;
-    }
-    if (msg.type === 'ability-bodyguard') {
-      this.bodyguardCooldownMs = msg.cooldownMs;
-      this.bodyguardDurationMs = msg.durationMs;
-      this.events.onBodyguard?.(msg.cooldownMs, msg.durationMs);
-      return;
-    }
     if (msg.type === 'vote-start') {
       // Convert the server-clock deadline to our local clock for the overlay.
       const endsAtClient = Date.now() + (msg.endsAt - this.estimatedServerNow());
@@ -1137,36 +1055,15 @@ export class NetClient {
     if (msg.type === 'beam') {
       this.events.onBeam?.({
         id: msg.id,
-        bodyguard: msg.bodyguard,
         ox: msg.ox, oy: msg.oy, oz: msg.oz,
         ex: msg.ex, ey: msg.ey, ez: msg.ez,
       });
       return;
     }
-    if (msg.type === 'kicked') {
-      // Moderator eject: surface the reason, then close the socket for good.
-      // onclose would normally schedule a reconnect; `kicked` suppresses it.
-      this.kicked = true;
-      this.events.onKicked?.({ reason: msg.reason || '', banned: msg.banned === true });
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-      }
-      this.stopPing();
-      this.setStatus('closed');
-      if (this.ws) {
-        try {
-          this.ws.close();
-        } catch {
-          // ignore
-        }
-      }
-      return;
-    }
   }
 
   private scheduleReconnect() {
-    if (this.disposed || this.kicked) return;
+    if (this.disposed) return;
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -1182,7 +1079,7 @@ export class NetClient {
   otherPeers(): number {
     let n = 0;
     for (const id of this.metaById.keys()) {
-      if (id !== this.clientId && !this.metaById.get(id)?.bodyguard) n++;
+      if (id !== this.clientId) n++;
     }
     return n;
   }
@@ -1194,7 +1091,7 @@ export class NetClient {
   roster(): RosterEntry[] {
     const out: RosterEntry[] = [];
     for (const [id, m] of this.metaById) {
-      if (id === this.clientId || m.bodyguard) continue;
+      if (id === this.clientId) continue;
       const s = this.lastStatsById.get(id);
       out.push({
         id,
@@ -1217,13 +1114,6 @@ export class NetClient {
   private setStatus(s: NetStatus) {
     this.status = s;
     this.emit();
-  }
-
-  bodyguardActive(ownerId = this.clientId): boolean {
-    for (const [id, meta] of this.metaById) {
-      if (meta.bodyguard && meta.ownerId === ownerId && this.remotes.has(id)) return true;
-    }
-    return false;
   }
 
   private emit() {
@@ -1256,9 +1146,9 @@ export type LobbyRoom = {
   joinable: boolean;
 };
 
-export type LobbyStatus = 'connecting' | 'open' | 'closed' | 'error' | 'kicked';
+export type LobbyStatus = 'connecting' | 'open' | 'closed' | 'error';
 
-// Live menu presence + global chat (server-authoritative; see server/elyxion-game.ts).
+// Live menu presence + global chat (server-authoritative; see server/instagib-game.ts).
 export type PresencePlayer = { name: string; admin: boolean; verified: boolean; inMatch: boolean };
 export type PresenceState = { online: number; guests: number; players: PresencePlayer[] };
 export type ChatMessage = {
@@ -1298,18 +1188,12 @@ export class LobbyClient {
   private url: string;
   private name: string;
   private disposed = false;
-  // A moderator kicked/banned this browser from the lobby — stop reconnecting
-  // altogether (a ban would loop the menu socket forever otherwise).
-  private kicked = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
   private uiStatus: LobbyStatus = 'connecting'; // last status surfaced to onStatus
   onRooms: (rooms: LobbyRoom[]) => void = () => {};
   onStatus: (s: LobbyStatus) => void = () => {};
-  // Moderator ejection (kick or ban). `banned` → reconnecting is refused server-
-  // side; a plain kick may rejoin later.
-  onKicked: (info: { reason: string; banned: boolean }) => void = () => {};
   onResolved: (info: { roomId: string; mapId: string; kind: 'created' | 'matched'; isPublic?: boolean }) => void =
     () => {};
   onPresence: (p: PresenceState) => void = () => {};
@@ -1336,7 +1220,7 @@ export class LobbyClient {
   }
 
   connect() {
-    if (this.disposed || this.kicked) return;
+    if (this.disposed) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     // Only show "connecting" on a cold start — during a brief reconnect we keep
     // the last "open" status (covered by the grace timer) so the chip doesn't
@@ -1430,31 +1314,6 @@ export class LobbyClient {
           this.onRankedRooms(Array.isArray(rr) ? rr : []);
           break;
         }
-        case 'kicked': {
-          // Moderator ejected this browser (kick or ban). Surface it and stop
-          // reconnecting — the server refuses anyway, and a ban would loop.
-          const k = msg as unknown as { reason?: string; banned?: boolean };
-          this.kicked = true;
-          this.onKicked({ reason: k.reason ?? '', banned: k.banned === true });
-          this.setStatus('kicked');
-          this.stopHeartbeat();
-          if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-          }
-          if (this.graceTimer) {
-            clearTimeout(this.graceTimer);
-            this.graceTimer = null;
-          }
-          if (this.ws) {
-            try {
-              this.ws.close();
-            } catch {
-              // ignore
-            }
-          }
-          break;
-        }
       }
     };
     this.ws.onclose = () => {
@@ -1538,7 +1397,7 @@ export class LobbyClient {
   }
 
   private scheduleReconnect() {
-    if (this.disposed || this.kicked || this.reconnectTimer) return;
+    if (this.disposed || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();

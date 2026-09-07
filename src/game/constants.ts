@@ -1,17 +1,9 @@
-const TICK_HZ = 64;
+export const TICK_HZ = 64;
 export const TICK_DT = 1 / TICK_HZ;
 
-export const PLAYER_RADIUS = 0.9;
-export const PLAYER_HEIGHT = 2.3;
-export const EYE_HEIGHT = 2.1;
-// Stance movement. Crouching lowers the collision capsule and camera; sliding
-// briefly carries a fast ground burst and automatically uses the crouched stance.
-export const CROUCH_HEIGHT = 1.6;
-export const CROUCH_EYE_HEIGHT = 1.48;
-export const CROUCH_SPEED = 5.5;
-export const SLIDE_DURATION = 0.65;
-export const SLIDE_SPEED = 18;
-export const SLIDE_FRICTION = 4.5;
+export const PLAYER_RADIUS = 0.4;
+export const PLAYER_HEIGHT = 1.8;
+export const EYE_HEIGHT = 1.6;
 
 // Quake III / Source-flavored. The accel formula is the Q3 standard:
 //   accelSpeed = ACCEL * wishspeed * dt    (capped at addSpeed = wishspeed - current)
@@ -85,81 +77,21 @@ export const BOOST_AIRCTRL_BONUS = 0.4;
 export const BOOST_AIRCTRL_TIME = 0.4;
 export const BOOST_COOLDOWN = 0.3;
 
-// Ability cooldowns. Teleport is a short combat reposition; bodyguards remain
-// deployed until an enemy kills them (or the match/map is reset).
-export const TELEPORT_COOLDOWN = 8;
-export const TELEPORT_RANGE = 14;
-export const BODYGUARD_COOLDOWN = 28;
-export const ADMIN_BODYGUARD_COOLDOWN = 28;
-export const BODYGUARD_DAMAGE = 12;
-export const BODYGUARD_FIRE_COOLDOWN = 0.8;
-export const BODYGUARD_RANGE = 36;
-export const BODYGUARD_SPEED = 7;
-
-export type AbilityType = 'teleport' | 'bodyguard' | 'admin-bodyguards';
-export type AbilitySpec = {
-  id: AbilityType;
-  label: string;
-  blurb: string;
-  cooldown: number;
-};
-export const DEFAULT_ABILITY: AbilityType = 'bodyguard';
-export const ABILITY_SPECS: Readonly<Record<AbilityType, AbilitySpec>> = {
-  teleport: { id: 'teleport', label: 'Teleport', blurb: 'Blink forward through open space.', cooldown: TELEPORT_COOLDOWN },
-  bodyguard: { id: 'bodyguard', label: 'Bodyguard', blurb: 'Summon an allied fighter to cover you.', cooldown: BODYGUARD_COOLDOWN },
-  'admin-bodyguards': { id: 'admin-bodyguards', label: 'Admin Bodyguards', blurb: 'Deploy ten allied bodyguards. Admins only.', cooldown: ADMIN_BODYGUARD_COOLDOWN },
-};
-export function abilitySpec(type: string | undefined): AbilitySpec {
-  return ABILITY_SPECS[(type as AbilityType) ?? DEFAULT_ABILITY] ?? ABILITY_SPECS[DEFAULT_ABILITY];
-}
-
 export const RAIL_COOLDOWN = 1.2;
-export const MAX_HEALTH = 100;
-export const RAIL_DAMAGE = 35;
-export const RAIL_HEADSHOT_DAMAGE = 50;
-
-// Playable weapons. These values are shared by the browser and authoritative
-// server so every weapon has the same fire rate, range, spread, and damage on
-// both sides of the connection. Damage is deliberately below MAX_HEALTH for a
-// full body/head hit, keeping combat multi-hit instead of reverting to one-shot.
-export type WeaponType = 'railgun' | 'sniper' | 'shotgun' | 'smg' | 'assault';
-export type WeaponSpec = {
-  id: WeaponType;
-  label: string;
-  blurb: string;
-  cooldown: number;
-  range: number;
-  damage: number;
-  headshotDamage: number;
-  pellets: number;
-  spread: number;
-  automatic: boolean;
-  accent: number;
-};
-export const DEFAULT_WEAPON: WeaponType = 'railgun';
-export const WEAPON_SPECS: Readonly<Record<WeaponType, WeaponSpec>> = {
-  railgun: { id: 'railgun', label: 'Railgun', blurb: 'Precise energy shot with high damage.', cooldown: 1.2, range: 200, damage: 35, headshotDamage: 50, pellets: 1, spread: 0, automatic: false, accent: 0x67e8f9 },
-  sniper: { id: 'sniper', label: 'Sniper', blurb: 'Long-range precision rifle with heavy damage.', cooldown: 1.8, range: 260, damage: 72, headshotDamage: 92, pellets: 1, spread: 0, automatic: false, accent: 0xfbbf24 },
-  shotgun: { id: 'shotgun', label: 'Shotgun', blurb: 'Eight-pellet spread for brutal close-range pressure.', cooldown: 1.05, range: 55, damage: 8, headshotDamage: 10, pellets: 8, spread: 0.095, automatic: false, accent: 0xfb923c },
-  smg: { id: 'smg', label: 'SMG', blurb: 'Fast automatic fire with light recoil.', cooldown: 0.12, range: 70, damage: 9, headshotDamage: 12, pellets: 1, spread: 0.035, automatic: true, accent: 0xa78bfa },
-  assault: { id: 'assault', label: 'Assault Rifle', blurb: 'Balanced automatic weapon for medium range.', cooldown: 0.2, range: 120, damage: 15, headshotDamage: 22, pellets: 1, spread: 0.018, automatic: true, accent: 0x4ade80 },
-};
-export function weaponSpec(type: string | undefined): WeaponSpec {
-  return WEAPON_SPECS[(type as WeaponType) ?? DEFAULT_WEAPON] ?? WEAPON_SPECS[DEFAULT_WEAPON];
-}
 // Longer than a stock hitscan flash so the beam lingers and "reveals
 // positions" Quake/ratz-style — the trail is the primary shot indicator.
 export const RAIL_BEAM_DURATION = 0.9;
 export const RAIL_RANGE = 200;
 // Rail trail geometry (Q3 CG_RailTrail: a bright solid core + a colored
 // helix spiralling around it). Scaled to our metric world.
-export const RAIL_CORE_RADIUS = 0.06; // solid inner beam thickness
-export const RAIL_GLOW_RADIUS = 0.2; // soft additive glow around the core
-export const RAIL_HELIX_RADIUS = 0.24; // spiral offset from the axis
+export const RAIL_CORE_RADIUS = 0.035; // solid inner beam thickness
+export const RAIL_GLOW_RADIUS = 0.11; // soft additive glow around the core
+export const RAIL_HELIX_RADIUS = 0.17; // spiral offset from the axis
 export const RAIL_HELIX_TURN_LEN = 0.7; // metres of beam per full spiral turn
 export const RAIL_CORE_COLOR = 0xd6f4ff; // near-white cyan core
 export const RAIL_HELIX_COLOR = 0x37a6ff; // blue spiral
 
+export const MOUSE_SENS = 0.0022;
 export const PITCH_LIMIT = Math.PI / 2 - 0.01;
 export const FOV_DEG = 90;
 
@@ -225,7 +157,7 @@ export const LOCAL_WARMUP_SEC = 3; // offline pre-match countdown (no fragging y
 
 // ── Game modes ─────────────────────────────────────────────────────────────
 // Shared client+server. FFA is the original mode; duel + tdm build on the same
-// room/snapshot machinery (see server/elyxion-game.ts).
+// room/snapshot machinery (see server/instagib-game.ts).
 export type GameMode = 'ffa' | 'duel' | 'tdm';
 export const DEFAULT_GAME_MODE: GameMode = 'ffa';
 export const GAME_MODES: ReadonlyArray<{
@@ -241,7 +173,7 @@ export const GAME_MODES: ReadonlyArray<{
 // Duel (casual + ranked share one format): a single continuous 1v1 race to the
 // frag limit — no rounds, no between-round pauses (anti-camp spawns do the rest).
 // Casual ends in the usual end-of-match map vote; ranked ends in an Elo update +
-// room dissolve (server/elyxion-game.ts). Two constants so they can diverge.
+// room dissolve (server/instagib-game.ts). Two constants so they can diverge.
 export const DUEL_FRAG_LIMIT = 15; // casual 1v1 target
 export const RANKED_DUEL_FRAG_LIMIT = 15; // ranked 1v1 target (login-only)
 
@@ -263,7 +195,7 @@ export const WEEKLY_CHALLENGE_FRAG_LIMIT = 20; // first to this many frags ends 
 // all label a rating the same way. Ordered high→low; the first whose `min` you
 // meet is your tier. Base rating is 1000 (see server RANKED_BASE_RATING).
 export type RankedTier = { name: string; min: number; color: string };
-const RANKED_TIERS: ReadonlyArray<RankedTier> = [
+export const RANKED_TIERS: ReadonlyArray<RankedTier> = [
   { name: 'Grandmaster', min: 2000, color: '#f0abfc' },
   { name: 'Master', min: 1800, color: '#c4b5fd' },
   { name: 'Diamond', min: 1600, color: '#67e8f9' },
@@ -367,8 +299,8 @@ export function cm360(sensitivity: number, dpi: number): number {
   return (360 / (sensitivity * M_YAW_DEG * dpi)) * 2.54;
 }
 
-// Rebindable keyboard actions. Fire and the single equipped ability stay on the mouse;
-// the ability is always triggered by RMB and cannot be rebound.
+// Rebindable keyboard actions (fire/boost stay on the mouse). Values are
+// KeyboardEvent.code strings.
 export type KeybindAction =
   | 'forward'
   | 'back'
@@ -377,8 +309,6 @@ export type KeybindAction =
   | 'jump'
   | 'dash'
   | 'zoom'
-  | 'crouch'
-  | 'slide'
   | 'scoreboard'
   | 'chat';
 
@@ -390,8 +320,6 @@ export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }
   { id: 'jump', label: 'Jump' },
   { id: 'dash', label: 'Dash' },
   { id: 'zoom', label: 'Zoom (hold)' },
-  { id: 'crouch', label: 'Crouch (hold)' },
-  { id: 'slide', label: 'Slide' },
   { id: 'scoreboard', label: 'Scoreboard' },
   { id: 'chat', label: 'Chat' },
 ];
@@ -402,10 +330,8 @@ export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
   left: 'KeyA',
   right: 'KeyD',
   jump: 'Space',
-  dash: 'KeyQ',
-  zoom: 'KeyE',
-  crouch: 'ControlLeft',
-  slide: 'ShiftLeft',
+  dash: 'ShiftLeft',
+  zoom: 'KeyC',
   scoreboard: 'Tab',
   chat: 'KeyY',
 };

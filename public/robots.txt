@@ -1,4 +1,4 @@
-# Elyxion — https://xyz-elyxion.onrender.com
+# Instagib Arena — https://instagib.win
 User-agent: *
 Allow: /
 Disallow: /admin
@@ -7,4 +7,4 @@ Disallow: /api/
 Disallow: /podiumlab
 Disallow: /lockerlab
 
-Sitemap: https://xyz-elyxion.onrender.com/sitemap.xml
+Sitemap: https://instagib.win/sitemap.xml

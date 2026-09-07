@@ -39,8 +39,6 @@ export class InputManager {
     fire: false,
     firePressed: false,
     zoom: false,
-    crouch: false,
-    slidePressed: false,
     scoreboard: false,
     chatPressed: false,
     yawDelta: 0,
@@ -52,10 +50,7 @@ export class InputManager {
   private prevJump = false;
   private prevDash = false;
   private prevBoost = false;
-  // Queue RMB clicks so a quick press cannot be lost between fixed simulation ticks.
-  private boostQueued = false;
   private prevFire = false;
-  private prevSlide = false;
   private accumYaw = 0;
   private accumPitch = 0;
   private locked = false;
@@ -171,17 +166,14 @@ export class InputManager {
     s.pitchDelta = 0;
     s.jumpPressed = !this.prevJump && this.state.jump;
     s.dashPressed = !this.prevDash && this.state.dash;
-    s.boostPressed = this.boostQueued || (!this.prevBoost && this.state.boost);
-    this.boostQueued = false;
+    s.boostPressed = !this.prevBoost && this.state.boost;
     s.firePressed = !this.prevFire && this.state.fire;
-    s.slidePressed = !this.prevSlide && this.state.slidePressed;
     s.chatPressed = this.chatQueued; // one-shot: the chat key was tapped this frame
     this.chatQueued = false;
     this.prevJump = this.state.jump;
     this.prevDash = this.state.dash;
     this.prevBoost = this.state.boost;
     this.prevFire = this.state.fire;
-    this.prevSlide = this.state.slidePressed;
     return s;
   }
 
@@ -276,8 +268,6 @@ export class InputManager {
       case 'jump': this.state.jump = down; break;
       case 'dash': this.state.dash = down; break;
       case 'zoom': this.state.zoom = down; break;
-      case 'crouch': this.state.crouch = down; break;
-      case 'slide': this.state.slidePressed = down; break;
       case 'scoreboard': this.state.scoreboard = down; break;
     }
   }
@@ -305,31 +295,15 @@ export class InputManager {
   };
 
   private onMousedown = (e: MouseEvent) => {
-    if (this.chatting) return;
-    if (e.button === 2) {
-      e.preventDefault();
-      // Let the first RMB both capture the pointer and queue the ability. The
-      // old locked-only guard discarded this click because pointer lock is
-      // granted after mousedown, making RMB appear broken in local bot matches.
-      this.boostQueued = true;
-      if (!this.locked) {
-        this.requestLock();
-        return;
-      }
-      this.state.boost = true;
-      return;
-    }
-    if (!this.locked) return;
+    if (!this.locked || this.chatting) return;
     if (e.button === 0) this.state.fire = true;
+    else if (e.button === 2) this.state.boost = true; // RMB → boost jump
   };
 
   private onMouseup = (e: MouseEvent) => {
     if (this.chatting) return;
     if (e.button === 0) this.state.fire = false;
-    else if (e.button === 2) {
-      e.preventDefault();
-      this.state.boost = false;
-    }
+    else if (e.button === 2) this.state.boost = false;
   };
 
   // Suppress the browser context menu so RMB is a clean game input.
@@ -358,14 +332,6 @@ export class InputManager {
     this.state.boost = false;
     this.state.fire = false;
     this.state.zoom = false;
-    this.state.crouch = false;
-    this.state.slidePressed = false;
-    this.prevJump = false;
-    this.prevDash = false;
-    this.prevBoost = false;
-    this.boostQueued = false;
-    this.prevFire = false;
-    this.prevSlide = false;
     this.accumYaw = 0;
     this.accumPitch = 0;
   }

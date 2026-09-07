@@ -1,4 +1,4 @@
-# Elyxion — multi-stage image.
+# Instagib Arena — multi-stage image.
 #
 # Build stage: install everything (incl. dev deps) and produce the client
 # bundle in dist/. Runtime stage: a lean image with only production deps
@@ -6,7 +6,7 @@
 # the built client, the server, and the THREE-free shared game modules.
 
 # --- build: compile the client bundle ---------------------------------------
-FROM node:20.20.2-bookworm-slim AS build
+FROM node:20.19-bookworm-slim AS build
 WORKDIR /app
 # Install deps first so this layer caches across source-only changes.
 COPY package*.json ./
@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build
 
 # --- runtime: serve dist/ + the game/stats server ---------------------------
-FROM node:20.20.2-bookworm-slim AS runtime
+FROM node:20.19-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8787
@@ -35,7 +35,4 @@ EXPOSE 8787
 # survives container churn. On Railway, attach a Railway Volume at /app/data
 # (the platform rejects a Dockerfile `VOLUME`); for plain Docker, bind-mount it:
 # `docker run -v "$PWD/data:/app/data" …`.
-RUN groupadd --system appgroup && useradd --system --gid appgroup appuser \
-    && mkdir -p /app/data && chown -R appuser:appgroup /app
-USER appuser
 CMD ["npm", "start"]
