@@ -42,6 +42,8 @@ const args: Args = {
   stallMs: Math.max(0, numArg('stall-ms', 0)),
 };
 args.interpDelayMs = Math.max(0, numArg('interp', 110 + Math.max(0, args.players - 2) * 10));
+const wsOrigin = new URL(args.url);
+wsOrigin.protocol = wsOrigin.protocol === 'wss:' ? 'https:' : 'http:';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const percentile = (values: number[], p: number): number => {
@@ -105,7 +107,7 @@ const deliverViewerState = (data: Buffer) => {
 };
 
 const connectClient = async (index: number): Promise<Client> => {
-  const ws = new WebSocket(args.url, { headers: { Origin: 'http://localhost:5173' } });
+  const ws = new WebSocket(args.url, { headers: { Origin: wsOrigin.origin } });
   const client: Client = {
     ws,
     spawn: { x: 0, y: 0.05, z: 0 },

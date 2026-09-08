@@ -103,22 +103,17 @@ npm run cli -- dev
 
 The project includes a small Node-style CLI. `npm run cli -- <command>` works
 without installing anything globally; `npm link` exposes the same executable as
-`instagib <command>`. The default `dev` command runs two processes together:
+`instagib <command>`. The default `dev` command runs one Node process on
+<http://localhost:8787>. It mounts Vite for client hot reload and also serves the
+WebSocket game and APIs, so development and production use the same single origin.
+Open <http://localhost:8787> and hit **Enter the arena**.
 
-- **Vite** dev server on <http://localhost:5173> — the client, with HMR.
-- **Game server** on `:8787` — the WebSocket game + APIs.
-
-Vite proxies `/api` and `/ws/instagib` to the game server, so the browser always
-talks to a **single origin** — exactly like production. Open
-<http://localhost:5173> and hit **Enter the arena**.
-
-You can also run them separately: `npm run cli -- dev:web` and
-`npm run cli -- dev:server`.
+`npm run cli -- dev:server` is an alias for the same development server.
 
 Useful CLI commands:
 
 ```bash
-instagib dev                         # Vite + game server with live reload
+instagib dev                         # single-port Vite + game server with live reload
 instagib serve                       # build and serve the production app
 instagib lan --server                # print the production LAN URL
 instagib load --players 8            # run the netcode load harness
@@ -126,7 +121,7 @@ instagib run scripts/netcode-load.ts --players 2
 instagib --help
 ```
 
-The existing npm scripts remain available as aliases for compatibility.
+The `dev:server` script remains available as an alias for compatibility.
 
 ### Portable packages (no Node.js installation)
 
@@ -231,7 +226,7 @@ optional:
 ```
 instagib-arena/
 ├─ index.html             # Vite entry (meta/OG/JSON-LD + crawlable noscript)
-├─ vite.config.ts         # React + Tailwind plugins; dev proxy for /api + /ws
+├─ vite.config.ts         # React + Tailwind plugins; mounted by the dev server
 ├─ src/
 │  ├─ main.tsx            # React root + router (/ and /play)
 │  ├─ pages/Landing.tsx   # marketing / controls splash
@@ -309,10 +304,10 @@ override any sound; missing announcer lines fall back to speech synthesis.
 
 | Script             | What it does                                              |
 | ------------------ | -------------------------------------------------------- |
-| `npm run dev`      | Vite client + game server together (dev).                |
+| `npm run dev`      | Single-port dev server with Vite hot reload.              |
 | `npm run cli -- <command>` | Run the Node-style `instagib` CLI without a global install. |
-| `instagib dev`     | Vite client + game server together (after `npm link`).   |
-| `npm run dev:web` / `dev:server` | Each on its own.                            |
+| `instagib dev`     | Single-port dev server (after `npm link`).               |
+| `npm run dev:server` | Alias for the single-port dev server.                   |
 | `npm run build`    | Production client build to `dist/`.                      |
 | `npm start`        | Run the production server (expects `dist/`).             |
 | `npm run serve`    | `build` then `start`.                                    |

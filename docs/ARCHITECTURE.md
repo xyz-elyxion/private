@@ -26,8 +26,8 @@ see [`instagib-arena-plan.md`](instagib-arena-plan.md).
                     └────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Dev:** Vite serves the client on `:5173` and proxies `/api` + `/ws` to the
-  Node server on `:8787`. One origin in the browser.
+- **Dev:** the Node server mounts Vite middleware for the client and HMR, plus
+  the API and game socket, on one port (`:8787` by default).
 - **Prod:** the Node server serves the built client *and* both endpoints from a
   single port. Same origin.
 

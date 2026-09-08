@@ -5,9 +5,8 @@
 //   • the stats API           ->  /api/stats
 //   • the authoritative game   ->  /ws/instagib  (WebSocket)
 //
-// In development this process only serves /api and /ws/instagib; the Vite dev
-// server hosts the client and proxies those paths here (see vite.config.ts), so
-// the browser always talks to a single origin — same as production.
+// In development, Vite runs in Express middleware mode on this same listener,
+// so the client, API, game socket, and HMR all share one origin and one port.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -43,8 +42,7 @@ const hasBuild = fs.existsSync(indexHtml);
 
 // A private / loopback / mDNS hostname — i.e. something only reachable from the
 // same machine or LAN. In dev we trust these so `npm run dev:lan` works when a
-// phone or second laptop loads the app from this machine's WiFi IP (the origin
-// is then http://192.168.x.x:5173, which the localhost-only check would reject).
+// phone or second laptop loads the app from this machine's WiFi IP.
 const isPrivateHost = (hostname: string): boolean => {
   if (hostname === 'localhost' || hostname.endsWith('.local')) return true;
   if (hostname === '::1' || hostname.startsWith('127.')) return true;
@@ -177,7 +175,10 @@ app.use('/api/admin', adminRouter);
   if (admins.length) console.log(`[admin] ADMIN_USERNAMES=[${admins.join(', ')}] — ${n} synced`);
 }
 
-if (hasBuild) {
+const server = http.createServer(app);
+server.on('error', (err) => console.error('[server] error', err));
+
+if (!dev && hasBuild) {
   // Long-cache fingerprinted assets; never cache the HTML shell.
   app.use(
     express.static(distDir, {
@@ -233,6 +234,17 @@ if (hasBuild) {
   );
 }
 
+// Vite shares the Node listener in development. Passing `server` lets its HMR
+// WebSocket upgrade on this port instead of opening a second dev-server port.
+if (dev) {
+  const { createServer: createViteServer } = await import('vite');
+  const vite = await createViteServer({
+    server: { middlewareMode: true, hmr: { server } },
+    appType: 'spa',
+  });
+  app.use(vite.middlewares);
+}
+
 // Terminal error handler — a malformed/oversized JSON body (express.json throws)
 // returns a clean 4xx instead of Express's default 500 + stack-trace leak.
 app.use((err: Error & { type?: string; status?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -247,9 +259,6 @@ app.use((err: Error & { type?: string; status?: number }, _req: express.Request,
   console.error('[http] unhandled route error', err);
   res.status(500).json({ error: 'server_error' });
 });
-
-const server = http.createServer(app);
-server.on('error', (err) => console.error('[server] error', err));
 
 // Game socket runs on the same HTTP server so it shares the port (and any TLS
 // terminator / tunnel in front of it). `maxPayload` caps a single inbound frame
@@ -290,7 +299,11 @@ server.on('upgrade', (req, socket, head) => {
   const { url } = req;
   const pathname = url ? url.split('?')[0] : '';
   if (pathname !== INSTAGIB_WS_PATH) {
-    socket.destroy();
+    // Vite owns its `vite-hmr` upgrade in development. All other unknown
+    // upgrades are rejected so they cannot leave an idle socket behind.
+    const protocol = req.headers['sec-websocket-protocol'];
+    const isViteHmr = typeof protocol === 'string' && protocol.includes('vite-hmr');
+    if (!dev || !isViteHmr) socket.destroy();
     return;
   }
   if (!isAllowedWsOrigin(req.headers.origin, req.headers.host || '')) {
@@ -355,7 +368,5 @@ server.listen(port, host, () => {
     `>   metrics api:  http://${host}:${port}/api/admin/metrics/report ` +
       `(token auth ${adminApiTokenEnabled ? 'ENABLED' : 'disabled — set ADMIN_API_TOKEN'})`,
   );
-  if (!hasBuild && dev) {
-    console.log('>   dev mode: run `npm run dev:web` (Vite) for the client.');
-  }
+  if (dev) console.log('>   dev mode: Vite client and HMR share this port.');
 });

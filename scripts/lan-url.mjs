@@ -2,14 +2,12 @@
 //
 // Used by `npm run lan` (standalone) and printed at the top of `npm run dev:lan`
 // so you can hand the address to a phone / second laptop without hunting for
-// your IP. It picks the first non-internal IPv4 on an up interface — the address
-// your router handed this machine — and prints both the dev (Vite, default 5173)
-// and single-port (Node, default 8787) URLs.
+// your IP. It picks the first non-internal IPv4 on an up interface and prints
+// the shared development or production server URL.
 
 import os from 'node:os';
 
-const DEV_PORT = process.env.VITE_PORT || '5173';
-const SERVER_PORT = process.env.PORT || process.env.SERVER_PORT || '8787';
+const SERVER_PORT = process.env.PORT || '8787';
 
 function lanIPv4s() {
   const out = [];
@@ -26,12 +24,12 @@ function lanIPv4s() {
 
 const ips = lanIPv4s();
 const mode = process.argv.includes('--server') ? 'server' : 'dev';
-const port = mode === 'server' ? SERVER_PORT : DEV_PORT;
+const port = SERVER_PORT;
 
 if (ips.length === 0) {
   console.log('[lan] No LAN IPv4 found — are you connected to WiFi/Ethernet?');
 } else {
-  const label = mode === 'server' ? 'single-port (built client + server)' : 'dev (Vite, hot reload)';
+  const label = mode === 'server' ? 'single-port (built client + server)' : 'dev (Vite hot reload)';
   console.log(`\n  Instagib on your LAN — ${label}`);
   console.log('  Open this on any device on the same WiFi:\n');
   for (const ip of ips) console.log(`    →  http://${ip}:${port}`);

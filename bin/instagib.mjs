@@ -17,9 +17,9 @@ Usage:
   instagib <command> [options]
 
 Commands:
-  dev                 Run Vite and the game server together with live reload
-  dev:web             Run only the Vite client
-  dev:server          Run only the game server with live reload
+  dev                 Run the app with Vite live reload on one port
+  dev:lan             Run the single-port dev server on all interfaces
+  dev:server          Alias for dev
   build               Build the production client into dist/
   start               Start the production Node server
   serve               Build the client, then start the production server
@@ -91,81 +91,20 @@ const runNode = (script, args = [], options = {}) =>
 
 const ensureNative = () => (isPortable ? Promise.resolve(0) : runNode('scripts/ensure-native.mjs'));
 
-const stopChild = (child, signal = 'SIGTERM') => {
-  if (!child.killed) child.kill(signal);
-};
-
-const runDev = async () => {
+const runDev = async (args = [], env = {}) => {
   const nativeCode = await ensureNative();
-  if (nativeCode !== 0) return nativeCode;
-
-  const vite = toolInvocation('vite');
-  const tsx = toolInvocation('tsx', ['watch', 'server/index.ts']);
-  const children = [
-    {
-      name: 'web',
-      child: spawn(vite.command, vite.args, {
-        cwd: projectRoot,
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: !isPortable && process.platform === 'win32',
-      }),
-    },
-    {
-      name: 'server',
-      child: spawn(tsx.command, tsx.args, {
-        cwd: projectRoot,
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: !isPortable && process.platform === 'win32',
-      }),
-    },
-  ];
-
-  for (const { name, child } of children) {
-    child.stdout?.on('data', (chunk) => process.stdout.write(`[${name}] ${chunk}`));
-    child.stderr?.on('data', (chunk) => process.stderr.write(`[${name}] ${chunk}`));
-    child.once('error', (error) => {
-      console.error(`[${name}] ${error.message}`);
-    });
-  }
-
-  let shuttingDown = false;
-  let remaining = children.length;
-  let result = 0;
-  const terminate = (signal) => {
-    for (const { child } of children) stopChild(child, signal);
-  };
-  const shutdown = (signal, code) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    result = code;
-    terminate(signal);
-  };
-  process.once('SIGINT', () => shutdown('SIGINT', 130));
-  process.once('SIGTERM', () => shutdown('SIGTERM', 143));
-
-  return new Promise((resolve) => {
-    for (const { child } of children) {
-      child.once('exit', (code, signal) => {
-        remaining -= 1;
-        if (!shuttingDown) shutdown('SIGTERM', signal ? 130 : code ?? 1);
-        if (remaining === 0) resolve(result);
-      });
-    }
-  });
+  return nativeCode === 0
+    ? runBin('tsx', ['watch', 'server/index.ts', ...args], { env })
+    : nativeCode;
 };
 
 const runCommand = async (command, args) => {
   switch (command) {
     case 'dev':
-      return runDev();
-    case 'dev:web':
-      return runBin('vite', args);
-    case 'dev:server': {
-      const nativeCode = await ensureNative();
-      return nativeCode === 0 ? runBin('tsx', ['watch', 'server/index.ts', ...args]) : nativeCode;
-    }
+    case 'dev:server':
+      return runDev(args);
+    case 'dev:lan':
+      return runDev(args, { HOST: '0.0.0.0' });
     case 'build':
       return runBin('vite', ['build', ...args]);
     case 'start': {
