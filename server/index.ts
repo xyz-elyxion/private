@@ -105,7 +105,9 @@ app.use((req, _res, next) => {
 // (React style props + the Play-of-the-Match <style> tag) and Google Fonts;
 // images allow data:/blob: for three.js canvas textures. frame-ancestors 'none'
 // + X-Frame-Options block clickjacking. HSTS is prod-only (TLS lives at the
-// platform edge); sending it in local http dev would poison the browser.
+// platform edge); sending it in local http dev would poison the browser. Vite's
+// React plugin injects a small inline preamble in development, so allow inline
+// scripts only for the dev middleware; production remains strict.
 const CSP = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -113,7 +115,7 @@ const CSP = [
   "frame-ancestors 'none'",
   "img-src 'self' data: blob:",
   "media-src 'self'",
-  "script-src 'self'",
+  dev ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   // blob:/data: are needed by three.js: GLTFLoader decodes GLB-embedded textures
