@@ -26,6 +26,9 @@ import {
   RANKED_DUEL_FRAG_LIMIT,
   KILLCAM_DURATION_SEC,
   TDM_FRAG_LIMIT,
+  CTF_CAPTURE_LIMIT,
+  GUN_GAME_LEVELS,
+  LMS_FRAG_LIMIT,
   TEAM_COUNT,
   modeCapacity,
   rankedTierName,
@@ -272,6 +275,10 @@ type Room = {
   // Recently-used spawn spots (anti-camp): pickSpawn penalizes candidates near
   // these so a camper can't farm the same spawn. Pruned by age (SPAWN_RECENT_MS).
   recentSpawns: { x: number; z: number; t: number }[];
+  ctf: {
+    flags: { team: number; base: Vec; pos: Vec; carrier: ClientId | null }[];
+    captures: [number, number];
+  } | null;
 };
 
 type ClientMessage =
@@ -431,7 +438,7 @@ function clampInt(v: unknown, lo: number, hi: number, fb: number): number {
 }
 
 function parseMode(v: unknown): GameMode {
-  return v === 'duel' || v === 'tdm' ? v : 'ffa';
+  return v === 'duel' || v === 'tdm' || v === 'ctf' || v === 'lms' || v === 'gun-game' ? v : 'ffa';
 }
 
 // Ray vs axis-aligned box; returns entry distance t (along a unit dir) or null.
@@ -647,6 +654,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const maxCap = modeCapacity(opts.mode);
     const capacity =
       opts.mode === 'duel' ? 2 : clampInt(opts.capacity, 2, maxCap, maxCap);
+    const selectedMapId =
+      isKnownArena(opts.mapId) && mapPoolForMode(opts.mode).includes(opts.mapId)
+        ? opts.mapId
+        : mapPoolForMode(opts.mode)[0] ?? DEFAULT_ARENA_ID;
     const room: Room = {
       id: genRoomCode(),
       name: opts.name,
@@ -655,10 +666,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       // Enforce the mode's map pool server-side: a duel can't be created on a
       // huge FFA map and FFA can't be created on a tight 1v1 arena, regardless
       // of what the client requested.
-      mapId:
-        isKnownArena(opts.mapId) && mapPoolForMode(opts.mode).includes(opts.mapId)
-          ? opts.mapId
-          : mapPoolForMode(opts.mode)[0] ?? DEFAULT_ARENA_ID,
+      mapId: selectedMapId,
       isPublic: opts.isPublic,
       capacity,
       hostId: opts.hostId,
@@ -672,7 +680,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
       wasEverOccupied: false,
       createdAt: Date.now(),
       recentSpawns: [],
+      ctf: null,
     };
+    if (opts.mode === 'ctf') {
+      const spawns = arenaNet(selectedMapId).spawns;
+      const bases = [spawns[0] ?? { x: -20, y: 0.05, z: 0 }, spawns[1] ?? { x: 20, y: 0.05, z: 0 }];
+      room.ctf = {
+        flags: bases.map((base, team) => ({ team, base: { ...base }, pos: { ...base }, carrier: null })),
+        captures: [0, 0],
+      };
+    }
     rooms.set(room.id, room);
     return room;
   };
@@ -699,7 +716,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // Assign the joining player to the smaller team (ties → team 0) so sides
   // stay balanced. Returns null outside TDM.
   const assignTeam = (room: Room): number | null => {
-    if (room.mode !== 'tdm') return null;
+    if (room.mode !== 'tdm' && room.mode !== 'ctf') return null;
     const counts = new Array<number>(TEAM_COUNT).fill(0);
     for (const id of room.members) {
       const c = clients.get(id);
@@ -708,6 +725,52 @@ export function attachInstagibWs(wss: WebSocketServer) {
     let team = 0;
     for (let i = 1; i < TEAM_COUNT; i++) if (counts[i] < counts[team]) team = i;
     return team;
+  };
+
+  const ctfEvent = (room: Room, event: 'pickup' | 'drop' | 'return' | 'capture', team: number, playerName: string) => {
+    if (!room.ctf) return;
+    broadcastRoom(room, { type: 'objective', event, team, playerName, score: [...room.ctf.captures] });
+  };
+
+  const resetCtf = (room: Room) => {
+    if (!room.ctf) return;
+    for (const flag of room.ctf.flags) {
+      flag.pos = { ...flag.base };
+      flag.carrier = null;
+    }
+    room.ctf.captures = [0, 0];
+  };
+
+  const updateCtf = (room: Room, player: ClientRecord, now: number): void => {
+    if (room.mode !== 'ctf' || !room.ctf || player.team == null || player.respawnAt > now) return;
+    const own = room.ctf.flags[player.team];
+    const enemy = room.ctf.flags[player.team === 0 ? 1 : 0];
+    if (enemy.carrier == null && dist(player.pos, enemy.pos) <= 2.2) {
+      enemy.carrier = player.id;
+      ctfEvent(room, 'pickup', player.team, player.name);
+    }
+    if (own.carrier == null && dist(player.pos, own.pos) <= 2.2 && dist(own.pos, own.base) > 0.1) {
+      own.pos = { ...own.base };
+      ctfEvent(room, 'return', player.team, player.name);
+    }
+    if (enemy.carrier === player.id && own.carrier == null && dist(player.pos, own.base) <= 2.8) {
+      room.ctf.captures[player.team] += 1;
+      enemy.pos = { ...enemy.base };
+      enemy.carrier = null;
+      own.pos = { ...own.base };
+      own.carrier = null;
+      ctfEvent(room, 'capture', player.team, player.name);
+      if (room.ctf.captures[player.team] >= CTF_CAPTURE_LIMIT) startVote(room, null, player.team);
+    }
+  };
+
+  const dropCtfFlag = (room: Room, victim: ClientRecord) => {
+    if (room.mode !== 'ctf' || !room.ctf) return;
+    const flag = room.ctf.flags.find((item) => item.carrier === victim.id);
+    if (!flag) return;
+    flag.carrier = null;
+    flag.pos = { ...victim.pos };
+    ctfEvent(room, 'drop', victim.team ?? 0, victim.name);
   };
 
   const teamFrags = (room: Room, team: number): number => {
@@ -753,7 +816,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
       : room.mode === 'duel'
         ? DUEL_FRAG_LIMIT
         : room.mode === 'tdm'
-          ? TDM_FRAG_LIMIT
+            ? TDM_FRAG_LIMIT
+            : room.mode === 'ctf'
+              ? CTF_CAPTURE_LIMIT
+              : room.mode === 'gun-game'
+                ? GUN_GAME_LEVELS
+                : room.mode === 'lms'
+                  ? LMS_FRAG_LIMIT
           : MATCH_FRAG_LIMIT;
 
   // Pick a spawn for `forClient`. Two independent concerns:
@@ -781,7 +850,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       // Present body → never spawn on top of it, regardless of whether it's a threat.
       occupants.push({ x: c.pos.x, z: c.pos.z });
       if (c.respawnAt > now) continue; // dead/hidden → occupies space but isn't a threat
-      if (room.mode === 'tdm' && forClient && c.team != null && c.team === forClient.team) continue;
+      if ((room.mode === 'tdm' || room.mode === 'ctf') && forClient && c.team != null && c.team === forClient.team) continue;
       // Forward dir from yaw matches the client: forward = (-sin yaw, -cos yaw).
       threats.push({ x: c.pos.x, z: c.pos.z, fx: -Math.sin(c.yaw), fz: -Math.cos(c.yaw), aimed: true });
     }
@@ -970,6 +1039,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.roomId = null;
     record.team = null;
     if (!room) return;
+    dropCtfFlag(room, record);
     room.members.delete(record.id);
     broadcastRoom(room, { type: 'peer-left', clientId: record.id });
     broadcastMeta(room); // refresh the roster profile sans the departed player
@@ -994,6 +1064,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // Duel: a player bailing mid-match forfeits — the lone survivor wins and the
     // map vote opens (size === 1 means the room had 2 and one just left).
     if (room.mode === 'duel' && !room.isRanked && room.state === 'active' && room.members.size === 1) {
+      const remaining = room.members.values().next().value;
+      if (remaining) startVote(room, remaining);
+    }
+    if (room.mode === 'lms' && room.state === 'active' && room.members.size === 1) {
       const remaining = room.members.values().next().value;
       if (remaining) startVote(room, remaining);
     }
@@ -1282,6 +1356,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.vote = null;
     room.resumeAt = Date.now() + POST_MATCH_RESET_SEC * 1000;
     room.firstBloodAwarded = false;
+    resetCtf(room);
 
     // Reset scoreboard + reposition everyone onto the new map.
     const now = Date.now();
@@ -1419,7 +1494,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const victim = clients.get(id);
       if (!victim) continue;
       // TDM: no friendly fire — teammates can't be hit.
-      if (room.mode === 'tdm' && victim.team != null && victim.team === shooter.team) continue;
+      if ((room.mode === 'tdm' || room.mode === 'ctf') && victim.team != null && victim.team === shooter.team) continue;
       if (victim.invulnUntilMs > now) continue;
       if (victim.respawnAt > now) continue; // hidden during their killcam → untargetable
       if (victim.disconnectedAt > 0) continue; // dropped player can't be fragged mid-grace
@@ -1476,6 +1551,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
     shooter.frags += 1;
     victim.deaths += 1;
+    dropCtfFlag(room, victim);
     const respawnPos = pickSpawn(room, victim, shooter.pos);
     const firstBlood = !room.firstBloodAwarded;
     room.firstBloodAwarded = true;
@@ -1503,7 +1579,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // Hide the victim (snapshot + targeting) for their killcam, so nobody can see
     // or spawn-camp them while they're stuck watching it. They reappear at the
     // (already away-from-killer) spawn when it ends — see RESPAWN_HIDE_MS.
-    victim.respawnAt = now + RESPAWN_HIDE_MS;
+    victim.respawnAt = room.mode === 'lms' ? Number.MAX_SAFE_INTEGER : now + RESPAWN_HIDE_MS;
     // Invuln spans the killcam + a full spawn grace after they reappear (see
     // KILL_RESPAWN_INVULN_MS) so they're protected the whole time they can't act.
     victim.invulnUntilMs = now + KILL_RESPAWN_INVULN_MS;
@@ -1513,16 +1589,25 @@ export function attachInstagibWs(wss: WebSocketServer) {
       // Ranked Duel: a flat first-to-N race. No rounds, no vote — reaching the
       // limit ends the match (Elo update + result + dissolve).
       if (shooter.frags >= RANKED_DUEL_FRAG_LIMIT) endRankedMatch(room, shooter);
+    } else if (room.mode === 'lms') {
+      const standing = [...room.members].filter((id) => {
+        const player = clients.get(id);
+        return player && player.respawnAt <= now && player.disconnectedAt === 0;
+      });
+      if (standing.length <= 1) startVote(room, standing[0] ?? shooter.id);
     } else if (room.mode === 'tdm') {
       if (shooter.team != null) {
         const mine = teamFrags(room, shooter.team);
-        // First team to the frag limit wins; matches always play to the limit.
         if (mine >= TDM_FRAG_LIMIT) startVote(room, null, shooter.team);
       }
+    } else if (room.mode === 'ctf') {
+      // Capture the Flag resolves in updateCtf when a carrier reaches home.
     } else if (room.mode === 'duel') {
       // Casual Duel: a single first-to-N 1v1 race (same format as ranked, but it
       // ends in the normal map vote instead of an Elo update + dissolve).
       if (shooter.frags >= DUEL_FRAG_LIMIT) startVote(room, shooter.id);
+    } else if (room.mode === 'gun-game') {
+      if (shooter.frags >= GUN_GAME_LEVELS) startVote(room, shooter.id);
     } else {
       // FFA: first to the frag limit ends the match (no early mercy stop).
       if (shooter.frags >= MATCH_FRAG_LIMIT) startVote(room, shooter.id);
@@ -2123,7 +2208,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
             }
             // (Lag-comp history is sampled — from the RESAMPLED pos — on the snapshot tick.)
             const room = rooms.get(record.roomId);
-            if (room) recoverIfOob(record, room, ts);
+            if (room) {
+              recoverIfOob(record, room, ts);
+              updateCtf(room, record, ts);
+            }
           }
           break;
 

@@ -47,6 +47,7 @@ import {
   TICK_DT,
   TOAST_DURATION_SEC,
   TEAM_COLORS,
+  TEAM_NAMES,
   TDM_FRIEND_COLOR,
   TDM_FRAG_LIMIT,
   DUEL_FRAG_LIMIT,
@@ -695,7 +696,7 @@ export class Game {
   private applyBotTeams() {
     if (this.net) return;
     this.netMode = this.botMode;
-    if (this.botMode === 'tdm' && this.bots) {
+    if ((this.botMode === 'tdm' || this.botMode === 'ctf') && this.bots) {
       this.localTeam = 0;
       const list = this.bots.bots;
       const total = list.length + 1; // bots + the human
@@ -1124,6 +1125,7 @@ export class Game {
           onSpectating: (info) => this.handleNetSpectating(info),
           onSpectateEnded: () => this.onNetEvent({ type: 'spectate-ended' }),
           onRespawn: (pos) => this.handleNetRespawn(pos),
+          onObjective: (event) => this.handleNetObjective(event),
           onVoteStart: (v) => this.handleVoteStart(v),
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
@@ -1208,6 +1210,25 @@ export class Game {
     this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
+  }
+
+  private handleNetObjective(event: { event: 'pickup' | 'drop' | 'return' | 'capture'; team: number; playerName: string; score: number[] }) {
+    const team = TEAM_NAMES[event.team] ?? `Team ${event.team + 1}`;
+    const titles = {
+      pickup: 'FLAG TAKEN',
+      drop: 'FLAG DROPPED',
+      return: 'FLAG RETURNED',
+      capture: 'CAPTURE',
+    } as const;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: event.event === 'capture' ? 'special' : 'multi',
+      title: titles[event.event],
+      subtitle: `${event.playerName} · ${team} ${event.score[0] ?? 0}-${event.score[1] ?? 0}`,
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    this.emitHud();
   }
 
   // Another player's rail beam (server-broadcast on every shot): draw the trail
@@ -2271,9 +2292,10 @@ export class Game {
     // training is endless — only local/bot matches end client-side.
     if (this.matchOver || this.training || this.net) return;
     // TDM: first TEAM to the team frag limit wins.
-    if (this.botMode === 'tdm' && this.localTeam != null) {
+    if ((this.botMode === 'tdm' || this.botMode === 'ctf') && this.localTeam != null) {
       const [t0, t1] = this.teamFragTotals();
-      if (Math.max(t0, t1) >= TDM_FRAG_LIMIT) {
+      const teamLimit = this.botMode === 'ctf' ? 5 : TDM_FRAG_LIMIT;
+      if (Math.max(t0, t1) >= teamLimit) {
         const mine = this.localTeam === 0 ? t0 : t1;
         const other = this.localTeam === 0 ? t1 : t0;
         this.endMatch(mine >= other);
@@ -2284,6 +2306,8 @@ export class Game {
     // weekly challenge is an FFA race to its own dedicated cap).
     const limit = this.botMode === 'duel'
       ? DUEL_FRAG_LIMIT
+      : this.botMode === 'gun-game'
+        ? 10
       : this.challenge
         ? WEEKLY_CHALLENGE_FRAG_LIMIT
         : MATCH_FRAG_LIMIT;
@@ -2860,7 +2884,7 @@ export class Game {
 
     // TDM team frag totals [red, blue] from the (authoritative) scoreboard.
     let teamScores: [number, number] | null = null;
-    if (this.netMode === 'tdm') {
+    if (this.netMode === 'tdm' || this.netMode === 'ctf') {
       const totals: [number, number] = [0, 0];
       for (const s of board) {
         if (s.team === 0) totals[0] += s.frags;
@@ -2977,7 +3001,11 @@ export class Game {
           ? this.ranked
             ? RANKED_DUEL_FRAG_LIMIT
             : DUEL_FRAG_LIMIT
-          : MATCH_FRAG_LIMIT;
+          : this.netMode === 'gun-game'
+            ? 10
+            : this.netMode === 'lms'
+              ? 1
+              : MATCH_FRAG_LIMIT;
     }
 
     // "MATCH POINT": the leader (either side) needs exactly one more frag.

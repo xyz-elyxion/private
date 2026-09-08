@@ -3785,8 +3785,8 @@ function FullScoreboard({
   showPing?: boolean;
 }) {
   const title = netStatus !== 'off' ? 'Instagib Arena — Online' : 'Instagib Arena';
-  const tag = mode === 'tdm' ? 'TDM' : mode === 'duel' ? 'Duel' : 'FFA';
-  const isTeam = mode === 'tdm';
+  const tag = mode === 'tdm' ? 'TDM' : mode === 'ctf' ? 'CTF' : mode === 'lms' ? 'Last Stand' : mode === 'gun-game' ? 'Gun Game' : mode === 'duel' ? 'Duel' : 'FFA';
+  const isTeam = mode === 'tdm' || mode === 'ctf';
   return (
     <div className='absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm'>
       <div className='w-[640px] max-w-[92vw] rounded-xl border border-white/15 bg-zinc-950/85 p-6 font-mono shadow-2xl'>
@@ -4966,7 +4966,7 @@ function Lobby({
   const [rankedStatus, setRankedStatus] = useState<RankedStatus | null>(null);
   const [rankedRooms, setRankedRooms] = useState<RankedRoom[]>([]);
   const [weeklyOpen, setWeeklyOpen] = useState(false);
-  // Selected online game mode for Quick Match + Create Match (FFA / Duel / TDM).
+  // Selected online game mode for Quick Match + Create Match.
   const [selectedMode, setSelectedMode] = useState<GameMode>(DEFAULT_GAME_MODE);
   // Live menu presence + global chat (pushed over the lobby socket).
   const [presence, setPresence] = useState<PresenceState | null>(null);
@@ -5491,10 +5491,12 @@ function UtilButton({ onClick, children }: { onClick: () => void; children: Reac
 // Compact mode badge — color-coded by mode for quick scanning in lobby rows.
 function ModeBadge({ mode }: { mode: GameMode }) {
   const color =
-    mode === 'tdm' ? 'bg-sky-300/20 text-sky-200' :
+    mode === 'tdm' || mode === 'ctf' ? 'bg-sky-300/20 text-sky-200' :
+    mode === 'lms' ? 'bg-rose-300/20 text-rose-200' :
+    mode === 'gun-game' ? 'bg-amber-300/20 text-amber-200' :
     mode === 'duel' ? 'bg-fuchsia-300/20 text-fuchsia-200' :
     'bg-emerald-300/20 text-emerald-200';
-  const short = mode === 'tdm' ? 'TDM' : mode === 'duel' ? '1v1' : 'FFA';
+  const short = mode === 'tdm' ? 'TDM' : mode === 'ctf' ? 'CTF' : mode === 'lms' ? 'LMS' : mode === 'gun-game' ? 'GUN' : mode === 'duel' ? '1v1' : 'FFA';
   return (
     <span className={`rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] ${color}`}>
       {short}
@@ -5515,7 +5517,7 @@ function ModePicker({
   return (
     <div className='flex flex-col gap-1.5'>
       <span className='font-mono text-[10px] uppercase tracking-[0.22em] text-white/45'>Mode</span>
-      <div className='grid grid-cols-3 gap-2'>
+      <div className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
         {GAME_MODES.map((m) => {
           const active = value === m.id;
           return (
@@ -6070,6 +6072,7 @@ function CreateMatchModal({
   const [mapId, setMapId] = useState(settings.mapId);
   const [difficulty, setDifficulty] = useState<BotDifficulty>(settings.difficulty);
   const [gameMode, setGameMode] = useState<GameMode>('ffa');
+  const offlineModes = GAME_MODES.filter((m) => m.id === 'ffa' || m.id === 'duel' || m.id === 'tdm');
 
   // Duel is always 1v1 (1 bot); FFA/TDM use the slider.
   const effPlayers = gameMode === 'duel' ? 2 : players;
@@ -6091,7 +6094,7 @@ function CreateMatchModal({
       <div className='flex flex-col gap-1.5'>
         <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Mode</span>
         <div className='grid grid-cols-3 gap-2'>
-          {GAME_MODES.map((m) => (
+          {offlineModes.map((m) => (
             <button
               key={m.id}
               onClick={() => setGameMode(m.id)}
@@ -6273,18 +6276,39 @@ type ChallengeView = {
   rewardCredits: number;
 };
 
+type SeasonView = {
+  season: { id: string; name: string; startsAt: number; endsAt: number; xpPerTier: number };
+  xp: number;
+  tier: number;
+  nextTierXp: number;
+  rewards: { tier: number; cosmeticId: string; name: string }[];
+  claimed: number[];
+};
+
 function ChallengesModal({ onClose }: { onClose: () => void }) {
   const [data, setData] = useState<{ daily: ChallengeView[]; weekly: ChallengeView[] } | null>(null);
+  const [season, setSeason] = useState<SeasonView | null>(null);
+  const [tab, setTab] = useState<'challenges' | 'season'>('challenges');
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [claiming, setClaiming] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    fetch('/api/challenges', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenges'))))
-      .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
-        if (d.challenges) {
-          setData(d.challenges);
+    Promise.all([
+      fetch('/api/challenges', { credentials: 'same-origin' }),
+      fetch('/api/season', { credentials: 'same-origin' }),
+    ])
+      .then(async ([challengeResponse, seasonResponse]) => {
+        if (!challengeResponse.ok || !seasonResponse.ok) throw new Error('challenges');
+        return {
+          challenges: (await challengeResponse.json()) as { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } },
+          season: (await seasonResponse.json()) as { season?: SeasonView },
+        };
+      })
+      .then((d) => {
+        if (d.challenges.challenges && d.season.season) {
+          setData(d.challenges.challenges);
+          setSeason(d.season.season);
           setState('ready');
         } else setState('error');
       })
@@ -6307,6 +6331,27 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
       const d = (await res.json()) as { ok?: boolean; xpGained?: number; creditsGained?: number };
       if (res.ok && d.ok) {
         setFlash(`+${d.xpGained} XP · +${d.creditsGained} ⛁`);
+        load();
+      }
+    } catch {
+      /* ignore */
+    }
+    setClaiming(null);
+  };
+
+  const claimSeason = async (tier: number) => {
+    setClaiming(`season:${tier}`);
+    setFlash(null);
+    try {
+      const res = await fetch('/api/season/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ tier }),
+      });
+      const d = (await res.json()) as { ok?: boolean; cosmeticId?: string };
+      if (res.ok && d.ok) {
+        setFlash(`Unlocked ${d.cosmeticId ?? 'season reward'}`);
         load();
       }
     } catch {
@@ -6363,6 +6408,18 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
 
   return (
     <ModalShell title='Challenges' onClose={onClose}>
+      <div className='mb-4 flex gap-1 border-b border-white/10 pb-2'>
+        {(['challenges', 'season'] as const).map((item) => (
+          <button
+            key={item}
+            type='button'
+            onClick={() => setTab(item)}
+            className={`rounded-md px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] ${tab === item ? 'bg-cyan-400/15 text-cyan-200' : 'text-white/40 hover:text-white/70'}`}
+          >
+            {item === 'season' ? 'Season' : 'Challenges'}
+          </button>
+        ))}
+      </div>
       {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
       {state === 'error' && (
         <div className='text-sm text-white/55'>
@@ -6376,6 +6433,7 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
               Reward claimed: {flash}
             </div>
           )}
+          {tab === 'challenges' && <>
           <div>
             <div className='mb-2 text-[10px] uppercase tracking-[0.22em] text-white/45'>
               Daily · resets every day
@@ -6392,6 +6450,34 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
             Challenges progress from online matches only. Complete one, then Claim
             its XP + credits.
           </div>
+          </>}
+          {tab === 'season' && season && (
+            <div className='flex flex-col gap-3'>
+              <div className='flex items-baseline justify-between'>
+                <div>
+                  <div className='text-sm font-bold text-cyan-100'>{season.season.name}</div>
+                  <div className='text-[10px] uppercase tracking-[0.16em] text-white/40'>Free track · resets every 12 weeks</div>
+                </div>
+                <div className='text-right text-[11px] tabular-nums text-amber-300'>Tier {season.tier}/10</div>
+              </div>
+              <div className='h-2.5 overflow-hidden rounded-full bg-white/10'>
+                <div className='h-full bg-gradient-to-r from-amber-400 to-cyan-300' style={{ width: `${Math.min(100, (season.xp / (season.rewards.length * season.season.xpPerTier)) * 100)}%` }} />
+              </div>
+              <div className='text-[10px] tabular-nums text-white/45'>{season.xp} / {season.rewards.length * season.season.xpPerTier} seasonal XP</div>
+              <div className='flex flex-col gap-2'>
+                {season.rewards.map((reward) => {
+                  const unlocked = season.tier >= reward.tier;
+                  const claimed = season.claimed.includes(reward.tier);
+                  return <div key={reward.tier} className='flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5'>
+                    <span className='w-8 text-center text-[10px] font-bold uppercase tracking-[0.12em] text-amber-300/80'>T{reward.tier}</span>
+                    <span className='min-w-0 flex-1 text-sm text-white/85'>{reward.name}</span>
+                    {claimed ? <span className='text-[10px] uppercase tracking-[0.12em] text-white/35'>Claimed</span> : <button type='button' disabled={!unlocked || claiming === `season:${reward.tier}`} onClick={() => claimSeason(reward.tier)} className='rounded-md border border-emerald-400/50 bg-emerald-400/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-emerald-200 disabled:border-white/10 disabled:bg-transparent disabled:text-white/25'>{claiming === `season:${reward.tier}` ? '…' : 'Claim'}</button>}
+                  </div>;
+                })}
+              </div>
+              <div className='text-[10px] text-white/35'>Season XP comes from online matches. Every reward is cosmetic-only.</div>
+            </div>
+          )}
         </div>
       )}
     </ModalShell>
@@ -6435,7 +6521,7 @@ const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> =
 ];
 
 type LeaderboardWindow = 'all' | 'weekly' | 'daily' | 'ranked';
-type LeaderboardMode = 'all' | 'ffa' | 'duel' | 'tdm' | 'ranked';
+type LeaderboardMode = 'all' | 'ffa' | 'duel' | 'tdm' | 'ctf' | 'lms' | 'gun-game' | 'ranked';
 const LEADERBOARD_WINDOWS: ReadonlyArray<{ id: LeaderboardWindow; label: string }> = [
   { id: 'all', label: 'All-time' },
   { id: 'weekly', label: 'This week' },
@@ -6447,6 +6533,9 @@ const LEADERBOARD_MODES: ReadonlyArray<{ id: LeaderboardMode; label: string }> =
   { id: 'ffa', label: 'FFA' },
   { id: 'duel', label: 'Duel' },
   { id: 'tdm', label: 'TDM' },
+  { id: 'ctf', label: 'CTF' },
+  { id: 'lms', label: 'Last Stand' },
+  { id: 'gun-game', label: 'Gun Game' },
   { id: 'ranked', label: 'Ranked Duel' },
 ];
 

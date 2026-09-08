@@ -98,11 +98,11 @@ new players learn first. Keep casual queues unranked and always available.
 
 ## Phase 5 — Content cadence
 
-- [ ] Seasons: a free seasonal track (challenges → cosmetics) with a reset and a
+- [x] Seasons: a free seasonal track (challenges → cosmetics) with a reset and a
       fresh cosmetic set each season.
-- [ ] New maps + a community map format; revisit a map editor / Steam-Workshop-
-      style sharing if population supports it.
-- [ ] New modes (CTF-instagib, Last-Man-Standing, Gun-Game-style ladder).
+- [x] New maps + a documented, validated community map format; revisit a map
+      editor / Steam-Workshop-style sharing if population supports it.
+- [x] New modes: CTF-instagib, Last-Man-Standing, and a Gun-Game-style ladder.
 
 ---
 

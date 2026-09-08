@@ -12,9 +12,9 @@ import { getLeaderboard, getPlayerRank, type LeaderWindow } from './db';
 import { accountId } from './auth';
 
 type Sort = 'kills' | 'wins' | 'accuracy';
-type Mode = 'ffa' | 'duel' | 'tdm' | 'ranked';
+type Mode = 'ffa' | 'duel' | 'tdm' | 'ctf' | 'lms' | 'gun-game' | 'ranked';
 const SORTS: readonly Sort[] = ['kills', 'wins', 'accuracy'];
-const MODES: readonly Mode[] = ['ffa', 'duel', 'tdm', 'ranked'];
+const MODES: readonly Mode[] = ['ffa', 'duel', 'tdm', 'ctf', 'lms', 'gun-game', 'ranked'];
 const DEFAULT_SORT: Sort = 'kills';
 const DEFAULT_LIMIT = 25;
 const WINDOWS: readonly LeaderWindow[] = ['all', 'daily', 'weekly'];

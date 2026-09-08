@@ -158,7 +158,7 @@ export const LOCAL_WARMUP_SEC = 3; // offline pre-match countdown (no fragging y
 // ── Game modes ─────────────────────────────────────────────────────────────
 // Shared client+server. FFA is the original mode; duel + tdm build on the same
 // room/snapshot machinery (see server/instagib-game.ts).
-export type GameMode = 'ffa' | 'duel' | 'tdm';
+export type GameMode = 'ffa' | 'duel' | 'tdm' | 'ctf' | 'lms' | 'gun-game';
 export const DEFAULT_GAME_MODE: GameMode = 'ffa';
 export const GAME_MODES: ReadonlyArray<{
   id: GameMode;
@@ -168,6 +168,9 @@ export const GAME_MODES: ReadonlyArray<{
   { id: 'ffa', label: 'Free-for-all', blurb: 'Everyone for themselves — first to the frag limit.' },
   { id: 'duel', label: 'Duel (1v1)', blurb: 'One on one — first to the frag limit.' },
   { id: 'tdm', label: 'Team Deathmatch', blurb: 'Red vs Blue — first team to the frag limit.' },
+  { id: 'ctf', label: 'Capture the Flag', blurb: 'Red vs Blue — captures are earned by controlling the rail lanes.' },
+  { id: 'lms', label: 'Last Stand', blurb: 'No respawns — be the last railer standing.' },
+  { id: 'gun-game', label: 'Gun Game', blurb: 'A frag ladder — first player to clear every rung wins.' },
 ];
 
 // Duel (casual + ranked share one format): a single continuous 1v1 race to the
@@ -214,6 +217,9 @@ export function rankedTierName(rating: number): string {
 
 // TDM: two teams; first team to TDM_FRAG_LIMIT total frags wins.
 export const TDM_FRAG_LIMIT = 40;
+export const CTF_CAPTURE_LIMIT = 5;
+export const GUN_GAME_LEVELS = 10;
+export const LMS_FRAG_LIMIT = 1;
 export const TEAM_COUNT = 2;
 export const TEAM_NAMES = ['Red', 'Blue'] as const;
 export const TEAM_COLORS = ['#ff5a5a', '#5a9bff'] as const; // index 0 = red, 1 = blue

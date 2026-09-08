@@ -40,6 +40,7 @@ import {
   type ChallengeDef,
   type ChallengeMetric,
 } from '../src/game/challenges';
+import { seasonFor, seasonTier, seasonXpForMatch, type SeasonInfo } from '../src/game/seasons';
 
 const dataDir = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
@@ -741,6 +742,15 @@ CREATE TABLE IF NOT EXISTS instagib_challenges (
   claimed    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (player_id, challenge, period)
 );
+
+CREATE TABLE IF NOT EXISTS instagib_season_progress (
+  player_id TEXT NOT NULL,
+  season_id TEXT NOT NULL,
+  xp INTEGER NOT NULL DEFAULT 0,
+  claimed TEXT NOT NULL DEFAULT '[]',
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (player_id, season_id)
+);
 `);
 
 export type PublicStats = {
@@ -906,7 +916,7 @@ function challengeWeekKey(now: number): string {
   return `${CHALLENGE_FORMAT}:${weekKey(now)}`;
 }
 
-export type MatchMode = 'ffa' | 'duel' | 'tdm' | 'ranked';
+export type MatchMode = 'ffa' | 'duel' | 'tdm' | 'ctf' | 'lms' | 'gun-game' | 'ranked';
 
 export type MatchDelta = {
   playerId: string;
@@ -1148,6 +1158,7 @@ export function recordMatch(delta: MatchDelta): MatchRecordResult {
 
   // Advance daily/weekly challenges from this match (online matches only).
   trackChallenges(delta.playerId, delta);
+  if (!delta.offline) trackSeason(delta.playerId, delta.kills, delta.wins > 0, delta.now);
 
   return {
     stats,
@@ -1157,6 +1168,89 @@ export function recordMatch(delta: MatchDelta): MatchRecordResult {
     newUnlocks,
     progression: { totalXp: newXp, level: newLevel, credits: newCredits, unlocked: [...owned], equipped },
   };
+}
+
+const seasonProgressRowStmt = sqlite.prepare(
+  `SELECT xp, claimed FROM instagib_season_progress WHERE player_id = ? AND season_id = ?`,
+);
+const seasonProgressEnsureStmt = sqlite.prepare(
+  `INSERT OR IGNORE INTO instagib_season_progress (player_id, season_id, updated_at) VALUES (?, ?, ?)`,
+);
+const seasonProgressXpStmt = sqlite.prepare(
+  `UPDATE instagib_season_progress SET xp = xp + @xp, updated_at = @now WHERE player_id = @playerId AND season_id = @seasonId`,
+);
+const seasonProgressClaimStmt = sqlite.prepare(
+  `UPDATE instagib_season_progress SET claimed = @claimed, updated_at = @now WHERE player_id = @playerId AND season_id = @seasonId AND claimed = @expectedClaimed`,
+);
+
+function trackSeason(playerId: string, kills: number, won: boolean, now: number): void {
+  if (!playerId) return;
+  const season = seasonFor(now);
+  seasonProgressEnsureStmt.run(playerId, season.id, now);
+  seasonProgressXpStmt.run({ playerId, seasonId: season.id, xp: seasonXpForMatch(kills, won), now });
+}
+
+export type SeasonProgress = {
+  season: Pick<SeasonInfo, 'id' | 'name' | 'startsAt' | 'endsAt' | 'xpPerTier'>;
+  xp: number;
+  tier: number;
+  nextTierXp: number;
+  rewards: SeasonInfo['rewards'];
+  claimed: number[];
+};
+
+export function getSeasonProgress(playerId: string, now: number = Date.now()): SeasonProgress {
+  const season = seasonFor(now);
+  const row = playerId
+    ? (seasonProgressRowStmt.get(playerId, season.id) as { xp: number; claimed: string } | undefined)
+    : undefined;
+  let claimed: number[] = [];
+  try {
+    const parsed = JSON.parse(row?.claimed ?? '[]');
+    if (Array.isArray(parsed)) claimed = parsed.filter((n): n is number => Number.isInteger(n));
+  } catch {
+    // Malformed legacy data is treated as unclaimed.
+  }
+  const tier = seasonTier(row?.xp ?? 0, season);
+  return {
+    season: { id: season.id, name: season.name, startsAt: season.startsAt, endsAt: season.endsAt, xpPerTier: season.xpPerTier },
+    xp: row?.xp ?? 0,
+    tier,
+    nextTierXp: Math.min(season.rewards.length * season.xpPerTier, (tier + 1) * season.xpPerTier),
+    rewards: season.rewards,
+    claimed,
+  };
+}
+
+export type SeasonClaimResult =
+  | { ok: true; cosmeticId: string; tier: number; progression: Progression }
+  | { ok: false; reason: 'not_active' | 'unknown' | 'incomplete' | 'claimed' };
+
+export function claimSeasonReward(playerId: string, tier: number, now: number = Date.now()): SeasonClaimResult {
+  if (!playerId) return { ok: false, reason: 'not_active' };
+  const season = seasonFor(now);
+  const reward = season.rewards.find((r) => r.tier === tier);
+  if (!reward) return { ok: false, reason: 'unknown' };
+  const current = getSeasonProgress(playerId, now);
+  if (current.tier < tier) return { ok: false, reason: 'incomplete' };
+  if (current.claimed.includes(tier)) return { ok: false, reason: 'claimed' };
+  const claimed = [...current.claimed, tier];
+  const claimUpdate = seasonProgressClaimStmt.run({
+    playerId,
+    seasonId: season.id,
+    claimed: JSON.stringify(claimed),
+    expectedClaimed: JSON.stringify(current.claimed),
+    now,
+  });
+  if (claimUpdate.changes === 0) return { ok: false, reason: 'claimed' };
+  const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
+  const owned = ownedSet(prog, playerId);
+  owned.add(reward.cosmeticId);
+  const equipped = parseEquipped(prog?.equipped);
+  const totalXp = prog?.total_xp ?? 0;
+  const level = levelForXp(totalXp);
+  progXpUpdateStmt.run({ playerId, totalXp, level, credits: prog?.credits ?? 0, unlocked: JSON.stringify([...owned]) });
+  return { ok: true, cosmeticId: reward.cosmeticId, tier, progression: { totalXp, level, credits: prog?.credits ?? 0, unlocked: [...owned], equipped } };
 }
 
 export type Profile = {
@@ -1574,7 +1668,7 @@ const modePeriodRowStmt = sqlite.prepare(
   `SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats WHERE player_id = ? AND mode = ? AND period_key = ?`,
 );
 
-export type LeaderMode = 'ffa' | 'duel' | 'tdm' | 'ranked';
+export type LeaderMode = 'ffa' | 'duel' | 'tdm' | 'ctf' | 'lms' | 'gun-game' | 'ranked';
 export type LeaderWindow = 'all' | 'daily' | 'weekly';
 // The period_key a window resolves to right now (null for all-time).
 function windowKey(win: LeaderWindow, now: number): string | null {

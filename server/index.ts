@@ -18,6 +18,7 @@ import { statsRouter } from './stats';
 import { leaderboardRouter } from './leaderboard';
 import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
+import { seasonRouter } from './season';
 import { feedbackRouter } from './feedback';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
@@ -165,6 +166,7 @@ app.use('/api', statsRouter);
 app.use('/api', leaderboardRouter);
 app.use('/api', rankedRouter);
 app.use('/api', challengeRouter);
+app.use('/api', seasonRouter);
 app.use('/api', feedbackRouter);
 app.use('/api/admin', adminRouter);
 

@@ -133,7 +133,7 @@ statsRouter.post('/stats', (req, res) => {
   // Game mode is persisted in mode-specific leaderboard buckets and the audit row.
   // Whitelisted so a forged body can't pollute either breakdown.
   const mode: MatchMode | undefined =
-    typeof body.mode === 'string' && ['ffa', 'duel', 'tdm', 'ranked'].includes(body.mode)
+    typeof body.mode === 'string' && ['ffa', 'duel', 'tdm', 'ctf', 'lms', 'gun-game', 'ranked'].includes(body.mode)
       ? (body.mode as MatchMode)
       : undefined;
 

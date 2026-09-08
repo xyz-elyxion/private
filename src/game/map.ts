@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { getArenaTextures } from './textures';
 import type { AABB, Vec3 } from './types';
+import { communityMapToArena } from './community-map';
+import { COMMUNITY_CITADEL } from './community-maps';
 
 export type ArenaMap = {
   name: string;
@@ -345,6 +347,7 @@ export const MAPS: ReadonlyArray<{ id: string; label: string; map: ArenaMap }> =
   { id: 'reactor', label: 'Reactor (FFA/TDM)', map: REACTOR },
   { id: 'lounge', label: 'Lounge (FFA/TDM)', map: LOUNGE },
   { id: 'nuketown', label: 'Nuketown (FFA/TDM)', map: NUKETOWN },
+  { id: COMMUNITY_CITADEL.id, label: `${COMMUNITY_CITADEL.name} (community)`, map: communityMapToArena(COMMUNITY_CITADEL) },
   // 1v1 duel maps
   { id: 'containeryard', label: 'Container Yard (1v1)', map: CONTAINERYARD },
   { id: 'derrick', label: 'Derrick (1v1)', map: DERRICK },

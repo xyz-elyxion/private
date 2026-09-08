@@ -48,6 +48,10 @@ export const ARENA_NET: Record<string, ArenaNetData> = {
     [p(-29, 0), p(-29, 11), p(-29, -11), p(29, 0), p(29, 11), p(29, -11),
      p(-12, 16), p(12, 16), p(-12, -16), p(12, -16)],
   ),
+  'community-citadel': arena(
+    { min: { x: -28, y: -1, z: -20 }, max: { x: 28, y: 18, z: 20 } },
+    [p(0, 16), p(0, -16), p(-22, 0), p(22, 0), p(-12, 12), p(12, -12)],
+  ),
   containeryard: arena(
     { min: { x: -13, y: -1, z: -11 }, max: { x: 13, y: 13, z: 11 } },
     [p(-10.5, 8.5), p(10.5, -8.5), p(-10.5, -8.5), p(10.5, 8.5), p(0, 9), p(0, -9)],
@@ -74,7 +78,7 @@ export function arenaNet(id: string): ArenaNetData {
 // mode. containeryard (26×22) and derrick (24×24) are tight 1v1 arenas — far too
 // small for free-for-all — so FFA/TDM (the main queue) use only the large maps,
 // and duel gets the small ones. The single-player training range is excluded.
-export const FFA_MAP_POOL = ['causeway', 'reactor', 'lounge', 'nuketown'] as const; // large — FFA + TDM
+export const FFA_MAP_POOL = ['causeway', 'reactor', 'lounge', 'nuketown', 'community-citadel'] as const; // large — FFA + TDM
 export const DUEL_MAP_POOL = ['containeryard', 'derrick'] as const; // small — 1v1
 // Every online map (mode-agnostic uses: known-arena checks, etc.).
 export const ONLINE_MAP_POOL = [...FFA_MAP_POOL, ...DUEL_MAP_POOL] as const;

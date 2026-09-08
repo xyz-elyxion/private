@@ -183,6 +183,13 @@ type VoteStartMessage = {
 type VoteUpdateMessage = { type: 'vote-update'; counts: Record<string, number> };
 type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number; spawn?: Vec3 };
 type RespawnMessage = { type: 'respawn'; x: number; y: number; z: number; reason?: string };
+type ObjectiveMessage = {
+  type: 'objective';
+  event: 'pickup' | 'drop' | 'return' | 'capture';
+  team: number;
+  playerName: string;
+  score: number[];
+};
 // In-game (room) chat broadcast — same shape as the lobby ChatMessage.
 type ChatBroadcastMessage = { type: 'chat' } & ChatMessage;
 // A rail beam fired by another player (origin → end), so we can render + sound it.
@@ -204,6 +211,7 @@ type ServerMessage =
   | VoteResultMessage
   | RankedResultMessage
   | RespawnMessage
+  | ObjectiveMessage
   | BeamMessage
   | ChatBroadcastMessage
   | { type: 'join-failed'; reason: string }
@@ -243,6 +251,7 @@ export type NetEvents = {
   // The watched match ended / the room was reaped → return to the lobby.
   onSpectateEnded?: () => void;
   onRespawn?: (pos: Vec3, reason: string) => void;
+  onObjective?: (event: ObjectiveMessage) => void;
   onVoteStart?: (v: {
     options: string[];
     endsAtClient: number;
@@ -1010,6 +1019,10 @@ export class NetClient {
     }
     if (msg.type === 'respawn') {
       this.events.onRespawn?.({ x: msg.x, y: msg.y, z: msg.z }, msg.reason ?? 'void');
+      return;
+    }
+    if (msg.type === 'objective') {
+      this.events.onObjective?.(msg);
       return;
     }
     if (msg.type === 'vote-start') {
