@@ -28,7 +28,7 @@ const MODES: Array<[string, string]> = [
 
 // The brand mark — same crosshair as the favicon, so the launcher, the tab
 // icon, and the in-game reticle read as one identity.
-function CrosshairMark({ size = 22 }: { size?: number }) {
+export function CrosshairMark({ size = 22 }: { size?: number }) {
   return (
     <svg
       viewBox="0 0 32 32"

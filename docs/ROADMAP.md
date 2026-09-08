@@ -89,12 +89,12 @@ new players learn first. Keep casual queues unranked and always available.
 - [x] **Reconnect / session resume:** a mid-match disconnect holds your slot +
       score for a grace window (resume token) instead of minting a fresh identity.
 - [x] First-run **onboarding** (name prompt + controls primer).
-- [ ] **Profile recovery code:** optional, account-less. Server issues a secret
+- [x] **Profile recovery code:** optional, account-less. Server issues a secret
       code that re-binds a new browser to an existing `player_id` (solves
       "cleared cookies / new device wiped my progress"). Still no email/password.
-- [ ] Public profile pages (level, top stats, equipped cosmetics, recent matches).
-- [ ] Friends / parties / invite-to-lobby polish on top of existing private rooms.
-- [ ] Spectate + richer post-match scoreboard.
+- [x] Public profile pages (level, top stats, equipped cosmetics, recent matches).
+- [x] Friends / parties / invite-to-lobby polish on top of existing private rooms.
+- [x] Spectate + richer post-match scoreboard.
 
 ## Phase 5 — Content cadence
 

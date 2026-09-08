@@ -7,17 +7,30 @@
 
 import { Router, type Request } from 'express';
 import {
+  addFriend,
   buyCosmetic,
   claimChallenge,
+  findAccountByName,
   findUserById,
+  findPlayerByUsername,
   getChallenges,
+  getFriendsList,
   getProfile,
+  getPlayerRecentMatches,
   getStats,
+  issueRecoveryCode,
   logEvent,
   openCase,
   recordMatch,
+  redeemRecoveryCode,
+  recoveryIdByCode,
+  removeFriend,
   setEquipped,
   type MatchMode,
+  type RecoveryCodeIssueResult,
+  type RecoveryCodeVerifyResult,
+  verifyRecoveryCode,
+  getRecoveryCodes,
 } from './db';
 import { accountId } from './auth';
 
@@ -230,3 +243,219 @@ statsRouter.post('/challenges/claim', (req, res) => {
   const result = claimChallenge(id, challengeId, Date.now());
   res.status(result.ok ? 200 : 400).json(result);
 });
+
+// ── Recovery codes (Phase 4) ────────────────────────────────────────────────
+// Optional, account-less recovery. Issue a secret code that re-binds a new
+// browser's session to an existing player_id. No email/password.
+
+statsRouter.post('/recovery/issue', (req, res) => {
+  const id = playerId(req);
+  if (!id) {
+    res.status(400).json({ error: 'no_account' });
+    return;
+  }
+  const rateKey = rateKeyFor(req);
+  if (!allowPost(rateKey, Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const result = issueRecoveryCode(id, Date.now());
+  if (!result.ok) {
+    res.status(500).json(result);
+    return;
+  }
+  logEvent({
+    event: 'recovery.issue',
+    actorId: id,
+    actorName: findUserById(id)?.username ?? 'Player',
+    detail: { expiresAt: result.expiresAt },
+    ip: req.ip,
+  });
+  res.json(result);
+});
+
+statsRouter.post('/recovery/verify', (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const code = typeof body.code === 'string' ? body.code.trim().toLowerCase() : '';
+  if (!code) {
+    res.status(400).json({ error: 'bad_code' });
+    return;
+  }
+  const result = verifyRecoveryCode(code, Date.now());
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+statsRouter.post('/recovery/redeem', (req, res) => {
+  const id = playerId(req);
+  if (!id) {
+    res.status(400).json({ error: 'no_session' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const code = typeof body.code === 'string' ? body.code.trim().toLowerCase() : '';
+  if (!code) {
+    res.status(400).json({ error: 'bad_code' });
+    return;
+  }
+  // Verify first, then redeem.
+  const verify = verifyRecoveryCode(code, Date.now());
+  if (!verify.ok) {
+    res.status(400).json(verify);
+    return;
+  }
+  // The code must map to THIS account (the one holding the session we're rebinding).
+  if (verify.playerId !== id) {
+    res.status(403).json({ error: 'wrong_account' });
+    return;
+  }
+  const codeId = recoveryIdByCode(code);
+  if (!codeId || !redeemRecoveryCode(codeId, Date.now())) {
+    res.status(500).json({ error: 'internal' });
+    return;
+  }
+  logEvent({
+    event: 'recovery.redeem',
+    actorId: id,
+    actorName: findUserById(id)?.username ?? 'Player',
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+// Public profile: look up a player by username (no auth required).
+statsRouter.get('/players/:username', (req, res) => {
+  const username = (typeof req.params.username === 'string' ? req.params.username : '').toLowerCase().trim();
+  if (!username) {
+    res.status(400).json({ error: 'bad_username' });
+    return;
+  }
+  const player = findPlayerByUsername(username);
+  if (!player) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const profile = getProfile(player.id);
+  const recent = getPlayerRecentMatches(player.id, 10);
+  res.json({
+    profile,
+    recentMatches: recent,
+    username: player.username,
+    isAdmin: player.isAdmin,
+    isVerified: player.isVerified,
+  });
+});
+
+statsRouter.get('/recovery/codes', (req, res) => {
+  const id = playerId(req);
+  if (!id) {
+    res.status(400).json({ error: 'no_account' });
+    return;
+  }
+  res.json({ codes: getRecoveryCodes(id, 10) });
+});
+
+// ── Friends / parties (Phase 4) ─────────────────────────────────────────────
+
+statsRouter.get('/friends', (req, res) => {
+  const id = playerId(req);
+  if (!id) {
+    res.status(400).json({ error: 'no_account' });
+    return;
+  }
+  res.json({ friends: getFriendsList(id, 100) });
+});
+
+statsRouter.post('/friends/add', (req, res) => {
+  const id = playerId(req);
+  if (!id) {
+    res.status(400).json({ error: 'no_account' });
+    return;
+  }
+  const rateKey = rateKeyFor(req);
+  if (!allowPost(rateKey, Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const friendUsername = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
+  if (!friendUsername) {
+    res.status(400).json({ error: 'bad_username' });
+    return;
+  }
+  const target = findUserById(id);
+  if (!target) {
+    res.status(400).json({ error: 'no_account' });
+    return;
+  }
+  // Resolve the friend username to an account id.
+  const friend = findAccountByName(friendUsername);
+  if (!friend) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  if (friend.id === id) {
+    res.status(400).json({ error: 'self_friend' });
+    return;
+  }
+  const added = addFriend(id, friend.id, Date.now());
+  if (!added) {
+    res.status(409).json({ error: 'already_friends' });
+    return;
+  }
+  logEvent({
+    event: 'friend.add',
+    actorId: id,
+    actorName: target.username,
+    targetId: friend.id,
+    ip: req.ip,
+  });
+  res.json({ ok: true, friend: { id: friend.id, username: friend.username } });
+});
+
+statsRouter.post('/friends/remove', (req, res) => {
+  const id = playerId(req);
+  if (!id) {
+    res.status(400).json({ error: 'no_account' });
+    return;
+  }
+  const rateKey = rateKeyFor(req);
+  if (!allowPost(rateKey, Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const friendUsername = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
+  if (!friendUsername) {
+    res.status(400).json({ error: 'bad_username' });
+    return;
+  }
+  const target = findUserById(id);
+  if (!target) {
+    res.status(400).json({ error: 'no_account' });
+    return;
+  }
+  const friend = findAccountByName(friendUsername);
+  if (!friend) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const removed = removeFriend(id, friend.id);
+  if (!removed) {
+    res.status(404).json({ error: 'not_friends' });
+    return;
+  }
+  logEvent({
+    event: 'friend.remove',
+    actorId: id,
+    actorName: target.username,
+    targetId: friend.id,
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { useAuth, LoginModal, type Account } from './auth';
 import { FeedbackModal } from './FeedbackModal';
+import { RecoveryModal } from './RecoveryModal';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
 import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, type AnnouncerPackId } from './game/audio';
@@ -794,6 +795,7 @@ export default function InstagibClient() {
   const [playId, setPlayId] = useState(0);
   // First-run onboarding (pick a name + a controls primer), shown once.
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
@@ -911,6 +913,7 @@ export default function InstagibClient() {
         account={auth.account}
         onOpenLogin={() => setLoginOpen(true)}
         onLogout={auth.logout}
+      onOpenRecovery={() => setRecoveryOpen(true)}
       />
       {showOnboarding && (
         <OnboardingModal
@@ -922,6 +925,7 @@ export default function InstagibClient() {
         />
       )}
       {loginOpen && <LoginModal auth={auth} onClose={() => setLoginOpen(false)} />}
+      {recoveryOpen && <RecoveryModal onClose={() => setRecoveryOpen(false)} />}
     </>
   );
 }
@@ -4931,6 +4935,7 @@ function Lobby({
   account,
   onOpenLogin,
   onLogout,
+  onOpenRecovery,
 }: {
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
@@ -4939,6 +4944,7 @@ function Lobby({
   account: Account;
   onOpenLogin: () => void;
   onLogout: () => void;
+  onOpenRecovery: () => void;
 }) {
   const [soloOpen, setSoloOpen] = useState(false);
   const [createOnlineOpen, setCreateOnlineOpen] = useState(false);
@@ -5153,15 +5159,25 @@ function Lobby({
               </button>
             )}
             {lobbyProfile && account && (
-              <button
-                type='button'
-                onClick={() => setLockerOpen(true)}
-                title='Open the Locker — spend credits on cosmetics'
-                className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
-              >
-                <span className='text-white/45'>Lv {lobbyProfile.level}</span>
-                <span>{lobbyProfile.credits.toLocaleString()} CR</span>
-              </button>
+              <>
+                <button
+                  type='button'
+                  onClick={() => setLockerOpen(true)}
+                  title='Open the Locker — spend credits on cosmetics'
+                  className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
+                >
+                  <span className='text-white/45'>Lv {lobbyProfile.level}</span>
+                  <span>{lobbyProfile.credits.toLocaleString()} CR</span>
+                </button>
+                <button
+                  type='button'
+                  onClick={onOpenRecovery}
+                  title='Manage your recovery code (recover your account on a new device)'
+                  className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/50 transition hover:border-white/25 hover:text-white/80'
+                >
+                  Recovery
+                </button>
+              </>
             )}
             <ServerStatusChip status={lobbyStatus} />
           </div>

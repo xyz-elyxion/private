@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import Database from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import {
   baseMatchXp,
   creditsForXp,
@@ -173,6 +174,49 @@ function ensureColumns() {
 }
 ensureColumns();
 
+// Public profile lookup: find a player by username (lowercased). Used by the
+// public profile page + the admin "find player" lookup. Returns public info only
+// (no password hash).
+export function findPlayerByUsername(usernameLower: string): AccountInfo | undefined {
+  return findAccountByName(usernameLower);
+}
+
+// Recent matches for a player (public profile "recent matches" panel).
+// Keyset-paginated by audit id. Returns the last N matches this player recorded.
+export function getPlayerRecentMatches(
+  playerId: string,
+  limit: number,
+  beforeId?: number,
+): MatchRow[] {
+  if (!playerId) return [];
+  const n = Math.max(1, Math.min(50, Math.floor(limit)));
+  const before = beforeId && beforeId > 0 ? beforeId : 0;
+  const rows = (
+    before ? mRecentMatchesBefore.all(before, n) : mRecentMatches.all(n)
+  ) as { id: number; ts: number; actor_id: string; actor_name: string; detail: string }[];
+  return rows
+    .filter((r) => r.actor_id === playerId)
+    .map((r) => {
+      let d: Record<string, unknown> = {};
+      try { d = JSON.parse(r.detail) as Record<string, unknown>; } catch { /* malformed → zeros */ }
+      const intOf = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+      return {
+        id: r.id,
+        ts: r.ts,
+        playerId: r.actor_id,
+        playerName: r.actor_name || 'Player',
+        kills: intOf(d.kills),
+        deaths: intOf(d.deaths),
+        won: d.won === true,
+        headshots: intOf(d.headshots),
+        accuracy: intOf(d.accuracy),
+        offline: d.offline === true,
+        xp: intOf(d.xp),
+        mode: typeof d.mode === 'string' ? d.mode : null,
+      };
+    }) as MatchRow[];
+}
+
 // Additive account-moderation columns on instagib_users (same no-migration
 // pattern): is_admin gates the /api/admin actions + grants all cosmetics;
 // is_verified drives the blue "verified player" check. Both default off.
@@ -189,6 +233,236 @@ function ensureUserColumns() {
 }
 ensureUserColumns();
 
+// Friends / parties (Phase 4). A friend relationship is a directional "I follow
+// you" link between two account ids. Symmetric enough for a small game: both
+// sides see each other in their friends list, but only the initiator can remove.
+// Used for friends lists + party invite-to-lobby polish.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_friends (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id  TEXT NOT NULL,
+  friend_id  TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(player_id, friend_id)
+);
+CREATE INDEX IF NOT EXISTS idx_friends_player ON instagib_friends(player_id);
+CREATE INDEX IF NOT EXISTS idx_friends_friend ON instagib_friends(friend_id);
+`);
+
+const friendAddStmt = sqlite.prepare(
+  `INSERT OR IGNORE INTO instagib_friends (player_id, friend_id, created_at) VALUES (@playerId, @friendId, @now)`);
+const friendRemoveStmt = sqlite.prepare(
+  `DELETE FROM instagib_friends WHERE player_id = @playerId AND friend_id = @friendId`);
+const friendListByPlayerStmt = sqlite.prepare(
+  `SELECT f.friend_id, u.username, u.is_verified, s.level, s.total_xp, s.total_kills, s.total_games
+    FROM instagib_friends f
+    JOIN instagib_users u ON u.id = f.friend_id
+    LEFT JOIN instagib_stats s ON s.player_id = f.friend_id
+   WHERE f.player_id = ?
+   ORDER BY f.created_at DESC LIMIT ?`);
+const friendListByFriendStmt = sqlite.prepare(
+  `SELECT f.player_id, u.username, u.is_verified, s.level, s.total_xp, s.total_kills, s.total_games
+    FROM instagib_friends f
+    JOIN instagib_users u ON u.id = f.player_id
+    LEFT JOIN instagib_stats s ON s.player_id = f.player_id
+   WHERE f.friend_id = ?
+   ORDER BY f.created_at DESC LIMIT ?`);
+const friendExistsStmt = sqlite.prepare(
+  `SELECT 1 FROM instagib_friends WHERE player_id = @playerId AND friend_id = @friendId`);
+const friendCountStmt = sqlite.prepare(
+  `SELECT COUNT(*) AS n FROM instagib_friends WHERE player_id = ?`);
+
+// Profile recovery codes: optional, account-less recovery. A server-minted
+// secret that maps to a player_id; entering it on a new browser re-binds the
+// igsession cookie to the existing account (solves "cleared cookies / new device
+// wiped my progress"). Still no email/password. Codes are single-use, expirable,
+// and rate-limited at issue time.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_recovery_codes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id  TEXT NOT NULL,
+  code       TEXT NOT NULL UNIQUE,
+  secret     TEXT NOT NULL,
+  used       INTEGER NOT NULL DEFAULT 0,
+  used_at    INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_code ON instagib_recovery_codes(code);
+CREATE INDEX IF NOT EXISTS idx_recovery_player ON instagib_recovery_codes(player_id);
+`);
+
+const recoveryIssueStmt = sqlite.prepare(`
+  INSERT INTO instagib_recovery_codes (player_id, code, secret, created_at, expires_at)
+  VALUES (@playerId, @code, @secret, @now, @expiresAt)`);
+const recoveryVerifyStmt = sqlite.prepare(
+  `SELECT id, player_id, secret, used, expires_at FROM instagib_recovery_codes
+    WHERE code = $1 AND used = 0 AND expires_at > $2`);
+const recoveryRedeemStmt = sqlite.prepare(
+  `UPDATE instagib_recovery_codes SET used = 1, used_at = @now WHERE id = @id AND used = 0`);
+const recoveryForPlayerStmt = sqlite.prepare(
+  `SELECT id, code, created_at, expires_at, used, used_at
+    FROM instagib_recovery_codes WHERE player_id = ? ORDER BY created_at DESC LIMIT ?`);
+const recoveryIdByCodeStmt = sqlite.prepare(
+  `SELECT id FROM instagib_recovery_codes WHERE code = ?`);
+
+const ONE_DAY = 86_400_000;
+const CODE_LENGTH = 6;
+const CODE_CHARSET = 'abcdefghijkmnpqrstuvwxyz23456789'; // no confusing 0/O/1/I/l
+const CODE_EXPIRY_MS = 30 * ONE_DAY; // 30 days
+
+function randCode(): string {
+  let out = '';
+  const buf = randomBytes(CODE_LENGTH * 2);
+  for (let i = 0; i < CODE_LENGTH; i++) out += CODE_CHARSET[buf[i] % CODE_CHARSET.length];
+  return out;
+}
+
+// Issues a new recovery code for an account. Any existing UNUSED codes for the
+// same player are invalidated first (one active code per player at a time).
+export type RecoveryCodeIssueResult =
+  | { ok: true; code: string; expiresAt: number }
+  | { ok: false; reason: 'unknown' };
+
+export function issueRecoveryCode(playerId: string, now: number = Date.now()): RecoveryCodeIssueResult {
+  if (!playerId) return { ok: false, reason: 'unknown' };
+  // Invalidate any existing unused codes for this player.
+  sqlite.prepare(`DELETE FROM instagib_recovery_codes WHERE player_id = ? AND used = 0`).run(playerId);
+  const code = randCode();
+  const secret = randomBytes(24).toString('base64url');
+  const createdAt = now;
+  const expiresAt = now + CODE_EXPIRY_MS;
+  recoveryIssueStmt.run({ playerId, code, secret, now: createdAt, expiresAt });
+  return { ok: true, code, expiresAt };
+}
+
+// Verifies a recovery code exists, is unused, and not expired. Returns the
+// player_id it maps to (so the caller can rebind a session), or null.
+export type RecoveryCodeVerifyResult =
+  | { ok: true; playerId: string; secret: string }
+  | { ok: false; reason: 'unknown' | 'expired' | 'used' };
+
+export function verifyRecoveryCode(code: string, now: number = Date.now()): RecoveryCodeVerifyResult {
+  const row = recoveryVerifyStmt.get(code, now) as
+    | { id: number; player_id: string; secret: string }
+    | undefined;
+  if (!row) {
+    // Distinguish expired/used from never-existed for better UX.
+    const any = sqlite.prepare(`SELECT used, expires_at FROM instagib_recovery_codes WHERE code = ?`).get(code) as
+      | { used: number; expires_at: number }
+      | undefined;
+    if (!any) return { ok: false, reason: 'unknown' };
+    if (any.used) return { ok: false, reason: 'used' };
+    if (any.expires_at <= now) return { ok: false, reason: 'expired' };
+    return { ok: false, reason: 'unknown' };
+  }
+  return { ok: true, playerId: row.player_id, secret: row.secret };
+}
+
+// Redeems a verification: marks the code used and returns how many rows changed.
+export function redeemRecoveryCode(id: number, now: number = Date.now()): boolean {
+  return recoveryRedeemStmt.run({ id, now }).changes > 0;
+}
+
+// A player's issued recovery codes (for the recovery panel: show active + recent
+// used ones so players can track what they saved).
+export type RecoveryCodeRow = {
+  id: number;
+  code: string;
+  created_at: number;
+  expires_at: number;
+  used: number;
+  used_at: number;
+};
+
+export function getRecoveryCodes(playerId: string, limit = 10): RecoveryCodeRow[] {
+  if (!playerId) return [];
+  return (recoveryForPlayerStmt.all(playerId, limit) as RecoveryCodeRow[]);
+}
+
+// Look up a recovery code row id by its code string (for redeem).
+export function recoveryIdByCode(code: string): number {
+  const row = recoveryIdByCodeStmt.get(code) as { id: number } | undefined;
+  return row?.id ?? 0;
+}
+
+// ── Friends / parties (Phase 4) ─────────────────────────────────────────────
+
+export type FriendInfo = {
+  id: string;
+  username: string;
+  isVerified: boolean;
+  level: number;
+  totalXp: number;
+  totalKills: number;
+  totalGames: number;
+};
+
+// Add a friend. Ignores duplicates (INSERT OR IGNORE). Returns true if a new row
+// was added (false = already friends or self-friend attempt).
+export function addFriend(playerId: string, friendId: string, now: number = Date.now()): boolean {
+  if (!playerId || !friendId || playerId === friendId) return false;
+  const r = friendAddStmt.run({ playerId, friendId, now });
+  return r.changes > 0;
+}
+
+// Remove a friend (by the initiator). Returns true if a row was removed.
+export function removeFriend(playerId: string, friendId: string): boolean {
+  if (!playerId || !friendId || playerId === friendId) return false;
+  return friendRemoveStmt.run({ playerId, friendId }).changes > 0;
+}
+
+// Is A following B?
+export function areFriends(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  return !!(friendExistsStmt.get({ playerId: a, friendId: b }) ?? null);
+}
+
+// A player's friends list (who they follow). Includes basic public stats.
+export function getFriendsList(playerId: string, limit = 100): FriendInfo[] {
+  if (!playerId) return [];
+  const rows = friendListByPlayerStmt.all(playerId, limit) as
+    | { friend_id: string; username: string; is_verified: number; level: number | null; total_xp: number | null; total_kills: number | null; total_games: number | null }[]
+    | undefined;
+  if (!rows) return [];
+  return rows.map((r) => ({
+    id: r.friend_id,
+    username: r.username,
+    isVerified: !!r.is_verified,
+    level: r.level ?? 1,
+    totalXp: r.total_xp ?? 0,
+    totalKills: r.total_kills ?? 0,
+    totalGames: r.total_games ?? 0,
+  }));
+}
+
+// Players who have this player as a friend (incoming). Useful for parties: who
+// can invite me.
+export function getFollowers(playerId: string, limit = 100): FriendInfo[] {
+  if (!playerId) return [];
+  const rows = friendListByFriendStmt.all(playerId, limit) as
+    | { player_id: string; username: string; is_verified: number; level: number | null; total_xp: number | null; total_kills: number | null; total_games: number | null }[]
+    | undefined;
+  if (!rows) return [];
+  return rows.map((r) => ({
+    id: r.player_id,
+    username: r.username,
+    isVerified: !!r.is_verified,
+    level: r.level ?? 1,
+    totalXp: r.total_xp ?? 0,
+    totalKills: r.total_kills ?? 0,
+    totalGames: r.total_games ?? 0,
+  }));
+}
+
+// How many friends does this player have?
+export function friendCount(playerId: string): number {
+  if (!playerId) return 0;
+  const r = friendCountStmt.get(playerId) as { n: number } | undefined;
+  return r?.n ?? 0;
+}
+
+// ── Audit log ────────────────────────────────────────────────────────────────
 // Append-only audit log: account registrations, logins, recorded matches, and
 // admin actions. Powers auditing now and a metrics dashboard later. `detail` is
 // a small JSON blob; `ip` is best-effort (proxy-forwarded) for abuse triage.
