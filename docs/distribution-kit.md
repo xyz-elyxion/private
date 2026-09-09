@@ -10,15 +10,21 @@ URL: **https://instagib.win** · Genre: browser instagib arena FPS · Price: fre
 
 ## ⚠️ Read first: the iframe blocker (CrazyGames / Poki)
 
-The server currently sends `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'`
-on every response (`server/index.ts`). Portals that embed the game in an `<iframe>`
-(CrazyGames, Poki) **cannot load it** until we allowlist their origin.
+The server now allows the public game entry routes (`/` and `/play`) to be
+embedded by CrazyGames and Poki through CSP `frame-ancestors`. Sensitive routes
+such as `/admin`, `/docs`, auth, API endpoints, and unknown paths remain protected
+with `frame-ancestors 'none'` and `X-Frame-Options: DENY`.
 
-**Do not submit to CrazyGames/Poki until this is fixed.** When you have your
-CrazyGames dev account + their embed origin, apply the frame-ancestors allowlist
-— it is a ~15 min surgical change (allow portal origins on game routes,
-keep DENY on /admin + auth). Directories that just link to your URL (itch link,
-.io lists) are unaffected — do those now.
+The approved defaults are `https://crazygames.com`, `https://*.crazygames.com`,
+`https://poki.com`, and `https://*.poki.com`. If a portal gives you a more
+specific embed origin, add it through the server's comma-separated
+`EMBED_ALLOWED_ORIGINS` environment variable before submitting. The allowlist is
+validated as HTTPS origins only; redeploy after changing it.
+
+**Portal checklist:** test the deployed `/play` URL inside the portal's real
+iframe, confirm pointer lock/fullscreen permissions are granted by the portal,
+and verify the game WebSocket connects from the embedded page. Directories that
+just link to your URL (itch link, .io lists) are unaffected.
 
 ---
 
@@ -112,13 +118,13 @@ Pure backlinks — low effort, compounding SEO + trickle of the exact audience.
 ### CrazyGames (after the iframe fix)
 1. developer.crazygames.com → register as a developer.
 2. Submit a new game → provide your hosted URL (https://instagib.win) — they iframe it.
-3. **Get their embed origin**, then add it to the CSP allowlist (server/index.ts) + deploy.
+3. Test the deployed `/play` URL in their iframe and confirm the game socket and pointer lock work.
 4. Integrate the CrazyGames SDK if you want ads/featuring (optional for first submit).
 5. Fill name/desc/controls/tags from this kit. Upload thumbnail + screenshots.
 6. Submit for QA. They test gameplay, loading, mobile/responsive behavior.
 
 ### Newgrounds (optional)
-Account → Submit → Game → embed via iframe (also needs framing allowed). Use same copy.
+Account → Submit → Game → embed via iframe. Add its exact HTTPS parent origin to `EMBED_ALLOWED_ORIGINS` before submitting if Newgrounds is not covered by the default allowlist. Use the same copy.
 
 ### Product Hunt (launch event)
 Schedule a launch (Tue–Thu, 12:01am PT). Tagline + gallery + first comment telling
