@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import './index.css';
 import Landing from './pages/Landing';
 import PublicProfile from './pages/PublicProfile';
+import Docs from './pages/Docs';
 
 // Code-split the game client: it drags in the whole Three.js engine (~1MB), and
 // the landing page shouldn't pay for that on first paint. The /play route loads
@@ -40,6 +41,7 @@ createRoot(document.getElementById('root')!).render(
   <BrowserRouter>
     <Routes>
       <Route path="/" element={<Landing />} />
+      <Route path="/docs" element={<Docs />} />
       <Route
         path="/play"
         element={

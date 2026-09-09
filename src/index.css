@@ -266,6 +266,151 @@ canvas {
   }
 }
 
+/* Documentation reader: readable long-form content while retaining the command-deck visual language. */
+.docs-prose {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.94rem;
+  line-height: 1.75;
+}
+.docs-prose > p,
+.docs-prose > ul,
+.docs-prose > ol,
+.docs-prose > blockquote,
+.docs-prose > pre,
+.docs-prose > .docs-table-wrap {
+  margin-top: 1.1rem;
+}
+.docs-prose > p:first-child,
+.docs-prose > ul:first-child,
+.docs-prose > ol:first-child {
+  margin-top: 0;
+}
+.docs-prose p + p {
+  margin-top: 0.9rem;
+}
+.docs-prose .docs-heading {
+  margin-top: 2.6rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 0.55rem;
+  color: rgba(165, 243, 252, 0.95);
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+.docs-prose .docs-heading:first-child {
+  margin-top: 0;
+}
+.docs-prose .docs-subheading {
+  margin-top: 1.8rem;
+  color: rgba(255, 255, 255, 0.88);
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.docs-prose strong {
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 700;
+}
+.docs-prose em {
+  color: rgba(165, 243, 252, 0.78);
+}
+.docs-prose a {
+  color: rgb(103, 232, 249);
+  text-decoration: underline;
+  text-decoration-color: rgba(103, 232, 249, 0.35);
+  text-underline-offset: 3px;
+}
+.docs-prose a:hover {
+  color: white;
+  text-decoration-color: currentColor;
+}
+.docs-prose code {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.12rem 0.35rem;
+  color: rgba(207, 250, 254, 0.9);
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+}
+.docs-prose pre {
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.38);
+  padding: 1rem;
+  color: rgba(255, 255, 255, 0.72);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  white-space: pre;
+}
+.docs-prose pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+.docs-prose ul,
+.docs-prose ol {
+  padding-left: 1.4rem;
+}
+.docs-prose ul {
+  list-style: disc;
+}
+.docs-prose ol {
+  list-style: decimal;
+}
+.docs-prose li {
+  margin-top: 0.35rem;
+  padding-left: 0.25rem;
+}
+.docs-prose blockquote {
+  border-left: 2px solid rgba(34, 211, 238, 0.6);
+  background: rgba(34, 211, 238, 0.06);
+  padding: 0.8rem 1rem;
+  color: rgba(207, 250, 254, 0.72);
+}
+.docs-prose hr {
+  margin: 2.2rem 0;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.docs-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.docs-prose table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.docs-prose th,
+.docs-prose td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.65rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+.docs-prose th {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(207, 250, 254, 0.85);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.docs-prose tr:last-child td {
+  border-bottom: 0;
+}
+
 /* Thin accent scrollbar for the live-lobby feed. */
 .deck-scroll {
   scrollbar-width: thin;
