@@ -42,11 +42,11 @@ export default function Docs() {
 
   const selectDoc = (slug: string) => {
     setSearchParams({ doc: slug });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    document.querySelector<HTMLElement>('.docs-page')?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
-    <div className="deck-bg min-h-screen text-white">
+    <div className="docs-page deck-bg h-full overflow-y-auto overflow-x-hidden text-white">
       <div className="deck-scan pointer-events-none fixed inset-0 z-10" aria-hidden="true" />
       <header className="relative z-20 border-b border-white/10 bg-black/30">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4 sm:px-8">

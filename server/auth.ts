@@ -3,7 +3,7 @@
 // are scrypt-hashed (Node built-in, no dependency) with a per-user salt and
 // compared in constant time. The session is an opaque httpOnly cookie token.
 
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import {
   createSession,
@@ -54,6 +54,15 @@ function genToken(): string {
 export function accountId(req: Request): string {
   const token = req.cookies?.[SESSION_COOKIE];
   return typeof token === 'string' ? userIdFromSession(token) : '';
+}
+
+// Issue a fresh authenticated browser session after a successful recovery-code
+// redemption. The cookie remains httpOnly and uses the same production options
+// as normal registration/login sessions.
+export function startSession(res: Response, userId: string, now: number = Date.now()): void {
+  const token = genToken();
+  createSession(token, userId, now);
+  res.cookie(SESSION_COOKIE, token, cookieOpts);
 }
 
 // Same, but from a raw `Cookie:` header — for the game WebSocket upgrade, which

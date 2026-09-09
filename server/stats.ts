@@ -32,7 +32,7 @@ import {
   verifyRecoveryCode,
   getRecoveryCodes,
 } from './db';
-import { accountId } from './auth';
+import { accountId, startSession } from './auth';
 
 // The progression identity for a request: the logged-in account, or '' (guest).
 function playerId(req: Request): string {
@@ -290,11 +290,13 @@ statsRouter.post('/recovery/verify', (req, res) => {
 });
 
 statsRouter.post('/recovery/redeem', (req, res) => {
-  const id = playerId(req);
-  if (!id) {
-    res.status(400).json({ error: 'no_session' });
+  const now = Date.now();
+  const rateKey = rateKeyFor(req);
+  if (!allowPost(rateKey, now)) {
+    res.status(429).json({ error: 'rate_limited' });
     return;
   }
+  const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const code = typeof body.code === 'string' ? body.code.trim().toLowerCase() : '';
   if (!code) {
@@ -302,25 +304,28 @@ statsRouter.post('/recovery/redeem', (req, res) => {
     return;
   }
   // Verify first, then redeem.
-  const verify = verifyRecoveryCode(code, Date.now());
+  const verify = verifyRecoveryCode(code, now);
   if (!verify.ok) {
     res.status(400).json(verify);
     return;
   }
-  // The code must map to THIS account (the one holding the session we're rebinding).
-  if (verify.playerId !== id) {
+  // If this browser is already authenticated, never let a recovery code switch
+  // it to a different account. A cookie-less browser is the intended recovery
+  // path: the valid code is what establishes its new authenticated session.
+  if (id && verify.playerId !== id) {
     res.status(403).json({ error: 'wrong_account' });
     return;
   }
   const codeId = recoveryIdByCode(code);
-  if (!codeId || !redeemRecoveryCode(codeId, Date.now())) {
-    res.status(500).json({ error: 'internal' });
+  if (!codeId || !redeemRecoveryCode(codeId, now)) {
+    res.status(409).json({ error: 'used_or_invalid' });
     return;
   }
+  startSession(res, verify.playerId, now);
   logEvent({
     event: 'recovery.redeem',
-    actorId: id,
-    actorName: findUserById(id)?.username ?? 'Player',
+    actorId: verify.playerId,
+    actorName: findUserById(verify.playerId)?.username ?? 'Player',
     ip: req.ip,
   });
   res.json({ ok: true });

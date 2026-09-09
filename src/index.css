@@ -266,6 +266,24 @@ canvas {
   }
 }
 
+/* The app shell intentionally locks the body for the pointer-locked game. The
+   docs route opts into its own full-height scrolling viewport instead. */
+.docs-page {
+  overscroll-behavior: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 211, 238, 0.35) transparent;
+}
+.docs-page::-webkit-scrollbar {
+  width: 8px;
+}
+.docs-page::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.35);
+  border-radius: 4px;
+}
+.docs-page::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* Documentation reader: readable long-form content while retaining the command-deck visual language. */
 .docs-prose {
   color: rgba(255, 255, 255, 0.62);
