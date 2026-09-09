@@ -383,7 +383,7 @@ const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
 const CARD_STAT_DEFS: ReadonlyArray<{
   key: string;
   label: string;
-  from: (p:            InstagibProfile) => string;
+  from: (p:InstagibProfile) => string;
 }> = [
   { key: 'kills', label: 'KILLS', from: (p) => String(p.stats.totalKills) },
   { key: 'deaths', label: 'DEATHS', from: (p) => String(p.stats.totalDeaths) },
@@ -407,7 +407,7 @@ const CARD_STAT_DEFS: ReadonlyArray<{
 const MAX_CARD_STATS = 3;
 
 function buildCardPayload(
-  profile:            InstagibProfile,
+  profile:InstagibProfile,
   settings: Settings,
   account?: Account,
 ): CardPayload {
@@ -449,7 +449,7 @@ function CardStatsEditor({
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?:            InstagibProfile }) => {
+      .then((d: { profile?:InstagibProfile }) => {
         if (active && d.profile) setProfile(d.profile);
       })
       .catch(() => {});
@@ -783,7 +783,7 @@ const INITIAL_HUD: HudState = {
   spectator: null,
 };
 
-export default function            InstagibClient() {
+export default function InstagibClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -1120,7 +1120,7 @@ function GameView({
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?:            InstagibProfile }) => {
+      .then((d: { profile?:InstagibProfile }) => {
         if (!active || !d.profile) return;
         const card = buildCardPayload(d.profile, settings);
         gameRef.current?.setCardPayload?.(card);
@@ -3784,7 +3784,7 @@ function FullScoreboard({
   mode: GameMode;
   showPing?: boolean;
 }) {
-  const title = netStatus !== 'off' ? 'Instagib Arena — Online' : 'Instagib Arena';
+  const title = netStatus !== 'off' ? 'Elyxion — Online' : 'Elyxion';
   const tag = mode === 'tdm' ? 'TDM' : mode === 'ctf' ? 'CTF' : mode === 'lms' ? 'Last Stand' : mode === 'gun-game' ? 'Gun Game' : mode === 'duel' ? 'Duel' : 'FFA';
   const isTeam = mode === 'tdm' || mode === 'ctf';
   return (
@@ -3990,7 +3990,7 @@ function ClickToPlay({
   return (
     <div className='absolute inset-0 flex flex-col items-center justify-center bg-black/75 text-white backdrop-blur-sm pointer-events-auto'>
       <div className='text-[11px] uppercase tracking-[0.35em] text-white/55'>
-        Instagib Arena · {inMatch}
+        Elyxion · {inMatch}
       </div>
       <div className='mt-3 text-3xl font-semibold'>Click to play</div>
       <div className='mt-2 text-sm text-white/60'>{controls}</div>
@@ -5125,7 +5125,7 @@ function Lobby({
             className='font-display text-3xl font-bold uppercase leading-none tracking-[0.16em] text-cyan-300 sm:text-[2.5rem]'
             style={{ filter: 'drop-shadow(0 0 18px rgba(34,211,238,0.45))' }}
           >
-            Instagib
+            Elyxion
           </h1>
           <span className='font-display mt-0.5 text-xs font-semibold uppercase tracking-[0.55em] text-white/35'>
             Arena
@@ -5195,7 +5195,7 @@ function Lobby({
 
             {touchOnly && (
               <div className='clip-deck-sm border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-center text-[12px] text-amber-100'>
-                Instagib needs a <span className='font-bold'>mouse + keyboard</span>. Open this on a
+                Elyxion needs a <span className='font-bold'>mouse + keyboard</span>. Open this on a
                 desktop to play.
               </div>
             )}
@@ -5316,7 +5316,7 @@ function Lobby({
         {/* ── Footer ─────────────────────────────────────────────────── */}
         <footer className='flex shrink-0 items-center justify-between border-t border-white/10 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
           <span>Quick match · up to {MAX_PLAYERS} players</span>
-          <span className='text-white/25'>Instagib Arena</span>
+          <span className='text-white/25'>Elyxion</span>
         </footer>
       </div>
 
