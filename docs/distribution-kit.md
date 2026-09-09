@@ -1,4 +1,4 @@
-# Instagib Arena — Distribution & Launch Kit
+# Elyxion — Distribution & Launch Kit
 
 Everything you need to list the game on portals and seed communities. Automation
 can't create accounts or submit on your behalf — those are identity-bound and
@@ -42,18 +42,18 @@ win but gated behind the iframe fix + review. Poki is a long shot.
 
 ## Reusable copy (paste into any portal)
 
-**Name:** Instagib Arena
+**Name:** Elyxion
 
 **Tagline (≤80 chars):**
 > One shot, one kill. A free browser instagib FPS — pure aim and movement.
 
 **Short description (1–2 sentences):**
-> Instagib Arena is a free, Quake-style instagib FPS you play instantly in your
+> Elyxion is a free, Quake-style instagib FPS you play instantly in your
 > browser — no download. The railgun always one-shots, so the whole game is aim
 > and movement: strafe, dash, double-jump, wall-jump.
 
 **Long description (~150 words):**
-> Instagib Arena is a fast, free, browser-based arena FPS in the Quake instagib
+> Elyxion is a fast, free, browser-based arena FPS in the Quake instagib
 > tradition. There's one weapon — a railgun that kills in a single hit — so every
 > duel comes down to raw aim and movement. Master strafe-jumping, dashing,
 > double-jumps and wall-jumps to out-flick and out-position everyone in the server.

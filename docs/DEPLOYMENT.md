@@ -1,6 +1,6 @@
 # Deployment
 
-Instagib Arena ships as **one Node process** that serves the built client, the
+Elyxion ships as **one Node process** that serves the built client, the
 stats API, and the `/ws/instagib` game socket on a single port (default
 `8787`). There's nothing else to run — no separate API tier, no external
 services. Put a TLS terminator / reverse proxy in front and you're live.
@@ -66,7 +66,7 @@ HTTPS origin so the WebSocket origin allow-list accepts your browser clients.
 
 ## 3. Railway (recommended PaaS)
 
-Instagib Arena is an ideal fit for Railway: one always-on container with
+Elyxion is an ideal fit for Railway: one always-on container with
 WebSockets, a persistent volume, and a free HTTPS domain. The repo ships a
 [`railway.json`](../railway.json) that builds from the `Dockerfile` and
 health-checks `/api/health`.

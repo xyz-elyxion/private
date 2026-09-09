@@ -1,4 +1,4 @@
-// Instagib Arena — standalone server.
+// Elyxion — standalone server.
 //
 // One Node process hosts everything on a single port:
 //   • the built web client (dist/, in production)
@@ -365,7 +365,7 @@ const wsHeartbeat = setInterval(() => {
 wsHeartbeat.unref();
 
 server.listen(port, host, () => {
-  console.log(`> Instagib Arena server ready on http://${host}:${port}`);
+  console.log(`> Elyxion server ready on http://${host}:${port}`);
   console.log(`>   game socket:  ws://${host}:${port}${INSTAGIB_WS_PATH}`);
   console.log(`>   stats api:    http://${host}:${port}/api/stats`);
   console.log(

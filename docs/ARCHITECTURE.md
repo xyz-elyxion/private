@@ -1,6 +1,6 @@
 # Architecture
 
-How Instagib Arena fits together: the client engine, the authoritative game
+How Elyxion fits together: the client engine, the authoritative game
 server, the netcode (including lag compensation and the anti-cheat boundary),
 and the wire protocol.
 

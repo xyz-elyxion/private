@@ -139,7 +139,7 @@ exit /b %errorlevel%
 };
 
 const writeReadme = async () => {
-  const text = `Instagib Arena portable package (${targetName})
+  const text = `Elyxion portable package (${targetName})
 
 This folder includes its own Node.js runtime. Node.js does not need to be
 installed on the target computer.

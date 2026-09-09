@@ -1,4 +1,4 @@
-# Instagib Arena — https://instagib.win
+# Elyxion — https://instagib.win
 User-agent: *
 Allow: /
 Disallow: /admin

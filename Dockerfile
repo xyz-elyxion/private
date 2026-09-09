@@ -1,4 +1,4 @@
-# Instagib Arena — multi-stage image.
+# Elyxion — multi-stage image.
 #
 # Build stage: install everything (incl. dev deps), compile native modules, and
 # produce the client bundle in dist/. Runtime stage: a lean image with only

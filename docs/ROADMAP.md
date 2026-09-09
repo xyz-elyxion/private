@@ -1,4 +1,4 @@
-# Instagib Arena — Roadmap
+# Elyxion — Roadmap
 
 A living, phased plan. Each phase is shippable on its own and ordered so earlier
 work de-risks later work. Dates are intentionally omitted; sequence matters more

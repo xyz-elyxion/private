@@ -11,7 +11,7 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'),
 );
 
-const help = `Instagib Arena CLI v${packageJson.version}
+const help = `Elyxion CLI v${packageJson.version}
 
 Usage:
   instagib <command> [options]

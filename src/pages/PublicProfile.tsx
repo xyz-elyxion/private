@@ -198,7 +198,7 @@ export default function PublicProfile() {
               </svg>
             </Link>
             <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.3em] text-white/40">
-              Instagib Arena
+              Elyxion
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -349,7 +349,7 @@ export default function PublicProfile() {
 
       {/* Footer */}
       <footer className="border-t border-white/10 py-4 text-center font-mono text-[10px] uppercase tracking-[0.18em] text-white/30">
-        Instagib Arena · One railgun. One shot. One kill.
+        Elyxion · One railgun. One shot. One kill.
       </footer>
     </div>
   );

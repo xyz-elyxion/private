@@ -1,4 +1,4 @@
-// Instagib Arena — authoritative game server, in-process with the Next app.
+// Elyxion — authoritative game server, in-process with the Next app.
 //
 // Served at `/ws/instagib` on the main app port so it rides the existing
 // Cloudflare tunnel (wss://<domain>/ws/instagib) — no separate port/process.

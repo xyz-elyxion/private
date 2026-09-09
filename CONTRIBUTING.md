@@ -1,4 +1,4 @@
-# Contributing to Instagib Arena
+# Contributing to Elyxion
 
 Thanks for your interest — bug reports, ideas, and pull requests are all welcome.
 
@@ -36,7 +36,7 @@ npm run dev
 
 ## Contributor License Agreement (CLA)
 
-Instagib Arena is open source under the AGPL-3.0, and the maintainer also offers
+Elyxion is open source under the AGPL-3.0, and the maintainer also offers
 commercial/dual licenses. So that contributions don't cloud those rights, all
 contributors must agree to the [Contributor License Agreement](CLA.md). For now,
 confirm agreement with the CLA checkbox in the pull request template.

@@ -1,4 +1,4 @@
-# Instagib Arena — Progression System Design
+# Elyxion — Progression System Design
 
 A concrete, implementable design for an account-less progression system that fits
 the existing backend (anonymous `igpid` cookie, single `instagib_stats` SQLite

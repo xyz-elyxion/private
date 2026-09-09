@@ -1,5 +1,5 @@
-Instagib Arena
-Copyright (c) 2024-2026 the Instagib Arena maintainer (@8tp)
+Elyxion
+Copyright (c) 2024-2026 the Elyxion maintainer (@8tp)
 
 This product's SOURCE CODE is licensed under the GNU Affero General Public
 License v3.0 (see LICENSE).
@@ -28,5 +28,5 @@ Announcer voices — "kuon" pack (public/sounds/instagib/announcer/kuon/)
   licensed to distribute — the game falls back gracefully when they are absent.
 ────────────────────────────────────────────────────────────────────────────
 
-If you redistribute Instagib Arena (source or a running service), keep this
+If you redistribute Elyxion (source or a running service), keep this
 NOTICE and the per-asset attribution files intact.

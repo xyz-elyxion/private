@@ -93,7 +93,7 @@ export default function Landing() {
           <div className="flex items-center gap-2.5">
             <CrosshairMark />
             <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.32em] text-white/50">
-              Instagib Arena
+              Elyxion
             </span>
           </div>
           <nav
@@ -125,7 +125,7 @@ export default function Landing() {
               className="deck-rise mt-4 font-display text-6xl font-bold uppercase leading-[0.92] tracking-[0.04em] sm:text-7xl"
               style={{ animationDelay: '60ms' }}
             >
-              Instagib
+              Elyxion
               <br />
               <span className="text-cyan-300">Arena</span>
             </h1>
@@ -147,7 +147,7 @@ export default function Landing() {
                   Best played on a computer
                 </p>
                 <p className="mt-1.5 text-sm leading-relaxed text-white/70">
-                  Instagib Arena needs a <span className="text-white">mouse and keyboard</span> —
+                  Elyxion needs a <span className="text-white">mouse and keyboard</span> —
                   open this link on a desktop to play. You can still look around below.
                 </p>
                 <Link

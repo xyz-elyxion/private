@@ -1,6 +1,6 @@
 # Support
 
-Instagib Arena is maintained as an open-source game project. Please choose the
+Elyxion is maintained as an open-source game project. Please choose the
 right channel so reports are easy to triage.
 
 ## Bugs and feature requests

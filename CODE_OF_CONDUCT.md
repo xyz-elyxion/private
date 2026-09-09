@@ -1,6 +1,6 @@
 # Code of Conduct
 
-Instagib Arena follows the [Contributor Covenant](https://www.contributor-covenant.org/),
+Elyxion follows the [Contributor Covenant](https://www.contributor-covenant.org/),
 version 2.1. The goal is a focused, welcoming project space where people can
 report bugs, share ideas, review code, and playtest without needless friction.
 

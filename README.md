@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ Instagib Arena
+# ⚡ Elyxion
 
 **One railgun. One shot. One kill.**
 
@@ -19,7 +19,7 @@ No health bars, no loadouts — the whole game is **aim and movement**.
 
 <br/>
 
-<img src="public/og-image.png" alt="Instagib Arena — a browser-based Quake-style instagib FPS" width="720" />
+<img src="public/og-image.png" alt="Elyxion — a browser-based Quake-style instagib FPS" width="720" />
 
 <sub>Raw **Three.js** rendering · **64 Hz binary netcode** with lag compensation · one **Node** process (Express + `ws` + SQLite)</sub>
 

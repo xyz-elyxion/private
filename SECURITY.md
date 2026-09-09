@@ -19,7 +19,7 @@ disclosure.
 
 ## Cheats & game-integrity exploits
 
-Instagib Arena is a competitive game, and the netcode is **server-authoritative**
+Elyxion is a competitive game, and the netcode is **server-authoritative**
 (hits, movement limits, ranked Elo, and match results are decided server-side). If
 you find a way to **cheat** — forge stats, bypass server validation, desync the
 authoritative state, spoof scores/Elo, or otherwise gain an unfair advantage —

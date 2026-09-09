@@ -383,7 +383,7 @@ const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
 const CARD_STAT_DEFS: ReadonlyArray<{
   key: string;
   label: string;
-  from: (p: InstagibProfile) => string;
+  from: (p:            InstagibProfile) => string;
 }> = [
   { key: 'kills', label: 'KILLS', from: (p) => String(p.stats.totalKills) },
   { key: 'deaths', label: 'DEATHS', from: (p) => String(p.stats.totalDeaths) },
@@ -407,7 +407,7 @@ const CARD_STAT_DEFS: ReadonlyArray<{
 const MAX_CARD_STATS = 3;
 
 function buildCardPayload(
-  profile: InstagibProfile,
+  profile:            InstagibProfile,
   settings: Settings,
   account?: Account,
 ): CardPayload {
@@ -449,7 +449,7 @@ function CardStatsEditor({
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?:            InstagibProfile }) => {
         if (active && d.profile) setProfile(d.profile);
       })
       .catch(() => {});
@@ -614,7 +614,7 @@ function PlayerCard({
               {card.title}
             </div>
           ) : (
-            <div className='text-[9px] uppercase tracking-[0.2em] text-white/55'>Instagib Arena</div>
+            <div className='text-[9px] uppercase tracking-[0.2em] text-white/55'>Elyxion</div>
           )}
         </div>
       </div>
@@ -783,7 +783,7 @@ const INITIAL_HUD: HudState = {
   spectator: null,
 };
 
-export default function InstagibClient() {
+export default function            InstagibClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -959,8 +959,8 @@ function OnboardingModal({
           <h2
             className='font-display text-2xl font-bold uppercase tracking-[0.18em] text-cyan-300'
             style={{ filter: 'drop-shadow(0 0 16px rgba(34,211,238,0.4))' }}
-          >
-            Welcome to the Arena
+          >Welcome to the Elyxion
+
           </h2>
           <p className='mt-1 text-[12px] text-white/50'>One railgun. One shot. Pure movement.</p>
         </div>
@@ -1120,7 +1120,7 @@ function GameView({
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?:            InstagibProfile }) => {
         if (!active || !d.profile) return;
         const card = buildCardPayload(d.profile, settings);
         gameRef.current?.setCardPayload?.(card);

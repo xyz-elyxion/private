@@ -1,4 +1,4 @@
-# Instagib Arena — Plan
+# Elyxion — Plan
 
 > **Historical design doc.** Written while the game lived in the Holocron/Bespick
 > arcade. Parts are aspirational and diverged from what shipped — the
@@ -247,4 +247,4 @@ Each phase ends with something playable, even if ugly.
 - Workspace tooling: this repo isn't currently a monorepo. Do we add pnpm/turbo, or just symlink a `packages/` directory consumed via tsconfig paths? **Recommendation:** start with tsconfig path aliases to keep tooling change small; promote to a real workspace when a second consumer of `instagib-shared` appears.
 - Authentication for game-server connections: short-lived JWT minted by Next API, validated by orchestrator on connect. Clerk session does not extend to the game-server process directly.
 - Match persistence schema: extend the existing arcade match tables vs. dedicated `instagib_match`? **Recommendation:** dedicated table — frag-by-frag detail won't fit the existing shape, and arcade aggregates can read from it.
-- Naming. "Instagib Arena" is the working title; if there's a Bespick brand pun, swap before going public.
+- Naming. "Elyxion" is the working title; if there's a Bespick brand pun, swap before going public.
