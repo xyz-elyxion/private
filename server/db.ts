@@ -298,7 +298,7 @@ const recoveryIssueStmt = sqlite.prepare(`
   VALUES (@playerId, @code, @secret, @now, @expiresAt)`);
 const recoveryVerifyStmt = sqlite.prepare(
   `SELECT id, player_id, secret, used, expires_at FROM instagib_recovery_codes
-    WHERE code = $1 AND used = 0 AND expires_at > $2`);
+    WHERE code = ? AND used = 0 AND expires_at > ?`);
 const recoveryRedeemStmt = sqlite.prepare(
   `UPDATE instagib_recovery_codes SET used = 1, used_at = @now WHERE id = @id AND used = 0`);
 const recoveryForPlayerStmt = sqlite.prepare(
