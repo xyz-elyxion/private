@@ -15,6 +15,36 @@
     />
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#0a0a0a" />
+
+    <!-- CrazyGames QA metadata. This is a PEGI 12 title (stylised sci-fi
+         violence — no blood, no gore, no realistic harm to humans) and it
+         in-app-purchases credits for cosmetics, which are cosmetic-only. -->
+    <meta name="crazygames" content="pegi-12;in-app-purchases" />
+
+    <!-- CrazyGames SDK v3 (https://docs.crazygames.com/sdk/intro/). Loads
+         before the game bundle. On localhost the SDK is skipped so plain dev
+         stays clean (no demo ads / fake users); append ?cgdev=1 to the URL to
+         opt in to the SDK's "local" environment (simulated ads + login) when
+         testing the integration. On any other host — including production and
+         CrazyGames itself — the script is included; if the host is not a
+         CrazyGames domain the SDK's environment resolves to "disabled" and
+         src/crazygames/index.ts treats every call as a safe no-op, so the game
+         remains fully playable outside CrazyGames. -->
+    <script>
+      (function () {
+        try {
+          var host = window.location.hostname;
+          var isLocal = host === 'localhost' || host === '127.0.0.1';
+          var forceDev = /[?&]cgdev=1/.test(window.location.search);
+          if (isLocal && !forceDev) return; // plain local dev → no SDK
+          document.write(
+            '<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"><\\/script>'
+          );
+        } catch (e) {
+          /* never block game boot */
+        }
+      })();
+    </script>
     <title>Elyxion — Free Browser FPS, One Shot One Kill</title>
     <link rel="canonical" href="https://instagib.win/" />
 

@@ -27,6 +27,8 @@ export type CosmeticSource =
   | { type: 'admin' }; // staff-exclusive: auto-granted to admins, never earnable/buyable
 
 // ── Kill-effect slot ────────────────────────────────────────────────────────
+import { assetBase } from './urls';
+
 // The visual that plays at the victim when you frag them. Each style is a
 // self-contained recipe in EffectsManager.spawnKillBurst().
 export type KillEffectStyle =
@@ -206,7 +208,7 @@ export function isSpawnEffect(id: string): boolean {
 // a path under public/; null = bare-headed (the free default). Models are
 // CC-BY 3.0 from Poly Pizza — see public/models/instagib/hats/ATTRIBUTION.md.
 export const DEFAULT_HAT = 'hat.none';
-const HAT_DIR = '/models/instagib/hats';
+const HAT_DIR = `${assetBase()}/models/instagib/hats`;
 
 export type HatCosmetic = {
   id: string;

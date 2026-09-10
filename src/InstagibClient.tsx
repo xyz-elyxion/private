@@ -88,6 +88,30 @@ import type {
   TrainingHud,
 } from './game/types';
 import { FragPopup } from './game/kill-overlays';
+import {
+  initCrazyGames,
+  cgGameplayStart,
+  cgGameplayStop,
+  cgRequestMidgameAd,
+  cgAdInFlight,
+  cgUpdateRoom,
+  cgLeftRoom,
+  cgInviteLink,
+  cgInviteParams,
+  cgGetInviteParam,
+  cgIsInstantMultiplayer,
+  cgGameSettings,
+  onCgGameSettings,
+  cgGetUser,
+  cgGetUserToken,
+  cgShowAuthPrompt,
+  onCgAuth,
+  onCgJoinRoom,
+  cgStorage,
+  cgLoadingStart,
+  cgLoadingStop,
+  isOnCrazyGames,
+} from './crazygames';
 import { PodiumScene, type PodiumWinner } from './game/podium';
 import { CharacterPreview, type PreviewCosmetics } from './game/character-preview';
 import {
@@ -125,6 +149,7 @@ import {
   type HatCosmetic,
 } from './game/cosmetics';
 import { levelProgress } from './game/progression';
+import { apiUrl, defaultWsUrl } from './game/urls';
 
 export type CrosshairConfig = {
   style: 'cross' | 'cross-dot' | 'dot' | 'circle';
@@ -304,9 +329,9 @@ export type MatchConfig =
 // default multiplayer URL is derived from the current location: ws in dev,
 // wss behind TLS. In dev, Vite proxies /ws to the backend (see vite.config.ts).
 function defaultServerUrl(): string {
-  if (typeof window === 'undefined') return 'ws://localhost:8787/ws/instagib';
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}/ws/instagib`;
+  // CRAZYGAMES: when the bundle is hosted cross-origin, the game WebSocket
+  // targets the real backend (VITE_API_BASE build flag) instead of the embed host.
+  return defaultWsUrl();
 }
 
 const DEFAULT_CROSSHAIR: CrosshairConfig = {
@@ -447,7 +472,7 @@ function CardStatsEditor({
   const [profile, setProfile] = useState<InstagibProfile | null>(null);
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?:InstagibProfile }) => {
         if (active && d.profile) setProfile(d.profile);
@@ -637,10 +662,39 @@ function PlayerCard({
   );
 }
 
+// ── CrazyGames account linking (client) ───────────────────────────────
+// Fetch a fresh short-lived SDK user token and POST it to our server, which
+// verifies the signature against CrazyGames' public key and stores the platform
+// userId on the local account. Idempotent; every failure mode is silent —
+// guests (409 no_local_account), SDK-less environments (null token), offline.
+// The CrazyGames JWT is a credential, but the endpoint is same-origin, uses the
+// session cookie, and links (never authenticates) — safe to send.
+async function linkCrazyGamesAccount(): Promise<void> {
+  try {
+    await initCrazyGames();
+    const token = await cgGetUserToken();
+    if (!token) return; // signed out / SDK unavailable / disabled environment
+    await fetch(apiUrl('/api/auth/crazygames'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ token }),
+    });
+    // 409 (guest / already-linked-elsewhere) and other non-OKs are expected,
+    // non-fatal outcomes — nothing to do.
+  } catch {
+    // best-effort: never surface, never block gameplay
+  }
+}
+
 function loadSettings(): Settings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
   try {
-    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    // cgStorage = CrazyGames data module when available (syncs the save to the
+    // player's CrazyGames account), plain localStorage otherwise. Same keys,
+    // so existing local saves carry over — the data module mirrors guests to
+    // localStorage itself, so no migration is needed.
+    const raw = cgStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<Settings>;
     const merged: Settings = {
@@ -678,7 +732,7 @@ function saveSettings(s: Settings) {
     // ambiguous when testing with two tabs. Each tab regenerates its own until
     // the user types a real one (which is then persisted normally).
     const toSave = AUTO_NAME_RE.test(s.playerName) ? { ...s, playerName: '' } : s;
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(toSave));
+    cgStorage.setItem(SETTINGS_KEY, JSON.stringify(toSave));
   } catch {
     // ignore
   }
@@ -783,11 +837,21 @@ const INITIAL_HUD: HudState = {
   spectator: null,
 };
 
+// Shape of the CrazyGames user mirrored into local React state.
+type CgUserState = { username: string; profilePictureUrl?: string } | null;
+
 export default function InstagibClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // CrazyGames user (null = guest / signed out / SDK unavailable). Drives the
+  // lobby's account chip + avatar and the platform auth prompt.
+  const [cgUser, setCgUser] = useState<CgUserState | null>(null);
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
+  // Auth/onboarding already handled the first-run gate — this flag just marks
+  // "the player got a chance to create an account", used to time the auto-link.
+  // (The link call itself is best-effort and idempotent.)
+  const didLinkRef = useRef(false);
   const [config, setConfig] = useState<MatchConfig | null>(null);
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
   // Bumped on every match start so GameView remounts a fresh Game (also for
@@ -796,11 +860,105 @@ export default function InstagibClient() {
   // First-run onboarding (pick a name + a controls primer), shown once.
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  // Resolves once the CrazyGames init promise has settled (or the SDK is
+  // absent) — used to sequence the invite join below.
+  const [sdkReady, setSdkReady] = useState(false);
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
 
+  /* ── CrazyGames boot-time effects ────────────────────────────────────
+   * 1. SDK invite params (inviteParams from the SDK beat the plain ?join= URL
+   *    because CrazyGames links may carry extra routing state).
+   * 2. Instant-multiplayer entry (isInstantMultiplayer) → quick-match room.
+   * 3. Mirror the CrazyGames user into local state (auto login support).
+   * 4. Live settings changes (muteAudio / disableChat) from the platform. */
+  useEffect(() => {
+    let cancelled = false;
+    void initCrazyGames().then(() => {
+      if (cancelled) return;
+      // Invite via SDK: the SDK parsed the invite-link params on CrazyGames.
+      // Falls back to the plain ?join= URL param the game has always supported.
+      const sdkRoom = cgGetInviteParam('roomId') ?? cgInviteParams()?.roomId ?? null;
+      const urlRoom = new URLSearchParams(window.location.search).get('join');
+      const code = sdkRoom || urlRoom;
+      if (code && /^[A-Z0-9]{3,10}$/i.test(code)) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('join');
+        window.history.replaceState({}, '', url.toString());
+        pendingJoinRef.current = {
+          mode: 'multiplayer',
+          mapId: randomMapId(),
+          serverUrl: defaultServerUrl(),
+          roomId: code.toUpperCase(),
+        };
+      }
+      // Instant multiplayer: CrazyGames asked us to drop the player straight
+      // into a joinable multiplayer location ("Play with friends" entry).
+      if (cgIsInstantMultiplayer() && !pendingJoinRef.current) {
+        pendingJoinRef.current = {
+          mode: 'multiplayer',
+          mapId: randomMapId(),
+          serverUrl: defaultServerUrl(),
+          roomId: '', // empty roomId → the game server resolves it on join
+        };
+      }
+      setSdkReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // CrazyGames user (auto login): fetch once, then follow live auth changes
+  // (player logging in mid-session via the platform). Always null-safe.
+  useEffect(() => {
+    let active = true;
+    void cgGetUser().then((u) => {
+      if (active) setCgUser(u);
+    });
+    const off = onCgAuth((u) => {
+      if (active) setCgUser(u);
+    });
+    return () => {
+      active = false;
+      off();
+    };
+  }, []);
+
+  // Platform settings changes: muteAudio must take priority over the in-game
+  // audio toggle, and disableChat hides chat UI (multiplayer requirement).
+  // Platform on/off transitions restore the player's own preference (an explicit
+  // toggle inside the game is always honored; the platform only overrides).
+  useEffect(() => {
+    const off = onCgGameSettings((s) => {
+      if (s.muteAudio) {
+        setSettings((prev) => (prev.volume === 0 ? prev : { ...prev, volume: 0 }));
+      }
+      if (s.disableChat) {
+        setSettings((prev) => (prev.hideChat ? prev : { ...prev, hideChat: true }));
+      } else {
+        // Platform re-enabled chat (page reload / setting change): restore the
+        // player's persisted preference unless they hid chat themselves.
+        setSettings((prev) => {
+          if (!prev.hideChat) return prev;
+          const saved = loadSettings().hideChat;
+          return saved ? prev : { ...prev, hideChat: false };
+        });
+      }
+    });
+    // Apply the snapshot too (the listener only fires on change).
+    const snap = cgGameSettings();
+    if (snap.muteAudio) setSettings((prev) => (prev.volume === 0 ? prev : { ...prev, volume: 0 }));
+    if (snap.disableChat) setSettings((prev) => (prev.hideChat ? prev : { ...prev, hideChat: true }));
+    return off;
+  }, []);
+
   // Load persisted settings once on mount + backfill window-dependent defaults.
+  // Only persist once the initial load has landed — otherwise this effect's
+  // first run would write DEFAULT_SETTINGS over the player's real save (and,
+  // on CrazyGames, race the data module's cloud sync).
+  const settingsLoadedRef = useRef(false);
   useEffect(() => {
     const loaded = loadSettings();
     if (!loaded.serverUrl) loaded.serverUrl = defaultServerUrl();
@@ -809,46 +967,49 @@ export default function InstagibClient() {
       loaded.playerName = `Player-${stamp}`;
     }
     setSettings(loaded);
+    settingsLoadedRef.current = true;
     // First visit (no onboarded flag) → show the welcome / name / controls primer.
     const firstRun =
       typeof window !== 'undefined' && !window.localStorage.getItem('instagib-onboarded');
     if (firstRun) setShowOnboarding(true);
-
-    // Invite link: ?join=ROOMID drops straight into that room. The map is
-    // unknown until the server confirms the join (Game adopts it then), so we
-    // pass a placeholder map; clear the param so a refresh doesn't re-join.
-    if (typeof window !== 'undefined') {
-      const code = new URLSearchParams(window.location.search).get('join');
-      if (code && /^[A-Z0-9]{3,10}$/i.test(code)) {
-        const url = new URL(window.location.href);
-        url.searchParams.delete('join');
-        window.history.replaceState({}, '', url.toString());
-        const joinCfg: MatchConfig = {
-          mode: 'multiplayer',
-          mapId: randomMapId(),
-          serverUrl: loaded.serverUrl || defaultServerUrl(),
-          roomId: code.toUpperCase(),
-        };
-        // On a first-run invite, hold the join until onboarding finishes so the
-        // newcomer isn't dropped straight into pointer-lock with no primer.
-        if (firstRun) pendingJoinRef.current = joinCfg;
-        else startMatch(joinCfg);
-      }
-    }
   }, []);
 
   useEffect(() => {
+    if (!settingsLoadedRef.current) return;
     saveSettings(settings);
   }, [settings]);
 
   // Your in-game name is your identity: the account username when logged in,
-  // or "Guest" otherwise. This is the source of truth (overrides any old local
-  // name) so guests always read "Guest" and accounts always read their handle.
+  // the CrazyGames username for platform players ("CG usernames must be
+  // displayed in-game" — multiplayer requirement), or "Guest" otherwise. This
+  // is the source of truth (overrides any old local name).
   useEffect(() => {
     if (!auth.ready) return;
-    const name = auth.account?.username ?? 'Guest';
+    const name = auth.account?.username ?? cgUser?.username ?? 'Guest';
     setSettings((s) => (s.playerName === name ? s : { ...s, playerName: name }));
+  }, [auth.ready, auth.account, cgUser]);
+
+  // ── CrazyGames account linking ──────────────────────────────────────────
+  // Whenever a local account exists AND the player is signed into CrazyGames,
+  // push a fresh SDK user token to /api/auth/crazygames. The server verifies it
+  // against CrazyGames' public key and stores the platform userId on the local
+  // account (progress ↔ platform identity binding). Best-effort: guests 409,
+  // SDK-less environments no-op, failures are silent — never blocks gameplay.
+  useEffect(() => {
+    if (!auth.ready) return;
+    if (!auth.account) {
+      didLinkRef.current = false;
+      return;
+    }
+    if (didLinkRef.current) return;
+    didLinkRef.current = true;
+    void linkCrazyGamesAccount();
   }, [auth.ready, auth.account]);
+  // A platform login mid-session links too (the account usually arrives right
+  // after via auth.refresh, but link even for guest→CG-login).
+  useEffect(() => {
+    if (cgUser) void linkCrazyGamesAccount();
+  }, [cgUser]);
 
   const startMatch = useCallback((cfg: MatchConfig) => {
     setLastResult(null);
@@ -856,6 +1017,20 @@ export default function InstagibClient() {
     setPlayId((n) => n + 1);
     setView('playing');
   }, []);
+
+  // A held SDK invite / instant-multiplayer join proceeds once the SDK resolved
+  // (and after onboarding for first-timers, so the primer is still seen).
+  useEffect(() => {
+    if (!sdkReady) return;
+    if (showOnboarding) return; // finishOnboarding re-runs this
+    const cfg = pendingJoinRef.current;
+    if (cfg) {
+      pendingJoinRef.current = null;
+      startMatch(cfg);
+    }
+  }, [sdkReady, showOnboarding]);
+
+
 
   // Leave to the lobby. GameView already submitted stats; we only carry the
   // result through for the lobby's "last match" banner (no re-submit here).
@@ -911,7 +1086,19 @@ export default function InstagibClient() {
         onStart={startMatch}
         lastResult={lastResult}
         account={auth.account}
+        cgUser={cgUser}
         onOpenLogin={() => setLoginOpen(true)}
+        onCgLogin={() => {
+          // CrazyGames' own login/register popup — no external provider, and
+          // the SDK refreshes the page automatically on platform login.
+          void cgShowAuthPrompt().then((u) => {
+            if (u) setCgUser(u);
+            // Auto-link: push the fresh platform identity to our server so
+            // progress is bound to the CrazyGames account (best-effort; the
+            // guest path 409s server-side and simply doesn't link).
+            void linkCrazyGamesAccount();
+          });
+        }}
         onLogout={auth.logout}
       onOpenRecovery={() => setRecoveryOpen(true)}
       />
@@ -1049,6 +1236,9 @@ function GameView({
     // the results podium, then continues to the server-driven map vote.
     const game = new Game(canvas, listener, (result) => {
       setEndResult(result);
+      // happytime() — platform celebration on a special moment. A match win is
+      // exactly that; nothing else in the session earns it (docs: use sparingly).
+      if (result.won) void import('./crazygames').then((cg) => cg.cgHappytime());
       if (isChallenge) {
         // Weekly challenge: submit the speedrun (win time, or kills on a loss) to
         // the weekly board + upload the full run's replay. Never touches career
@@ -1067,6 +1257,18 @@ function GameView({
       if (config.mode === 'multiplayer') {
         setPodiumScores(hudRef.current.scores);
         setOnlineResults(true);
+        // CrazyGames midgame ad on ONLINE match end — a natural, player-friendly
+        // break (frag limit hit → results podium). Skipped offline (bots /
+        // training / challenge) so solo runs are never interrupted. The wrapper
+        // enforces its own cooldown + busy guard, so repeat match-ends can't
+        // double-fire; the mute/unmute pair below satisfies the SDK's audio
+        // requirement even though the platform also soft-pauses the page.
+        if (isOnCrazyGames()) {
+          void cgRequestMidgameAd({
+            onAdStart: () => gameRef.current?.setMasterVolume?.(0),
+            onAdEnd: () => gameRef.current?.setMasterVolume?.(settings.volume),
+          });
+        }
       }
     });
     gameRef.current = game;
@@ -1118,7 +1320,7 @@ function GameView({
   // the local kill-confirm flex.
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?:InstagibProfile }) => {
         if (!active || !d.profile) return;
@@ -1191,6 +1393,34 @@ function GameView({
     !hud.matchOver &&
     !onlineResults &&
     !joinError;
+
+  /* ── CrazyGames room reporting (multiplayer requirement) ─────────────
+   * Tell the platform which room we're in so the invite button, platform
+   * notifications, and friends list work. isJoinable mirrors the room's real
+   * capacity so late joiners get rejected by the game server, not the UI. */
+  const isMp = config.mode === 'multiplayer';
+  const roomId = isMp ? config.roomId : '';
+  useEffect(() => {
+    if (!isMp) return;
+    if (joinError) {
+      import('./crazygames').then((cg) => cg.cgUpdateRoom({ roomId, isJoinable: false }));
+      return;
+    }
+    if (!roomId) return;
+    const full = hud.netPeers >= MAX_PLAYERS - 1; // self + peers
+    import('./crazygames').then((cg) =>
+      cg.cgUpdateRoom({
+        roomId,
+        isJoinable: !full && !hud.matchOver && !onlineResults,
+        inviteParams: { roomId },
+      }),
+    );
+  }, [isMp, roomId, hud.netPeers, hud.matchOver, onlineResults, joinError]);
+  useEffect(() => {
+    return () => {
+      import('./crazygames').then((cg) => cg.cgLeftRoom());
+    };
+  }, []);
   useEffect(() => {
     if (disconnected && typeof document !== 'undefined' && document.pointerLockElement) {
       document.exitPointerLock();
@@ -1208,6 +1438,31 @@ function GameView({
       document.exitPointerLock();
     }
   }, [hud.matchOver, onlineResults]);
+
+  /* ── CrazyGames gameplay session tracking ────────────────────────────
+   * gameplayStart on every entry into active play, gameplayStop on every
+   * break (paused / match over / disconnected / waiting alone). The game
+   * doesn't "pause" in menus in a true FPS sense, but CrazyGames' resource
+   * rules still apply — menus + results + disconnects count as breaks. */
+  useEffect(() => {
+    void import('./crazygames').then((cg) => cg.cgLoadingStop());
+  }, []);
+  const inActivePlay =
+    hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && !disconnected && !hud.pom;
+  useEffect(() => {
+    let active = true;
+    void import('./crazygames').then((cg) => {
+      if (!active) return;
+      if (inActivePlay) cg.cgGameplayStart();
+      else cg.cgGameplayStop();
+    });
+    return () => {
+      active = false;
+    };
+  }, [inActivePlay]);
+  useEffect(() => {
+    void import('./crazygames').then((cg) => cg.cgGameplayStop());
+  }, [hud.matchOver != null, onlineResults, disconnected]);
 
   return (
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
@@ -1733,7 +1988,7 @@ function Locker({
 
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
       .then((d: { profile?: InstagibProfile }) => {
         if (!active || !d.profile) return;
@@ -1774,10 +2029,10 @@ function Locker({
     setBusy(id);
     setNote(null);
     try {
-      const res = await fetch('/api/equip', {
+      const res = await fetch(apiUrl('/api/equip'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify({ slot: sl.slot, id }),
       });
       const d = (await res.json()) as { ok?: boolean; equipped?: Record<string, string> };
@@ -1795,10 +2050,10 @@ function Locker({
     setBusy(id);
     setNote(null);
     try {
-      const res = await fetch('/api/shop/buy', {
+      const res = await fetch(apiUrl('/api/shop/buy'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify({ id }),
       });
       const d = (await res.json()) as {
@@ -1824,7 +2079,7 @@ function Locker({
     setBusy('__case');
     setNote(null);
     try {
-      const res = await fetch('/api/shop/open-case', { method: 'POST', credentials: 'same-origin' });
+      const res = await fetch(apiUrl('/api/shop/open-case'), { method: 'POST', credentials: 'include' });
       const d = (await res.json()) as {
         ok?: boolean;
         reason?: string;
@@ -2700,11 +2955,26 @@ function MapVoteOverlay({
   );
 }
 
-// Build a shareable ?join= invite URL for a room code (used by the invite modal
-// and the waiting-for-opponents overlay).
-function inviteLink(roomId: string): string {
-  if (typeof window === 'undefined') return `?join=${roomId}`;
-  return `${window.location.origin}${window.location.pathname}?join=${roomId}`;
+// Build a shareable invite URL for a room code. On CrazyGames we prefer the
+// SDK-hosted invite link (platform notifications + the friends drawer work
+// with it, and it survives the portal's URL rewriting); elsewhere it's the
+// plain ?join= URL this game has always used.
+function useInviteLink(roomId: string): string {
+  const [link, setLink] = useState(() =>
+    typeof window === 'undefined'
+      ? `?join=${roomId}`
+      : `${window.location.origin}${window.location.pathname}?join=${roomId}`,
+  );
+  useEffect(() => {
+    let active = true;
+    void cgInviteLink({ roomId }).then((sdkLink) => {
+      if (active && sdkLink) setLink(sdkLink);
+    });
+    return () => {
+      active = false;
+    };
+  }, [roomId]);
+  return link;
 }
 
 // Online + the connection dropped mid-match: tell the player the game stalled
@@ -2736,7 +3006,7 @@ function DisconnectedOverlay({ error, onLeave }: { error: boolean; onLeave: () =
 // Online + alone: instead of a silent empty arena, show what's happening and a
 // one-click way to fill the lobby (#6a).
 function WaitingForOpponents({ roomId, onLeave }: { roomId: string; onLeave: () => void }) {
-  const link = inviteLink(roomId);
+  const link = useInviteLink(roomId);
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -4057,7 +4327,10 @@ type InstagibStats = {
 function savedPlayerName(): string | undefined {
   if (typeof window === 'undefined') return undefined;
   try {
-    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    // Same storage bridge as loadSettings: CG data module when on CrazyGames,
+    // localStorage otherwise. Keeps the saved display name in sync across
+    // devices for logged-in CrazyGames users.
+    const raw = cgStorage.getItem(SETTINGS_KEY);
     if (!raw) return undefined;
     const name = (JSON.parse(raw) as Partial<Settings>)?.playerName;
     return typeof name === 'string' && name.trim() ? name.trim() : undefined;
@@ -4092,10 +4365,10 @@ async function submitMatchStats(
     // is cosmetic (for the leaderboard), so send the local display name. The
     // `offline` flag scales XP server-side (practice shouldn't be the best farm).
     // `mode` is recorded on the audit row only (powers the dashboard breakdown).
-    const res = await fetch('/api/stats', {
+    const res = await fetch(apiUrl('/api/stats'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
+      credentials: 'include',
       body: JSON.stringify({ ...result, name: savedPlayerName(), offline, mode }),
     });
     if (!res.ok) return null;
@@ -4136,10 +4409,10 @@ async function submitChallengeRun(
   run: { kills: number; won: boolean; timeMs: number; replay: Uint8Array },
 ): Promise<WeeklyChallengeMe | null> {
   try {
-    const res = await fetch('/api/challenge/weekly', {
+    const res = await fetch(apiUrl('/api/challenge/weekly'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
+      credentials: 'include',
       body: JSON.stringify({ kills: run.kills, won: run.won, timeMs: run.timeMs }),
     });
     if (!res.ok) return null;
@@ -4147,10 +4420,10 @@ async function submitChallengeRun(
     // Upload the replay only when the server says this run now defines the board
     // row (best-effort — a failed upload just leaves the row without a replay).
     if (d.acceptReplay && run.replay.length) {
-      void fetch('/api/challenge/weekly/replay', {
+      void fetch(apiUrl('/api/challenge/weekly/replay'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
-        credentials: 'same-origin',
+        credentials: 'include',
         // Copy into a standalone ArrayBuffer so the typed-array view's offset
         // doesn't ship extra bytes.
         body: run.replay.slice().buffer,
@@ -4360,7 +4633,7 @@ function RankedModal({
 
   const refreshProfile = useCallback(() => {
     if (!account) return;
-    fetch('/api/ranked/me', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/ranked/me'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: RankedProfile; level?: number; eligible?: boolean; minLevel?: number } | null) => {
         setProfile(d?.profile ?? null);
@@ -4371,7 +4644,7 @@ function RankedModal({
         });
       })
       .catch(() => {});
-    fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/ranked/leaderboard'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: RankedLeaderEntry[] } | null) => setLadder(d?.entries ?? []))
       .catch(() => {});
@@ -4585,7 +4858,7 @@ function WeeklyChallengeModal({
   const [watch, setWatch] = useState<{ id: string; name: string } | null>(null);
   useEffect(() => {
     let active = true;
-    fetch('/api/challenge/weekly/leaderboard', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/challenge/weekly/leaderboard'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: WeeklyChallengeEntry[]; me?: WeeklyChallengeMe | null; map?: string; fragLimit?: number } | null) => {
         if (!active || !d) return;
@@ -4735,7 +5008,7 @@ function ReplayViewerOverlay({
       try {
         const res = await fetch(
           `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}`,
-          { credentials: 'same-origin' },
+          { credentials: 'include' },
         );
         if (!res.ok) throw new Error('unavailable');
         const buf = await res.arrayBuffer();
@@ -4933,7 +5206,9 @@ function Lobby({
   onStart,
   lastResult,
   account,
+  cgUser,
   onOpenLogin,
+  onCgLogin,
   onLogout,
   onOpenRecovery,
 }: {
@@ -4942,7 +5217,9 @@ function Lobby({
   onStart: (config: MatchConfig) => void;
   lastResult: MatchResult | null;
   account: Account;
+  cgUser: CgUserState;
   onOpenLogin: () => void;
+  onCgLogin: () => void;
   onLogout: () => void;
   onOpenRecovery: () => void;
 }) {
@@ -5064,6 +5341,27 @@ function Lobby({
     // so typing a name doesn't churn the socket. applyPresence is stable.
   }, [serverUrl, startOnline, applyPresence]);
 
+  /* CrazyGames join-room listener: fires when an already-in-menu player
+   * accepts a platform invite (friends drawer / notification). Route them
+   * into the room described by the params — same flow as a ?join= URL. */
+  useEffect(() => {
+    return onCgJoinRoom((params) => {
+      const code = params?.roomId;
+      if (code && /^[A-Z0-9]{3,10}$/i.test(code)) {
+        startOnline(code.toUpperCase(), randomMapId());
+      }
+    });
+  }, [startOnline]);
+
+  // The lobby is a game break for CrazyGames' resource rules (the match view
+  // fires gameplayStart again when active play resumes — see GameView).
+  useEffect(() => {
+    void cgGameplayStop();
+    return () => {
+      void cgLeftRoom(); // leaving the lobby → we're no longer in any room
+    };
+  }, []);
+
   // Keep the server-side display name fresh without reconnecting.
   useEffect(() => {
     lobbyRef.current?.setName(settings.playerName || 'Player');
@@ -5080,13 +5378,13 @@ function Lobby({
   // Re-pulls whenever a modal that can change them closes (refreshTick).
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?: InstagibProfile }) => {
         if (active && d.profile) setLobbyProfile(d.profile);
       })
       .catch(() => {});
-    fetch('/api/challenges', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/challenges'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ch'))))
       .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
         if (!active || !d.challenges) return;
@@ -5149,14 +5447,40 @@ function Lobby({
                   Log&nbsp;out
                 </button>
               </span>
+            ) : cgUser ? (
+              /* CrazyGames account: username + avatar from the platform, auto-logged-in. */
+              <span className='hidden items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
+                {cgUser.profilePictureUrl && (
+                  <img
+                    src={cgUser.profilePictureUrl}
+                    alt=''
+                    width={20}
+                    height={20}
+                    className='h-5 w-5 rounded-full border border-cyan-400/40'
+                    referrerPolicy='no-referrer'
+                  />
+                )}
+                <span className='inline-flex items-center gap-1 text-cyan-200'>{cgUser.username}</span>
+                <span className='text-white/30'>CrazyGames</span>
+              </span>
             ) : (
-              <button
-                onClick={onOpenLogin}
-                title='Save your progress across devices'
-                className='clip-deck-sm inline-flex items-center gap-1.5 border border-cyan-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:text-cyan-100'
-              >
-                <span className='text-white/40'>Guest ·</span> Log in / Register
-              </button>
+              <span className='hidden items-center gap-2 sm:inline-flex'>
+                {/* Platform login first (on CrazyGames); the in-game account stays available. */}
+                <button
+                  onClick={onCgLogin}
+                  title='Log in with your CrazyGames account'
+                  className='clip-deck-sm inline-flex items-center gap-1.5 border border-emerald-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-200 transition hover:border-emerald-300/70 hover:text-emerald-100'
+                >
+                  Log in with CrazyGames
+                </button>
+                <button
+                  onClick={onOpenLogin}
+                  title='Save your progress across devices'
+                  className='clip-deck-sm inline-flex items-center gap-1.5 border border-cyan-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:text-cyan-100'
+                >
+                  <span className='text-white/40'>Guest ·</span> Account
+                </button>
+              </span>
             )}
             {lobbyProfile && account && (
               <>
@@ -5831,7 +6155,7 @@ function InviteModal({
   onEnter: () => void;
   onClose: () => void;
 }) {
-  const link = inviteLink(roomId);
+  const link = useInviteLink(roomId);
   const inputRef = useRef<HTMLInputElement>(null);
   const [copied, setCopied] = useState<'idle' | 'ok' | 'selected'>('idle');
   const copy = async () => {
@@ -6189,7 +6513,7 @@ function StatsModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/profile')
+    fetch(apiUrl('/api/profile'))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile unavailable'))))
       .then((d: { profile?: InstagibProfile }) => {
         if (!active) return;
@@ -6295,8 +6619,8 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
 
   const load = useCallback(() => {
     Promise.all([
-      fetch('/api/challenges', { credentials: 'same-origin' }),
-      fetch('/api/season', { credentials: 'same-origin' }),
+      fetch(apiUrl('/api/challenges'), { credentials: 'include' }),
+      fetch(apiUrl('/api/season'), { credentials: 'include' }),
     ])
       .then(async ([challengeResponse, seasonResponse]) => {
         if (!challengeResponse.ok || !seasonResponse.ok) throw new Error('challenges');
@@ -6322,10 +6646,10 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
     setClaiming(id);
     setFlash(null);
     try {
-      const res = await fetch('/api/challenges/claim', {
+      const res = await fetch(apiUrl('/api/challenges/claim'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify({ id }),
       });
       const d = (await res.json()) as { ok?: boolean; xpGained?: number; creditsGained?: number };
@@ -6343,10 +6667,10 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
     setClaiming(`season:${tier}`);
     setFlash(null);
     try {
-      const res = await fetch('/api/season/claim', {
+      const res = await fetch(apiUrl('/api/season/claim'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify({ tier }),
       });
       const d = (await res.json()) as { ok?: boolean; cosmeticId?: string };
@@ -6554,7 +6878,7 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
     let active = true;
     setState('loading');
     if (window === 'ranked') {
-      fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+      fetch(apiUrl('/api/ranked/leaderboard'), { credentials: 'include' })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ranked unavailable'))))
         .then((d: { entries?: RankedLeaderEntry[]; me?: RankedProfile | null }) => {
           if (!active) return;
@@ -6570,7 +6894,7 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
       };
     }
     const modeQuery = mode === 'all' ? '' : `&mode=${mode}`;
-    fetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25${modeQuery}`, { credentials: 'same-origin' })
+    fetch(apiUrl(`/api/leaderboard?sort=${sort}&window=${window}&limit=25${modeQuery}`), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
       .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
         if (!active) return;
@@ -6740,10 +7064,10 @@ type AuditEntry = {
 
 async function adminPost(path: string, body: object): Promise<{ ok: boolean; error?: string }> {
   try {
-    const r = await fetch(`/api/admin/${path}`, {
+    const r = await fetch(apiUrl(`/api/admin/${path}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
+      credentials: 'include',
       body: JSON.stringify(body),
     });
     if (r.ok) return { ok: true };
@@ -6765,7 +7089,7 @@ function AdminModal({ onClose }: { onClose: () => void }) {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
 
   const refreshAudit = useCallback(() => {
-    fetch('/api/admin/audit?limit=25', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/admin/audit?limit=25'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('audit'))))
       .then((d: { events?: AuditEntry[] }) => setAudit(Array.isArray(d.events) ? d.events : []))
       .catch(() => setAudit([]));
@@ -6780,8 +7104,8 @@ function AdminModal({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setNote(null);
     try {
-      const r = await fetch(`/api/admin/lookup?username=${encodeURIComponent(q)}`, {
-        credentials: 'same-origin',
+      const r = await fetch(apiUrl(`/api/admin/lookup?username=${encodeURIComponent(q)}`), {
+        credentials: 'include',
       });
       if (r.ok) {
         setTarget((await r.json()) as AdminLookup);
@@ -7455,7 +7779,7 @@ function AnnouncerPackField({
   const [unlocked, setUnlocked] = useState<Set<string> | null>(null);
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: { unlocked?: string[] } } | null) => {
         if (active) setUnlocked(new Set(d?.profile?.unlocked ?? [])); // empty (e.g. guest) → only default

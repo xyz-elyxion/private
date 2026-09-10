@@ -2856,3 +2856,35 @@ export function getWeeklyChallengeMe(
   entry.hasReplay = weeklyReplayPlayerIds(wk).has(playerId);
   return { ...entry, rank };
 }
+
+// ── CrazyGames account linking ───────────────────────────────────────────────
+// The platform userId is stored on the local account row (one CrazyGames
+// identity per local account). Recorded when the client POSTs a verified SDK
+// user token to /api/auth/crazygames (server/crazygames.ts) so support can
+// resolve a platform user back to their progression, and so platform purchase
+// validation (Xsolla, when enabled) keys off the same id. Same no-migration
+// pattern as the moderation columns: additive ALTER guarded by PRAGMA.
+{
+  const cols = new Set(
+    (sqlite.prepare('PRAGMA table_info(instagib_users)').all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+  if (!cols.has('crazygames_user_id'))
+    sqlite.exec('ALTER TABLE instagib_users ADD COLUMN crazygames_user_id TEXT');
+}
+const linkCgStmt = sqlite.prepare(
+  'UPDATE instagib_users SET crazygames_user_id = ? WHERE id = ?',
+);
+const accountByCgStmt = sqlite.prepare(
+  'SELECT id, username, is_admin, is_verified FROM instagib_users WHERE crazygames_user_id = ?',
+);
+
+export function linkCrazyGamesAccount(accountId: string, cgUserId: string): void {
+  linkCgStmt.run(cgUserId, accountId);
+}
+
+/** Find the local account already linked to this CrazyGames userId (or undefined). */
+export function findUserByCrazyGamesId(cgUserId: string): AccountInfo | undefined {
+  return toAccountInfo(accountByCgStmt.get(cgUserId) as FlagsRow | undefined);
+}

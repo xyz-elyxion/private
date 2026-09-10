@@ -31,10 +31,17 @@ const SESSION_COOKIE = 'igsession';
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
 const SESSION_MAX_AGE = 1000 * 60 * 60 * 24 * 365; // 1 year
 
+// CRAZYGAMES: when the API is called cross-origin (bundle hosted on the embed
+// origin, backend here), a SameSite=Lax cookie is dropped on those requests.
+// Setting CG_API_ORIGINS opts into SameSite=None (Secure is mandatory then) so
+// the session rides along; same-origin deploys keep the tighter default.
+const crossOriginCookies = (process.env.CG_API_ORIGINS ?? '')
+  .split(',')
+  .some((o) => /^https:\/\//i.test(o.trim()));
 const cookieOpts = {
   httpOnly: true,
-  sameSite: 'lax' as const,
-  secure: process.env.NODE_ENV === 'production',
+  sameSite: (crossOriginCookies ? 'none' : 'lax') as 'none' | 'lax',
+  secure: process.env.NODE_ENV === 'production' || crossOriginCookies,
   maxAge: SESSION_MAX_AGE,
   path: '/',
 };

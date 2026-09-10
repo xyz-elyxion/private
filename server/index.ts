@@ -21,6 +21,7 @@ import { challengeRouter } from './challenge';
 import { seasonRouter } from './season';
 import { feedbackRouter } from './feedback';
 import { authRouter, adminUsernamesFromEnv } from './auth';
+import { crazyGamesRouter } from './crazygames';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
 import { attachInstagibWs } from './instagib-game';
@@ -68,6 +69,9 @@ const isAllowedWsOrigin = (
     const originUrl = new URL(origin);
     const base = process.env.APP_BASE_URL;
     if (base && originUrl.origin === new URL(base).origin) return true;
+    // CRAZYGAMES cross-origin hosting: the embed origins allowed to call the
+    // API (CG_API_ORIGINS) may also open the game socket.
+    if (API_EMBED_ORIGINS.includes(originUrl.origin)) return true;
     // In dev, trust loopback AND private-LAN origins so LAN testing works
     // regardless of how the dev proxy rewrites the Host header.
     if (dev && isPrivateHost(originUrl.hostname)) return true;
@@ -126,15 +130,19 @@ const CSP_BASE = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
-  "img-src 'self' data: blob:",
+  "img-src 'self' data: blob: https://avatars.crazygames.com https://*.crazygames.com",
   "media-src 'self'",
-  dev ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'",
+  // CrazyGames SDK script (index.html) + its ad/banners: required when the game
+  // runs on our origin with the SDK enabled (QA runs, embeds); harmless when off.
+  "script-src 'self' https://sdk.crazygames.com" + (dev ? " 'unsafe-inline'" : ''),
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   // blob:/data: are needed by three.js: GLTFLoader decodes GLB-embedded textures
   // (e.g. the character model) by creating a blob: URL and fetch()-ing it, which
   // connect-src governs — without blob: those textures silently fail to load.
-  "connect-src 'self' blob: data:",
+  // CrazyGames SDK endpoints (ads, user, data) when the SDK is enabled here.
+  "connect-src 'self' blob: data: https://sdk.crazygames.com https://*.crazygames.com",
+  "frame-src https://sdk.crazygames.com https://*.crazygames.com",
   "worker-src 'self' blob:",
   "form-action 'self'",
 ].join('; ');
@@ -157,6 +165,44 @@ app.use((req, res, next) => {
 
 app.use(cookieParser());
 app.use(express.json({ limit: '16kb' }));
+
+// ── Cross-origin API hosting (CrazyGames) ────────────────────────────────
+// When the bundle runs on CrazyGames' domain it still needs accounts,
+// progression, and stats — served from THIS origin (VITE_API_BASE at build
+// time). Those are credentialed cross-origin calls, so echo the requester's
+// origin and allow the session cookie (SameSite=Lax would otherwise be dropped
+// on the cross-site POST). The CG_API_ORIGINS env var lists the embed origins
+// that may call the API (comma-separated, e.g. https://www.crazygames.com); the
+// server's own origin is always allowed implicitly. No cors dependency needed.
+const API_EMBED_ORIGINS = (process.env.CG_API_ORIGINS ?? '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter((o) => /^https:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(o));
+const hasApiEmbeds = API_EMBED_ORIGINS.length > 0;
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (
+    hasApiEmbeds &&
+    typeof origin === 'string' &&
+    origin !== '' &&
+    API_EMBED_ORIGINS.includes(origin)
+  ) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Vary', 'Origin');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization',
+    );
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  }
+  // Preflight for credentialed POSTs from the embed origins.
+  if (req.method === 'OPTIONS' && res.getHeader('Access-Control-Allow-Origin')) {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, build: hasBuild });
@@ -184,6 +230,7 @@ app.use('/api', rankedRouter);
 app.use('/api', challengeRouter);
 app.use('/api', seasonRouter);
 app.use('/api', feedbackRouter);
+app.use('/api', crazyGamesRouter); // CrazyGames account linking (POST /api/auth/crazygames)
 app.use('/api/admin', adminRouter);
 
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;

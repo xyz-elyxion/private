@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { CrosshairMark } from '../pages/Landing';
+import { apiUrl } from '../game/urls';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,8 +88,8 @@ export default function PublicProfile() {
   useEffect(() => {
     if (!username) return;
     let active = true;
-    fetch(`/api/players/${encodeURIComponent(username)}`, {
-      credentials: 'same-origin',
+    fetch(apiUrl(`/api/players/${encodeURIComponent(username)}`), {
+      credentials: 'include',
     })
       .then((r) => {
         if (r.status === 404) throw new Error('not_found');

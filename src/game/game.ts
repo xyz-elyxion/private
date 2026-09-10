@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
+import { assetUrl } from './urls';
 import {
   BotManager,
   loadBotModel,
@@ -158,7 +159,7 @@ export type NetMatchEvent =
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
-const BOT_MODEL_URL = '/models/instagib/soldier.glb';
+const BOT_MODEL_URL = assetUrl('/models/instagib/soldier.glb');
 // Stream our position at the sim-tick rate (64Hz) rather than the 32Hz snapshot
 // rate. The server samples whatever pos it last received when it builds each
 // 32Hz snapshot; if we only send at 32Hz those two unsynchronized clocks beat

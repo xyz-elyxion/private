@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { apiUrl } from './game/urls';
 
 // Client auth: guest by default, optional account. The session lives in an
 // httpOnly cookie set by the server, so the client only holds the username (or
@@ -21,10 +22,10 @@ async function post(
   body: object,
 ): Promise<{ ok: boolean; error?: string; data?: AuthResponse }> {
   try {
-    const r = await fetch(path, {
+    const r = await fetch(apiUrl(path), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
+      credentials: 'include',
       body: JSON.stringify(body),
     });
     const d = await r.json().catch(() => ({}));
@@ -41,7 +42,7 @@ export function useAuth(): AuthApi {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/auth/me', { credentials: 'same-origin' })
+    fetch(apiUrl('/api/auth/me'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : { user: null }))
       .then((d: { user: Account }) => {
         if (active) setAccount(d.user ?? null);

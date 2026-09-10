@@ -65,7 +65,7 @@ type LiveCounts = { online: number; inMatch: number; rooms: number };
 
 async function getJSON<T>(url: string): Promise<T | null> {
   try {
-    const r = await fetch(url, { credentials: 'same-origin' });
+    const r = await fetch(url, { credentials: 'include' });
     if (!r.ok) return null;
     return (await r.json()) as T;
   } catch {
@@ -721,7 +721,7 @@ async function postJSON<T>(url: string, body: object): Promise<T | null> {
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
+      credentials: 'include',
       body: JSON.stringify(body),
     });
     if (!r.ok) return null;

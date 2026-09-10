@@ -51,7 +51,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
   // Load existing codes for the current account.
   useEffect(() => {
     let active = true;
-    fetch('/api/recovery/codes', { credentials: 'same-origin' })
+    fetch('/api/recovery/codes', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('fetch'))))
       .then((d: { codes?: RecoveryCode[] }) => {
         if (active) setCodes((d.codes ?? []).filter((c) => !c.used));
@@ -71,7 +71,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
       const r = await fetch('/api/recovery/issue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify({}),
       });
       const d = (await r.json()) as IssueResult;
@@ -80,7 +80,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
         setIssueExpires(d.expiresAt);
         setTab(TAB.CODES);
         // Refresh the codes list.
-        const r2 = await fetch('/api/recovery/codes', { credentials: 'same-origin' });
+        const r2 = await fetch('/api/recovery/codes', { credentials: 'include' });
         if (r2.ok) {
           const d2 = (await r2.json()) as { codes?: RecoveryCode[] };
           setCodes((d2.codes ?? []).filter((c) => !c.used));
@@ -101,7 +101,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
       const r = await fetch('/api/recovery/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify({ code: verifyCode.trim().toLowerCase() }),
       });
       const d = (await r.json()) as VerifyResult;
@@ -133,14 +133,14 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
       const r = await fetch('/api/recovery/redeem', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify({ code: verifyCode.trim().toLowerCase() }),
       });
       if (r.ok) {
         setError(null);
         setTab(TAB.CODES);
         // Refresh codes.
-        const r2 = await fetch('/api/recovery/codes', { credentials: 'same-origin' });
+        const r2 = await fetch('/api/recovery/codes', { credentials: 'include' });
         if (r2.ok) {
           const d2 = (await r2.json()) as { codes?: RecoveryCode[] };
           setCodes((d2.codes ?? []).filter((c) => !c.used));

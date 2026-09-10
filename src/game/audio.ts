@@ -1,4 +1,5 @@
 import { announcerVariantCount } from './announcer-lines';
+import { assetUrl } from './urls';
 
 export type SoundClipName =
   | 'fire'
@@ -39,26 +40,26 @@ export const DEFAULT_ANNOUNCER_PACK: AnnouncerPackId = 'legacy';
 // User-supplied .ogg files override the procedural / TTS fallback when present.
 // Drop CC-licensed clips at these public/ paths. See plan §6.
 export const SOUND_URLS: Record<SoundClipName, string> = {
-  'fire':          '/sounds/instagib/rail-fire.ogg',
-  'hit':           '/sounds/instagib/hit.ogg',
-  'kill':          '/sounds/instagib/kill.ogg',
-  'reload-ready':  '/sounds/instagib/reload-ready.ogg',
-  'first-blood':   '/sounds/instagib/first-blood.ogg',
-  'double-kill':   '/sounds/instagib/double-kill.ogg',
-  'triple-kill':   '/sounds/instagib/triple-kill.ogg',
-  'quad-kill':     '/sounds/instagib/quad-kill.ogg',
-  'penta-kill':    '/sounds/instagib/penta-kill.ogg',
-  'killing-spree': '/sounds/instagib/killing-spree.ogg',
-  'rampage':       '/sounds/instagib/rampage.ogg',
-  'dominating':    '/sounds/instagib/dominating.ogg',
-  'unstoppable':   '/sounds/instagib/unstoppable.ogg',
-  'godlike':       '/sounds/instagib/godlike.ogg',
-  'headshot':      '/sounds/instagib/headshot.ogg',
-  'humiliation':   '/sounds/instagib/humiliation.ogg',
-  'comeback':      '/sounds/instagib/comeback.ogg',
-  'match-point':   '/sounds/instagib/match-point.ogg',
-  'victory':       '/sounds/instagib/victory.ogg',
-  'defeat':        '/sounds/instagib/defeat.ogg',
+  'fire':          assetUrl('/sounds/instagib/rail-fire.ogg'),
+  'hit':           assetUrl('/sounds/instagib/hit.ogg'),
+  'kill':          assetUrl('/sounds/instagib/kill.ogg'),
+  'reload-ready':  assetUrl('/sounds/instagib/reload-ready.ogg'),
+  'first-blood':   assetUrl('/sounds/instagib/first-blood.ogg'),
+  'double-kill':   assetUrl('/sounds/instagib/double-kill.ogg'),
+  'triple-kill':   assetUrl('/sounds/instagib/triple-kill.ogg'),
+  'quad-kill':     assetUrl('/sounds/instagib/quad-kill.ogg'),
+  'penta-kill':    assetUrl('/sounds/instagib/penta-kill.ogg'),
+  'killing-spree': assetUrl('/sounds/instagib/killing-spree.ogg'),
+  'rampage':       assetUrl('/sounds/instagib/rampage.ogg'),
+  'dominating':    assetUrl('/sounds/instagib/dominating.ogg'),
+  'unstoppable':   assetUrl('/sounds/instagib/unstoppable.ogg'),
+  'godlike':       assetUrl('/sounds/instagib/godlike.ogg'),
+  'headshot':      assetUrl('/sounds/instagib/headshot.ogg'),
+  'humiliation':   assetUrl('/sounds/instagib/humiliation.ogg'),
+  'comeback':      assetUrl('/sounds/instagib/comeback.ogg'),
+  'match-point':   assetUrl('/sounds/instagib/match-point.ogg'),
+  'victory':       assetUrl('/sounds/instagib/victory.ogg'),
+  'defeat':        assetUrl('/sounds/instagib/defeat.ogg'),
   'spawn':         '', // deploy/encouragement — pack-only (no legacy file or TTS)
 };
 
@@ -162,7 +163,7 @@ export class SoundManager {
 
   // URL of one announcer line variant (1-indexed) for the active pack.
   private announcerVariantUrl(name: SoundClipName, idx: number): string {
-    return `/sounds/instagib/announcer/${this.pack}/${name}_${idx}.mp3`;
+    return assetUrl(`/sounds/instagib/announcer/${this.pack}/${name}_${idx}.mp3`);
   }
 
   // Pick a variant index (1..count) for a clip, avoiding an immediate repeat so

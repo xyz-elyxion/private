@@ -10,7 +10,7 @@ export function useLiveCount(): LiveCounts | null {
   useEffect(() => {
     let active = true;
     const poll = () =>
-      fetch('/api/live', { credentials: 'same-origin' })
+      fetch('/api/live', { credentials: 'include' })
         .then((r) => (r.ok ? r.json() : null))
         .then((d: LiveCounts | null) => {
           if (active && d && typeof d.online === 'number') setCounts(d);
