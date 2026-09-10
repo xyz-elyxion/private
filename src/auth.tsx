@@ -13,6 +13,7 @@ export type AuthApi = {
   login: (username: string, password: string) => Promise<string | null>; // returns error code or null
   register: (username: string, password: string, email: string) => Promise<string | null>;
   logout: () => Promise<void>;
+  refresh: () => Promise<void>; // re-pull /me (session cookie changed outside the form — CrazyGames auto-login)
 };
 
 type AuthResponse = { user?: { username: string; isAdmin?: boolean; isVerified?: boolean } };
@@ -81,7 +82,20 @@ export function useAuth(): AuthApi {
     setAccount(null);
   }, []);
 
-  return { account, ready, login, register, logout };
+  // Re-check the session: the server can mint a session outside the login
+  // form (CrazyGames automatic login), so the client must be able to re-pull
+  // /me when that happens. Keeps the current account on network failure.
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch(apiUrl('/api/auth/me'), { credentials: 'include' });
+      const d: { user: Account } = r.ok ? await r.json() : { user: null };
+      setAccount(d.user ?? null);
+    } catch {
+      // keep whatever we had — transient network issues shouldn't log the UI out
+    }
+  }, []);
+
+  return { account, ready, login, register, logout, refresh };
 }
 
 const ERRORS: Record<string, string> = {

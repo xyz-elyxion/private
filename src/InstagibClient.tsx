@@ -670,21 +670,29 @@ function PlayerCard({
 // guests (409 no_local_account), SDK-less environments (null token), offline.
 // The CrazyGames JWT is a credential, but the endpoint is same-origin, uses the
 // session cookie, and links (never authenticates) — safe to send.
-async function linkCrazyGamesAccount(): Promise<void> {
+//
+// Returns what happened so callers can react:
+//  'linked'       — an existing local account is now bound to the platform id
+//  'auto-login'   — the server created/restored the platform-linked account and
+//                   minted a session cookie (CrazyGames automatic login)
+//  'none'         — nothing changed (signed out / SDK off / failure)
+type CgLinkResult = 'linked' | 'auto-login' | 'none';
+async function linkOrAutoLoginCrazyGames(): Promise<CgLinkResult> {
   try {
     await initCrazyGames();
     const token = await cgGetUserToken();
-    if (!token) return; // signed out / SDK unavailable / disabled environment
-    await fetch(apiUrl('/api/auth/crazygames'), {
+    if (!token) return 'none'; // signed out / SDK unavailable / disabled environment
+    const r = await fetch(apiUrl('/api/auth/crazygames'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ token }),
     });
-    // 409 (guest / already-linked-elsewhere) and other non-OKs are expected,
-    // non-fatal outcomes — nothing to do.
+    const d = (await r.json().catch(() => ({}))) as { sessionIssued?: boolean };
+    if (!r.ok) return 'none'; // invalid token / transient failure — stay a guest
+    return d.sessionIssued ? 'auto-login' : 'linked';
   } catch {
-    // best-effort: never surface, never block gameplay
+    return 'none'; // best-effort: never surface, never block gameplay
   }
 }
 
@@ -1018,14 +1026,35 @@ export default function InstagibClient() {
     }
     if (didLinkRef.current) return;
     didLinkRef.current = true;
-    void linkCrazyGamesAccount();
+    void linkOrAutoLoginCrazyGames();
   }, [auth.ready, auth.account]);
-  // CrazyGames-only actions (platform login, auto-link) must never fire when
-  // the SDK isn't active — e.g. playing on our own site, where there is no
-  // platform account to attach progress to.
+  // Platform login mid-session (chip button / auth listener): link the fresh
+  // platform identity into the current account.
   useEffect(() => {
-    if (cgUser) void linkCrazyGamesAccount();
-  }, [cgUser]);
+    if (cgUser && auth.account) void linkOrAutoLoginCrazyGames();
+  }, [cgUser, auth.account]);
+  // CrazyGames automatic login: signed into the platform but still a guest
+  // here. The server verifies the SDK token, creates (or restores) the
+  // platform-linked account and mints a session cookie; then refresh the
+  // auth state and cycle the lobby socket so chat/matchmaking use the new
+  // identity (guest names are per-connection, so a reconnect is required).
+  // Never fires when the SDK isn't active (own site / embeds).
+  useEffect(() => {
+    if (!cgUser || auth.account || !auth.ready) return;
+    let cancelled = false;
+    void (async () => {
+      const result = await linkOrAutoLoginCrazyGames();
+      if (cancelled || result !== 'auto-login') return;
+      // The new account flows to <Lobby account=…>, whose connect effect
+      // depends on account?.username → the lobby socket reconnects carrying
+      // the fresh session cookie (chat/matchmaking become account-scoped).
+      await auth.refresh();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cgUser, auth.account, auth.ready, auth.refresh]);
+
 
   const startMatch = useCallback((cfg: MatchConfig) => {
     setLastResult(null);
@@ -1107,14 +1136,11 @@ export default function InstagibClient() {
         onOpenLogin={() => setLoginOpen(true)}
         onCgLogin={() => {
           if (!sdkActive) return; // no platform off CrazyGames — can't happen, but guard anyway
-          // CrazyGames' own login/register popup — no external provider, and
-          // the SDK refreshes the page automatically on platform login.
+          // CrazyGames' own login/register popup — no external provider. The
+          // auto-login effect above picks the result up via cgUser and signs
+          // the player into (or creates) their platform-linked account.
           void cgShowAuthPrompt().then((u) => {
             if (u) setCgUser(u);
-            // Auto-link: push the fresh platform identity to our server so
-            // progress is bound to the CrazyGames account (best-effort; the
-            // guest path 409s server-side and simply doesn't link).
-            void linkCrazyGamesAccount();
           });
         }}
         onLogout={auth.logout}
@@ -5258,6 +5284,27 @@ function Lobby({
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
   const [lobbyStatus, setLobbyStatus] = useState<LobbyStatus>('connecting');
   const [invite, setInvite] = useState<{ roomId: string; mapId: string } | null>(null);
+  // ── CrazyGames invite button (Room Data) ─────────────────────────
+  // While a private room exists but hasn't started (the player is waiting in
+  // the lobby), report it as joinable so the platform's invite button and
+  // friends drawer work; leftRoom() when hosting is cancelled. Per the SDK
+  // docs the invite button is driven by updateRoom/isJoinable, not a
+  // separate API.
+  useEffect(() => {
+    if (!invite) return;
+    void import('./crazygames').then((cg) =>
+      cg.cgUpdateRoom({
+        roomId: invite.roomId,
+        isJoinable: true,
+        inviteParams: { roomId: invite.roomId },
+      }),
+    );
+    return () => {
+      // Host entered the match or cancelled: no longer joinable from the
+      // platform (invite button hides; notifications stop).
+      void import('./crazygames').then((cg) => cg.cgLeftRoom());
+    };
+  }, [invite]);
   const [searching, setSearching] = useState(false); // quick-match in flight (#26e)
   const [rankedOpen, setRankedOpen] = useState(false);
   const [rankedStatus, setRankedStatus] = useState<RankedStatus | null>(null);
@@ -5357,9 +5404,12 @@ function Lobby({
     };
     // Reconnect (and re-bind onResolved → startOnline) when the Server URL
     // setting changes, so a custom URL isn't silently ignored until reload (#18).
-    // playerName is handled by the cheap setName effect below — not a dep here,
+    // account?.username changes on CrazyGames automatic login (guest →
+    // platform-linked account) so the socket reconnects carrying the session
+    // cookie. playerName is handled by the cheap setName effect below — not a
+    // dep here,
     // so typing a name doesn't churn the socket. applyPresence is stable.
-  }, [serverUrl, startOnline, applyPresence]);
+  }, [serverUrl, startOnline, applyPresence, account?.username]);
 
   /* CrazyGames join-room listener: fires when an already-in-menu player
    * accepts a platform invite (friends drawer / notification). Route them
@@ -5660,8 +5710,8 @@ function Lobby({
               <GlobalChatPanel
                 messages={chatLog}
                 online={online}
-                canChat={!!account}
-                youName={account?.username ?? null}
+                canChat={!!account || !!cgUser}
+                youName={account?.username ?? cgUser?.username ?? null}
                 notice={chatNotice}
                 onSend={(text) => lobbyRef.current?.sendChat(text)}
               />
