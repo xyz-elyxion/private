@@ -1,6 +1,7 @@
 import type { GameMode } from './constants';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, toView } from './netcodec';
+import { wsAuthQuery } from './platform-auth';
 
 export type Vec3 = { x: number; y: number; z: number };
 
@@ -199,8 +200,10 @@ type BeamMessage = {
   ox: number; oy: number; oz: number;
   ex: number; ey: number; ez: number;
 };
+type IdentityMessage = { type: 'identity'; name: string };
 type ServerMessage =
   | WelcomeMessage
+  | IdentityMessage
   | StateMessage
   | MetaMessage
   | KillBroadcast
@@ -429,18 +432,23 @@ export class NetClient {
   connect() {
     if (this.disposed) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
-    try {
-      this.setStatus('connecting');
-      this.ws = new WebSocket(this.url);
-      // Receive binary frames as ArrayBuffer (synchronous decode) rather than the
-      // default Blob — the state snapshot arrives as a binary frame at 64Hz.
-      this.ws.binaryType = 'arraybuffer';
-    } catch (err) {
-      console.warn('[instagib-net] failed to construct WebSocket', err);
-      this.setStatus('error');
-      this.scheduleReconnect();
-      return;
-    }
+    // Platform auth (CrazyGames): resolve a fresh SDK token and append it as a
+    // query param before opening. '' when off-platform — URL unchanged.
+    void wsAuthQuery().then((authQ) => {
+      if (this.disposed) return;
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+      try {
+        this.setStatus('connecting');
+        this.ws = new WebSocket(authQ ? `${this.url}?${authQ}` : this.url);
+        // Receive binary frames as ArrayBuffer (synchronous decode) rather than the
+        // default Blob — the state snapshot arrives as a binary frame at 64Hz.
+        this.ws.binaryType = 'arraybuffer';
+      } catch (err) {
+        console.warn('[instagib-net] failed to construct WebSocket', err);
+        this.setStatus('error');
+        this.scheduleReconnect();
+        return;
+      }
     this.ws.onopen = () => {
       this.setStatus('open');
       if (this.spectate) {
@@ -482,6 +490,7 @@ export class NetClient {
     this.ws.onerror = () => {
       this.setStatus('error');
     };
+    });
   }
 
   dispose() {
@@ -827,6 +836,21 @@ export class NetClient {
     this.pingTimer = null;
   }
 
+  // Equipped cosmetics → the server (ownership-checked there, echoed to peers).
+  // Called on welcome and again after an identity bind (see the identity case).
+  private sendEquips() {
+    this.send({ type: 'hat', id: this.localHat });
+    this.send({ type: 'unusual', id: this.localUnusual });
+    this.send({ type: 'emote', id: this.localEmote });
+    this.send({ type: 'nameColor', id: this.localNameColor });
+    this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
+    this.send({ type: 'title', id: this.localTitle });
+    this.send({ type: 'railColor', id: this.localRailColor });
+    this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
+    this.send({ type: 'crosshair', code: this.localCrosshair });
+    if (this.localCard) this.send({ type: 'card', card: this.localCard });
+  }
+
   private send(msg: object) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
@@ -838,16 +862,7 @@ export class NetClient {
       this.clientId = msg.clientId;
       if (msg.resumeToken) this.resumeToken = msg.resumeToken; // for the next reconnect
       // Tell the server our equipped cosmetics so it echoes them to other players.
-      this.send({ type: 'hat', id: this.localHat });
-      this.send({ type: 'unusual', id: this.localUnusual });
-      this.send({ type: 'emote', id: this.localEmote });
-      this.send({ type: 'nameColor', id: this.localNameColor });
-      this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
-      this.send({ type: 'title', id: this.localTitle });
-      this.send({ type: 'railColor', id: this.localRailColor });
-      this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
-      this.send({ type: 'crosshair', code: this.localCrosshair });
-      if (this.localCard) this.send({ type: 'card', card: this.localCard });
+      this.sendEquips();
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
       // Keyed off performance.now() to match estimatedServerNow().
       if (!this.clockSeeded) {
@@ -855,6 +870,17 @@ export class NetClient {
         this.clockOffsetTarget = this.clockOffset;
         this.clockSeeded = true;
       }
+      this.emit();
+      return;
+    }
+    if (msg.type === 'identity') {
+      // CrazyGames platform-auth bind resolved server-side: adopt the
+      // authoritative account name and re-send equipped cosmetics — the first
+      // (pre-bind) equips were ownership-checked against a guest playerId and
+      // may have been stripped to defaults. Fresh check now that the account
+      // is bound; the server re-broadcasts the room meta either way.
+      this.localName = msg.name;
+      this.sendEquips();
       this.emit();
       return;
     }
@@ -1242,8 +1268,15 @@ export class LobbyClient {
     // the last "open" status (covered by the grace timer) so the chip doesn't
     // flicker to "linking"/"offline" and back.
     if (this.uiStatus !== 'open') this.setStatus('connecting');
+    // Platform auth (CrazyGames): resolve a fresh SDK token and append it as a
+    // query param before opening. '' when off-platform — URL unchanged. The
+    // token lets the server bind the account when the cross-origin session
+    // cookie is blocked (partitioned third-party cookies in the CG embed).
+    void wsAuthQuery().then((authQ) => {
+      if (this.disposed) return;
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(authQ ? `${this.url}?${authQ}` : this.url);
     } catch {
       this.handleDrop();
       return;
@@ -1340,6 +1373,7 @@ export class LobbyClient {
     this.ws.onerror = () => {
       // onclose follows onerror; let handleDrop there do the work (with grace).
     };
+    });
   }
 
   // Socket dropped: keep the heartbeat off, hold "online" for a grace window so a

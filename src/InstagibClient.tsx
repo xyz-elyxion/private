@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
+import { setWsAuthProvider } from './game/platform-auth';
 import { useAuth, LoginModal, type Account } from './auth';
 import { FeedbackModal } from './FeedbackModal';
 import { RecoveryModal } from './RecoveryModal';
@@ -884,6 +885,20 @@ export default function InstagibClient() {
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
+
+  // CrazyGames socket auth: sockets attach a fresh SDK user token so the game
+  // server can bind the account even when the cross-origin embed blocks the
+  // session cookie (partitioned third-party cookies). Off-platform this is a
+  // no-op (provider resolves null → bare URLs, cookie path unchanged).
+  useEffect(() => {
+    // Await the memoized init first: a socket can open before the SDK handshake
+    // finishes (lobby connects on mount), and the platform check must not race it.
+    setWsAuthProvider(async () => {
+      await initCrazyGames();
+      return isOnCrazyGames() ? cgGetUserToken() : null;
+    });
+    return () => setWsAuthProvider(null);
+  }, []);
 
   /* ── CrazyGames boot-time effects ────────────────────────────────────
    * 1. SDK invite params (inviteParams from the SDK beat the plain ?join= URL

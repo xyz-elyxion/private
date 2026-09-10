@@ -37,6 +37,37 @@ type CgTokenPayload = {
 
 // Minimal RS256 JWT verifier on Node's webcrypto — no new dependency. The
 // token is ~1KB, verification runs once per login, so perf is irrelevant.
+// The platform public key is cached for an hour (docs: the key can rotate —
+// refresh it periodically instead of fetching on every verification; the WS
+// path verifies on every connect so the cache also bounds key-fetch latency).
+let cgKeyCache: { key: Awaited<ReturnType<typeof crypto.subtle.importKey>> | null; at: number } | null = null;
+const CG_KEY_CACHE_MS = 60 * 60 * 1000;
+async function getCgCryptoKey(): Promise<Awaited<ReturnType<typeof crypto.subtle.importKey>> | null> {
+  try {
+    if (cgKeyCache && Date.now() - cgKeyCache.at < CG_KEY_CACHE_MS) return cgKeyCache.key;
+    const keyRes = await fetch(CG_PUBLIC_KEY_URL, { signal: AbortSignal.timeout(5_000) });
+    if (!keyRes.ok) throw new Error('key_fetch');
+    const { publicKey } = (await keyRes.json()) as { publicKey: string };
+    if (!publicKey) throw new Error('key_missing');
+    const pem = publicKey
+      .replace(/-----BEGIN PUBLIC KEY-----/, '')
+      .replace(/-----END PUBLIC KEY-----/, '')
+      .replace(/\s+/g, '');
+    const key = await crypto.subtle.importKey(
+      'spki',
+      new Uint8Array(Buffer.from(pem, 'base64')),
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['verify'],
+    );
+    cgKeyCache = { key, at: Date.now() };
+    return key;
+  } catch {
+    cgKeyCache = null; // retry next call (key endpoint may recover)
+    return null;
+  }
+}
+
 async function verifyCgToken(token: string): Promise<CgTokenPayload> {
   const parts = token.split('.');
   if (parts.length !== 3) throw new Error('malformed');
@@ -50,25 +81,42 @@ async function verifyCgToken(token: string): Promise<CgTokenPayload> {
   if (typeof payload.exp === 'number' && payload.exp * 1000 < Date.now()) throw new Error('expired');
   if (!payload.userId) throw new Error('payload');
 
-  // Fetch the public key fresh each time (docs recommend this; the key can
-  // rotate). Fail closed if CrazyGames is unreachable.
-  const keyRes = await fetch(CG_PUBLIC_KEY_URL, { signal: AbortSignal.timeout(5_000) });
-  if (!keyRes.ok) throw new Error('key_fetch');
-  const { publicKey } = (await keyRes.json()) as { publicKey: string };
-  if (!publicKey) throw new Error('key_missing');
+  // Cached public key (refreshed hourly — see getCgCryptoKey). Fail closed if
+  // CrazyGames is unreachable or the key can't be imported.
+  const key = await getCgCryptoKey();
+  if (!key) throw new Error('key_fetch');
 
-  const key = await crypto.subtle.importKey(
-    'spki',
-    pemToSpki(publicKey),
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false,
-    ['verify'],
-  );
   const data = new Uint8Array(Buffer.from(`${h64}.${p64}`));
   const sig = new Uint8Array(b64url(s64));
   const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, sig, data);
   if (!ok) throw new Error('signature');
   return payload;
+}
+
+/**
+ * WS platform-auth: bind a verified CrazyGames identity to a socket record.
+ * Returns the linked/ensured local account (and its id) or null. Idempotent —
+ * safe to call on every reconnect; a bind only happens once per platform id.
+ */
+export async function resolveCgSocketAccount(
+  token: string,
+  ip?: string,
+): Promise<{ id: string; username: string; isAdmin: boolean; isVerified: boolean } | null> {
+  try {
+    const payload = await verifyCgToken(token);
+    const linked = findUserByCrazyGamesId(payload.userId);
+    if (linked) {
+      return { id: linked.id, username: linked.username, isAdmin: linked.isAdmin, isVerified: linked.isVerified };
+    }
+    // Not linked yet: ensure the local account exists for this platform id.
+    const ensured = ensureCgAccount(payload, ip);
+    const user = ensured?.user;
+    return user
+      ? { id: user.id, username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified }
+      : null;
+  } catch {
+    return null; // invalid/expired token, platform unreachable — treat as guest
+  }
 }
 
 // Sanitize a CrazyGames username into a legal local username: keep the 3–20
@@ -130,14 +178,6 @@ function ensureCgAccount(payload: CgTokenPayload, ip?: string): { user: ReturnTy
     detail: { crazygames: true, cgUserId: payload.userId },
   });
   return { user: findUserById(id), created: true };
-}
-
-function pemToSpki(pem: string): Uint8Array {
-  const body = pem
-    .replace(/-----BEGIN PUBLIC KEY-----/, '')
-    .replace(/-----END PUBLIC KEY-----/, '')
-    .replace(/\s+/g, '');
-  return new Uint8Array(Buffer.from(body, 'base64'));
 }
 
 export const crazyGamesRouter = Router();

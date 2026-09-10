@@ -72,8 +72,10 @@ import {
   RANKED_MIN_LEVEL,
   unlockedSetFor,
 } from './db';
+import type { IncomingMessage } from 'node:http';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
+import { resolveCgSocketAccount } from './crazygames';
 
 // Snapshot rate, paired with the client's 64Hz sim + 64Hz position upload so
 // the whole pipeline runs on one cadence. The lean-snapshot split (static
@@ -981,6 +983,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.roomId = room.id;
     record.team = old.team;
     record.name = old.name; // keep the held slot's name (account username / "Guest N")
+    // Adopt the held slot's account identity too — same player reclaiming their
+    // own slot — so cosmetics ownership checks use the same account as before.
+    record.playerId = old.playerId;
+    record.admin = old.admin;
+    record.verified = old.verified;
     record.pos = { ...old.pos };
     record.yaw = old.yaw;
     record.pitch = old.pitch;
@@ -1631,8 +1638,33 @@ export function attachInstagibWs(wss: WebSocketServer) {
     sendRaw(c.socket, { type: 'respawn', x: spawn.x, y: spawn.y, z: spawn.z, reason: 'void' });
   };
 
+  // Apply a platform-verified account identity to a connection record. Called
+  // when a CrazyGames socket introduces itself: swaps the guest name for the
+  // account username, flips the staff/verified flags, and re-broadcasts the
+  // room meta so everyone sees the real name instead of \"Guest N\". In-place on
+  // purpose — room membership is keyed by the (unchanged) client id, so no
+  // join bookkeeping or respawn happens. Cosmetic equips are NOT re-derived:
+  // they carry the player's choices, and ownership checks for new equips run
+  // per-equip against the freshly bound playerId.
+  function applyAccountIdentity(
+    record: ClientRecord,
+    acct: { id: string; username: string; isAdmin: boolean; isVerified: boolean },
+  ) {
+    if (record.playerId === acct.id) return;
+    record.playerId = acct.id;
+    record.name = acct.username;
+    record.admin = acct.isAdmin;
+    record.verified = acct.isVerified;
+    bumpMeta(record); // roster refresh if they're already in a room (name swap)
+    schedulePresence(); // the menu presence list carries names too
+    // Tell the client the bind landed: it adopts the authoritative name and
+    // re-sends its equipped cosmetics (the first, pre-bind set was
+    // ownership-checked against a guest playerId and may have been stripped).
+    sendRaw(record.socket, { type: 'identity', name: acct.username });
+  }
+
   // ── Connection ────────────────────────────────────────────────────────
-  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
+  wss.on('connection', (socket: WebSocket, req?: IncomingMessage) => {
     const id = genId();
     const now = Date.now();
     // The progression identity (the logged-in account behind the httpOnly
@@ -1702,6 +1734,24 @@ export function attachInstagibWs(wss: WebSocketServer) {
     sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
     schedulePresence(); // a new socket bumps the online count for everyone in the menu
 
+    // CRAZYGAMES platform auth: the embed runs cross-origin, so browsers that
+    // partition third-party cookies never deliver the `igsession` cookie here —
+    // those players would be stuck as "Guest N". The client appends a fresh SDK
+    // user token to the socket URL; verify it against the platform public key
+    // and bind the (existing or ensured) local account. Invalid tokens resolve
+    // null → the connection stays a guest. Async on purpose: room assignment /
+    // cosmetics rebind the moment it resolves (welcome already went out with the
+    // guest identity; the client's first join arrives well after this lands).
+    {
+      const cgToken = new URL(req?.url ?? '', 'http://localhost').searchParams.get('cgToken');
+      if (cgToken && !record.playerId) {
+        void resolveCgSocketAccount(cgToken, req?.socket?.remoteAddress ?? undefined).then((acct) => {
+          // The socket may already be gone (fast reconnect) — only live records.
+          if (acct && clients.get(record.id) === record) applyAccountIdentity(record, acct);
+        });
+      }
+    }
+
     socket.on('message', (raw, isBinary) => {
       const ts = Date.now();
       // Inbound message-rate guard (#2): a flood of pos/shoot/list is a cheap
@@ -1738,6 +1788,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         case 'hello':
           // Names are server-authoritative (set on connect from the account, or
           // assigned as "Guest N" on join), so the client's name is ignored.
+          // Platform identity arrives earlier, on the upgrade URL (cgToken).
           break;
 
         case 'list':
