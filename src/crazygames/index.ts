@@ -43,6 +43,7 @@ type CgSdk = {
     gameplayStart: () => void;
     gameplayStop: () => void;
     happytime: () => void;
+    reportGameCompletedPercentage: (progress: number) => void;
     settings: { disableChat: boolean; muteAudio: boolean };
     addSettingsChangeListener: (l: (s: { disableChat: boolean; muteAudio: boolean }) => void) => void;
     removeSettingsChangeListener: (l: (s: { disableChat: boolean; muteAudio: boolean }) => void) => void;
@@ -60,6 +61,7 @@ type CgSdk = {
     getUser: () => Promise<{ username: string; profilePictureUrl?: string } | null>;
     showAuthPrompt: () => Promise<{ username: string; profilePictureUrl?: string } | null>;
     getUserToken: () => Promise<string>;
+    submitScore: (s: { encryptedScore: string; score: number }) => void;
     addAuthListener: (l: (user: { username: string; profilePictureUrl?: string } | null) => void) => void;
     removeAuthListener: (l: (user: { username: string; profilePictureUrl?: string } | null) => void) => void;
   };
@@ -170,9 +172,9 @@ export function cgSdk(): CgSdk | null {
 let cgSettings: CgGameSettings = { disableChat: false, muteAudio: false };
 const settingsListeners = new Set<(s: CgGameSettings) => void>();
 
-function pushSettings(s: CgGameSettings) {
+function pushSettings(s: CgGameSettings, force = false) {
   const next = { disableChat: !!s.disableChat, muteAudio: !!s.muteAudio };
-  const changed = next.disableChat !== cgSettings.disableChat || next.muteAudio !== cgSettings.muteAudio;
+  const changed = force || next.disableChat !== cgSettings.disableChat || next.muteAudio !== cgSettings.muteAudio;
   cgSettings = next;
   if (changed) for (const l of settingsListeners) l(next);
 }
@@ -215,7 +217,15 @@ export function onCgGameSettings(l: (s: CgGameSettings) => void): () => void {
 /** Read the current platform settings once (called right after init). */
 export function syncCgSettings(): void {
   try {
-    if (sdk?.game?.settings) pushSettings(sdk.game.settings);
+    // The SDK resolves ?disableChat=true / ?muteAudio=true itself on CrazyGames;
+    // honoring the same params locally lets us QA the chat/audio behavior on our
+    // own site too. force=true so an explicit ?param always wins over defaults.
+    const q = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+    const forced: CgGameSettings = {
+      disableChat: q?.get('disableChat') === 'true' || sdk?.game?.settings?.disableChat === true,
+      muteAudio: q?.get('muteAudio') === 'true' || sdk?.game?.settings?.muteAudio === true,
+    };
+    pushSettings(forced, true);
   } catch { /* ignore */ }
 }
 
@@ -264,6 +274,66 @@ export function cgHappytime(): void {
   try {
     sdk?.game.happytime();
   } catch { /* ignore */ }
+}
+
+/**
+ * reportGameCompletedPercentage — tell CrazyGames how far the player has gotten
+ * in the game (0-100). HTML5 only. Intermediate updates are encouraged; 100
+ * marks real completion. No-op when the SDK is unavailable / older SDK build.
+ */
+export function cgReportGameCompleted(percent: number): void {
+  try {
+    if (!sdk) return;
+    const pct = Math.round(percent);
+    if (!Number.isFinite(pct)) return;
+    sdk.game.reportGameCompletedPercentage?.(Math.max(0, Math.min(100, pct)));
+  } catch { /* ignore */ }
+}
+
+// Per docs: client-side leaderboard scores must be AES-GCM encrypted with the
+// developer-portal Encryption Key; both encrypted + plain values are submitted.
+async function encryptScore(score: number, encryptionKey: string): Promise<string | null> {
+  try {
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const algorithm = { name: 'AES-GCM', iv };
+    const keyBytes = new Uint8Array(
+      atob(encryptionKey)
+        .split('')
+        .map((c) => c.charCodeAt(0)),
+    );
+    const cryptoKey = await window.crypto.subtle.importKey('raw', keyBytes, algorithm, false, ['encrypt']);
+    const dataBuffer = new TextEncoder().encode(score.toString());
+    const encryptedBuffer = await window.crypto.subtle.encrypt(algorithm, cryptoKey, dataBuffer);
+    const combined = new Uint8Array(iv.length + encryptedBuffer.byteLength);
+    combined.set(iv);
+    combined.set(new Uint8Array(encryptedBuffer), iv.length);
+    let binary = '';
+    for (let i = 0; i < combined.length; i++) binary += String.fromCharCode(combined[i]);
+    return btoa(binary);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Submit a score to the game's CrazyGames leaderboard (client-side path per
+ * docs). Resolves false when the encryption key isn't configured (build-time
+ * VITE_CG_LEADERBOARD_KEY), crypto/HTTPS is missing, or the SDK is unavailable
+ * — the game never blocks or retries on failure; the platform rejects
+ * duplicate/rate-limited submissions server-side itself.
+ */
+export async function cgSubmitScore(score: number): Promise<boolean> {
+  try {
+    if (!sdk || !Number.isFinite(score)) return false;
+    const key = (import.meta.env.VITE_CG_LEADERBOARD_KEY as string | undefined)?.trim();
+    if (!key) return false;
+    const encrypted = await encryptScore(score, key);
+    if (!encrypted || typeof sdk.user.submitScore !== 'function') return false;
+    sdk.user.submitScore({ encryptedScore: encrypted, score });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /* ───────────────────────── Video ads ─────────────────────────────────── */

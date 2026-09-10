@@ -92,6 +92,9 @@ import {
   initCrazyGames,
   cgGameplayStart,
   cgGameplayStop,
+  cgHappytime,
+  cgReportGameCompleted,
+  cgSubmitScore,
   cgRequestMidgameAd,
   cgAdInFlight,
   cgUpdateRoom,
@@ -149,7 +152,7 @@ import {
   type CosmeticSource,
   type HatCosmetic,
 } from './game/cosmetics';
-import { levelProgress } from './game/progression';
+import { baseMatchXp, levelProgress } from './game/progression';
 import { apiUrl, defaultWsUrl } from './game/urls';
 
 export type CrosshairConfig = {
@@ -920,6 +923,11 @@ export default function InstagibClient() {
       }
       setSdkActive(cgEnvironment() !== 'disabled');
       setSdkReady(true);
+      // Game-completion reporting (docs: reportGameCompletedPercentage): fire the
+      // persisted milestone at boot so the platform always has a current value —
+      // required after content updates shift the scale. 0 = nothing to report.
+      const cgPct = Number(cgStorage.getItem('instagib-cg-completion-pct') ?? '0');
+      if (cgPct > 0) cgReportGameCompleted(cgPct);
     });
     return () => {
       cancelled = true;
@@ -949,6 +957,31 @@ export default function InstagibClient() {
     };
   }, [sdkActive]);
 
+  // CrazyGames "disableChat" preference (SDK game.settings): true → all chat UI
+  // is hidden and the composer keybind is dead. Held in state (not folded into
+  // settings.hideChat) so the platform can never permanently overwrite the
+  // player's own "Hide chat" preference, and so the settings toggle can lock
+  // itself while the platform insists (multiplayer requirement, docs: the game
+  // "should disable chat based on the game settings"). Also honors
+  // ?disableChat=true locally so we can QA the behavior off-platform.
+  const [cgChatDisabled, setCgChatDisabled] = useState(() => cgGameSettings().disableChat);
+  useEffect(
+    () =>
+      onCgGameSettings((s) => {
+        setCgChatDisabled(s.disableChat);
+        if (s.disableChat) {
+          setSettings((prev) => (prev.hideChat ? prev : { ...prev, hideChat: true }));
+        } else {
+          setSettings((prev) => {
+            if (!prev.hideChat) return prev;
+            const saved = loadSettings().hideChat;
+            return saved ? prev : { ...prev, hideChat: false };
+          });
+        }
+      }),
+    [],
+  );
+
   // Platform settings changes: muteAudio must take priority over the in-game
   // audio toggle, and disableChat hides chat UI (multiplayer requirement).
   // Platform on/off transitions restore the player's own preference (an explicit
@@ -962,7 +995,8 @@ export default function InstagibClient() {
         setSettings((prev) => (prev.hideChat ? prev : { ...prev, hideChat: true }));
       } else {
         // Platform re-enabled chat (page reload / setting change): restore the
-        // player's persisted preference unless they hid chat themselves.
+        // player's persisted preference unless they hid chat themselves. (While
+        // the platform disables chat, UI gates hold via cgChatDisabled below.)
         setSettings((prev) => {
           if (!prev.hideChat) return prev;
           const saved = loadSettings().hideChat;
@@ -1107,6 +1141,7 @@ export default function InstagibClient() {
           config={config}
           settings={settings}
           onChangeSettings={setSettings}
+          cgChatDisabled={cgChatDisabled}
           onExit={() => exitToLobby(null)}
         />
       );
@@ -1117,6 +1152,7 @@ export default function InstagibClient() {
         config={config}
         settings={settings}
         onChangeSettings={setSettings}
+        cgChatDisabled={cgChatDisabled}
         onExit={exitToLobby}
         onPlayAgain={playAgain}
       />
@@ -1128,6 +1164,7 @@ export default function InstagibClient() {
       <Lobby
         settings={settings}
         onChangeSettings={setSettings}
+        cgChatDisabled={cgChatDisabled}
         onStart={startMatch}
         lastResult={lastResult}
         account={auth.account}
@@ -1239,10 +1276,12 @@ function GameView({
   onChangeSettings,
   onExit,
   onPlayAgain,
+  cgChatDisabled,
 }: {
   config: MatchConfig;
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
+  cgChatDisabled: boolean; // CrazyGames platform chat preference
   onExit: (result: MatchResult | null) => void;
   onPlayAgain: () => void;
 }) {
@@ -1263,6 +1302,11 @@ function GameView({
   const [onlineResults, setOnlineResults] = useState(false);
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
   const hudRef = useRef<HudState>(INITIAL_HUD);
+  // CrazyGames platform events are once-only per session: happytime() must stay
+  // a rare celebration (docs: "use sparingly"), and reportGameCompletedPercentage
+  // only needs to be told 100 once — repeat calls add nothing.
+  const happytimeFiredRef = useRef(false);
+  const completedReportedRef = useRef(false);
   const offlineMatch = config.mode !== 'multiplayer';
   // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
   // weekly board, NOT career K/D. The engine owns the authoritative run time.
@@ -1282,7 +1326,11 @@ function GameView({
       setEndResult(result);
       // happytime() — platform celebration on a special moment. A match win is
       // exactly that; nothing else in the session earns it (docs: use sparingly).
-      if (result.won) void import('./crazygames').then((cg) => cg.cgHappytime());
+      // Once per browser session so winning streaks can't spam the confetti.
+      if (result.won && !happytimeFiredRef.current) {
+        happytimeFiredRef.current = true;
+        cgHappytime();
+      }
       if (isChallenge) {
         // Weekly challenge: submit the speedrun (win time, or kills on a loss) to
         // the weekly board + upload the full run's replay. Never touches career
@@ -1297,6 +1345,31 @@ function GameView({
         void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
           if (p) setEndProgression(p);
         });
+      }
+      // CrazyGames leaderboard (client-side submitScore) + game-completion
+      // percentage. Offline-only by design: online scores come from the
+      // authoritative game server, and multiplayer rounds have no "completion".
+      // Same XP formula as the server's /api/stats so the platform board and the
+      // in-game progression can never disagree.
+      if (offlineMatch && !isChallenge) {
+        const score = baseMatchXp({
+          kills: result.kills,
+          headshots: result.headshots,
+          bestStreak: result.bestStreak,
+          won: result.won,
+          accuracy: result.shotsFired > 0 ? (result.shotsHit / result.shotsFired) * 100 : 0,
+        });
+        void cgSubmitScore(score);
+        // Endless/practice runs never "complete" (no frag limit) — completion is
+        // defined as winning a full match (frag limit hit). 100 sticks; the
+        // platform treats completion as monotonic.
+        if (result.won && !completedReportedRef.current) {
+          completedReportedRef.current = true;
+          cgReportGameCompleted(100);
+          try {
+            cgStorage.setItem('instagib-cg-completion-pct', '100');
+          } catch { /* ignore */ }
+        }
       }
       if (config.mode === 'multiplayer') {
         setPodiumScores(hudRef.current.scores);
@@ -1515,7 +1588,7 @@ function GameView({
       {!hud.pom && <HudOverlay hud={hud} settings={settings} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
-      {!settings.hideChat && config.mode === 'multiplayer' && (
+      {!settings.hideChat && !cgChatDisabled && config.mode === 'multiplayer' && (
         <InGameChat
           chat={hud.chat}
           onSend={(t) => gameRef.current?.sendChat(t)}
@@ -1610,6 +1683,7 @@ function GameView({
         <SettingsModal
           settings={settings}
           onChange={onChangeSettings}
+          cgChatDisabled={cgChatDisabled}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -1626,10 +1700,12 @@ function SpectatorView({
   settings,
   onChangeSettings,
   onExit,
+  cgChatDisabled,
 }: {
   config: Extract<MatchConfig, { mode: 'spectator' }>;
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
+  cgChatDisabled: boolean; // CrazyGames platform chat preference
   onExit: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1690,7 +1766,7 @@ function SpectatorView({
       } else if (e.key === 'Enter') {
         // Don't open a composer that isn't rendered (hideChat) — that would set
         // chatOpen with no input to focus/escape and soft-lock these controls.
-        if (!settings.hideChat) {
+        if (!settings.hideChat && !cgChatDisabled) {
           e.preventDefault();
           setChatOpen(true);
         }
@@ -1700,7 +1776,7 @@ function SpectatorView({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [chatOpen, settings.hideChat]);
+  }, [chatOpen, settings.hideChat, cgChatDisabled]);
 
   const spec = hud.spectator;
   const crosshairCfg = (spec && decodeCrosshair(spec.crosshairCode)) || settings.crosshair;
@@ -1800,7 +1876,7 @@ function SpectatorView({
       </div>
 
       {/* Read + send match chat (server tags our lines as spectator). */}
-      {!settings.hideChat && (
+      {!settings.hideChat && !cgChatDisabled && (
         <InGameChat
           chat={{ open: chatOpen, lines: hud.chat.lines }}
           onSend={(t) => {
@@ -1828,6 +1904,7 @@ function SpectatorView({
         <SettingsModal
           settings={settings}
           onChange={onChangeSettings}
+          cgChatDisabled={cgChatDisabled}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -4423,6 +4500,18 @@ async function submitMatchStats(
   }
 }
 
+// ── CrazyGames leaderboard & completion reporting ────────────────────────────
+// The platform score is the per-match XP the game already awards (baseMatchXp —
+// the exact formula the server applies at /api/stats), so the CrazyGames
+// leaderboard and in-game progression can never disagree. cgSubmitScore
+// AES-GCM-encrypts with the portal Encryption Key and no-ops when the SDK is
+// inactive, the key isn't configured, or the platform rate-limits a repeat.
+// cgReportGameCompleted(100) marks a won full match (frag limit) — this game has
+// no level ladder, so a win is the honest 100% completion point (docs allow
+// defining completion for endless/replayable games, applied consistently).
+// Both are offline-only by design: online scores belong to the authoritative
+// game server, and multiplayer rounds have no "completion".
+
 // ── Weekly Challenge ─────────────────────────────────────────────────────────
 type WeeklyChallengeEntry = {
   id: string;
@@ -5252,6 +5341,7 @@ function Lobby({
   account,
   cgUser,
   sdkActive,
+  cgChatDisabled,
   onOpenLogin,
   onCgLogin,
   onLogout,
@@ -5264,6 +5354,7 @@ function Lobby({
   account: Account;
   cgUser: CgUserState;
   sdkActive: boolean;
+  cgChatDisabled: boolean;
   onOpenLogin: () => void;
   onCgLogin: () => void;
   onLogout: () => void;
@@ -5706,6 +5797,9 @@ function Lobby({
                 onRefresh={() => lobbyRef.current?.refresh()}
               />
             </div>
+            {/* CrazyGames disableChat: the platform asked for no chat at all —
+                panel is removed, not just read-only (multiplayer requirement). */}
+            {!cgChatDisabled && (
             <div className='min-h-[13rem] flex-1'>
               <GlobalChatPanel
                 messages={chatLog}
@@ -5716,6 +5810,7 @@ function Lobby({
                 onSend={(text) => lobbyRef.current?.sendChat(text)}
               />
             </div>
+            )}
           </aside>
         </main>
 
@@ -5817,6 +5912,7 @@ function Lobby({
           settings={settings}
           onChange={onChangeSettings}
           initialTab={settingsTab}
+          cgChatDisabled={cgChatDisabled}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -7344,11 +7440,13 @@ function SettingsModal({
   onChange,
   onClose,
   initialTab = 'controls',
+  cgChatDisabled,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   onClose: () => void;
   initialTab?: SettingsTab;
+  cgChatDisabled?: boolean; // CrazyGames platform chat preference (locks the toggle)
 }) {
   const ch = settings.crosshair;
   const setCh = (patch: Partial<CrosshairConfig>) =>
@@ -7736,8 +7834,16 @@ function SettingsModal({
               />
               <ToggleField
                 label='Hide chat'
-                value={settings.hideChat}
-                onChange={(v) => onChange({ ...settings, hideChat: v })}
+                value={settings.hideChat || !!cgChatDisabled}
+                onChange={(v) => {
+                  if (cgChatDisabled) return; // platform disableChat wins (CrazyGames multiplayer requirement)
+                  onChange({ ...settings, hideChat: v });
+                }}
+                hint={
+                  cgChatDisabled
+                    ? 'Chat is turned off by the platform (CrazyGames chat preference) and cannot be re-enabled in-game.'
+                    : undefined
+                }
               />
               <ToggleField
                 label='Bright enemies'
