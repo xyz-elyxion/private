@@ -111,6 +111,7 @@ import {
   cgLoadingStart,
   cgLoadingStop,
   isOnCrazyGames,
+  cgEnvironment,
 } from './crazygames';
 import { PodiumScene, type PodiumWinner } from './game/podium';
 import { CharacterPreview, type PreviewCosmetics } from './game/character-preview';
@@ -863,6 +864,12 @@ export default function InstagibClient() {
   // Resolves once the CrazyGames init promise has settled (or the SDK is
   // absent) — used to sequence the invite join below.
   const [sdkReady, setSdkReady] = useState(false);
+  // True only when the SDK is actually live (on CrazyGames, or the ?cgdev=1
+  // local simulation). Our own site / embeds resolve the environment to
+  // 'disabled': the game runs identically, but all CrazyGames-only UI —
+  // "Log in with CrazyGames", platform invites, ad breaks — is switched off
+  // so nobody sees a platform login button outside the platform.
+  const [sdkActive, setSdkActive] = useState(false);
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
@@ -903,6 +910,7 @@ export default function InstagibClient() {
           roomId: '', // empty roomId → the game server resolves it on join
         };
       }
+      setSdkActive(cgEnvironment() !== 'disabled');
       setSdkReady(true);
     });
     return () => {
@@ -912,7 +920,14 @@ export default function InstagibClient() {
 
   // CrazyGames user (auto login): fetch once, then follow live auth changes
   // (player logging in mid-session via the platform). Always null-safe.
+  // Skipped entirely when the SDK isn't active (own site / embeds): there is
+  // no platform account there, so "Log in with CrazyGames" must never render
+  // and getUser() must never pop the platform auth UI.
   useEffect(() => {
+    if (!sdkActive) {
+      setCgUser(null);
+      return;
+    }
     let active = true;
     void cgGetUser().then((u) => {
       if (active) setCgUser(u);
@@ -924,7 +939,7 @@ export default function InstagibClient() {
       active = false;
       off();
     };
-  }, []);
+  }, [sdkActive]);
 
   // Platform settings changes: muteAudio must take priority over the in-game
   // audio toggle, and disableChat hides chat UI (multiplayer requirement).
@@ -1005,8 +1020,9 @@ export default function InstagibClient() {
     didLinkRef.current = true;
     void linkCrazyGamesAccount();
   }, [auth.ready, auth.account]);
-  // A platform login mid-session links too (the account usually arrives right
-  // after via auth.refresh, but link even for guest→CG-login).
+  // CrazyGames-only actions (platform login, auto-link) must never fire when
+  // the SDK isn't active — e.g. playing on our own site, where there is no
+  // platform account to attach progress to.
   useEffect(() => {
     if (cgUser) void linkCrazyGamesAccount();
   }, [cgUser]);
@@ -1087,8 +1103,10 @@ export default function InstagibClient() {
         lastResult={lastResult}
         account={auth.account}
         cgUser={cgUser}
+        sdkActive={sdkActive}
         onOpenLogin={() => setLoginOpen(true)}
         onCgLogin={() => {
+          if (!sdkActive) return; // no platform off CrazyGames — can't happen, but guard anyway
           // CrazyGames' own login/register popup — no external provider, and
           // the SDK refreshes the page automatically on platform login.
           void cgShowAuthPrompt().then((u) => {
@@ -5207,6 +5225,7 @@ function Lobby({
   lastResult,
   account,
   cgUser,
+  sdkActive,
   onOpenLogin,
   onCgLogin,
   onLogout,
@@ -5218,6 +5237,7 @@ function Lobby({
   lastResult: MatchResult | null;
   account: Account;
   cgUser: CgUserState;
+  sdkActive: boolean;
   onOpenLogin: () => void;
   onCgLogin: () => void;
   onLogout: () => void;
@@ -5447,7 +5467,7 @@ function Lobby({
                   Log&nbsp;out
                 </button>
               </span>
-            ) : cgUser ? (
+            ) : sdkActive && cgUser ? (
               /* CrazyGames account: username + avatar from the platform, auto-logged-in. */
               <span className='hidden items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
                 {cgUser.profilePictureUrl && (
@@ -5463,9 +5483,10 @@ function Lobby({
                 <span className='inline-flex items-center gap-1 text-cyan-200'>{cgUser.username}</span>
                 <span className='text-white/30'>CrazyGames</span>
               </span>
-            ) : (
+            ) : sdkActive ? (
               <span className='hidden items-center gap-2 sm:inline-flex'>
-                {/* Platform login first (on CrazyGames); the in-game account stays available. */}
+                {/* On the platform but not logged in: CrazyGames' own login/register
+                    popup (SDK showAuthPrompt) — never an external provider. */}
                 <button
                   onClick={onCgLogin}
                   title='Log in with your CrazyGames account'
@@ -5481,6 +5502,17 @@ function Lobby({
                   <span className='text-white/40'>Guest ·</span> Account
                 </button>
               </span>
+            ) : (
+              /* Outside CrazyGames (own site, embeds): the platform isn't
+                 present, so no platform login button — just the in-game
+                 account / guest flow the game has always had. */
+              <button
+                onClick={onOpenLogin}
+                title='Save your progress across devices'
+                className='clip-deck-sm hidden items-center gap-1.5 border border-cyan-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:text-cyan-100 sm:inline-flex'
+              >
+                <span className='text-white/40'>Guest ·</span> Account
+              </button>
             )}
             {lobbyProfile && account && (
               <>

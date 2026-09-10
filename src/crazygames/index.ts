@@ -80,10 +80,10 @@ type CgError = { code?: string; message?: string };
 
 const win = typeof window !== 'undefined' ? (window as CgWindow) : undefined;
 
-// Does the SDK <script> tag from index.html actually exist in the page? The
-// loader in index.html skips the script on plain localhost (clean local dev)
-// and includes it everywhere else; append ?cgdev=1 to a localhost URL to opt
-// into the SDK's simulated "local" environment (demo ads + login) for testing.
+// Does the SDK <script> tag from index.html actually exist in the page?
+// The script is unconditionally included (see index.html); QA and platform
+// detection look for it literally. Append ?cgdev=1 on localhost to opt into
+// the SDK's simulated "local" environment (demo ads + login) for testing.
 function sdkScriptPresent(): boolean {
   if (typeof document === 'undefined') return false;
   return !!document.querySelector<HTMLScriptElement>(
@@ -119,8 +119,17 @@ export function initCrazyGames(): Promise<void> {
       // preloads the data module's save data, so doing it first matters.
       await candidate.init();
       environment = candidate.environment ?? 'disabled';
+      // `local` = running on localhost. The SDK simulates ads/login there for
+      // integration testing — but ONLY when the developer explicitly opts in
+      // via ?cgdev=1 (see index.html). Plain local dev resolves to 'disabled'
+      // so demos/fake users never leak into normal development.
+      if (environment === 'local') {
+        const devSim = /[?&]cgdev=1/.test(window.location.search);
+        environment = devSim ? 'local' : 'disabled';
+      }
       // `disabled` means "hosted outside CrazyGames" (own domain, itch, etc):
-      // every SDK call would throw there, so treat it exactly like absent.
+      // every SDK call would throw there, so treat it exactly like absent —
+      // the game plays identically with no platform, no ads, no login UI.
       if (environment === 'disabled') sdk = null;
     } catch {
       // Init can fail under sitelock/network issues; keep the game running.
