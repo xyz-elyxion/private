@@ -79,15 +79,15 @@ export function apiUrl(path: string): string {
   return `${apiBase()}${path}`;
 }
 
-/** Default game-server WebSocket URL: ws(s)://<api-base-or-host>/ws/instagib. */
+/** Default game-server WebSocket URL: ws(s)://<api-base-or-host>/ws/elyxion. */
 export function defaultWsUrl(): string {
-  if (!theWindow) return 'ws://localhost:8787/ws/instagib';
+  if (!theWindow) return 'ws://localhost:8787/ws/elyxion';
   const proto = theWindow.location.protocol === 'https:' ? 'wss' : 'ws';
   const base = apiBase();
   if (base) {
     // Cross-origin backend: reuse its scheme + host (https→wss).
     const wsBase = base.replace(/^http/, 'ws');
-    return `${wsBase}/ws/instagib`;
+    return `${wsBase}/ws/elyxion`;
   }
-  return `${proto}://${theWindow.location.host}/ws/instagib`;
+  return `${proto}://${theWindow.location.host}/ws/elyxion`;
 }

@@ -149,11 +149,11 @@ systems wherever possible:
 | Slot | What it changes | Reuses |
 |------|------------------|--------|
 | `railColor` | rail beam core/helix color | `RAIL_CORE_COLOR` / `RAIL_HELIX_COLOR` (`constants.ts`), `buildRailBeam` (`weapon.ts`) |
-| `crosshair` | crosshair preset/skin | existing crosshair presets + `CrosshairConfig` (`InstagibClient.tsx`) |
+| `crosshair` | crosshair preset/skin | existing crosshair presets + `CrosshairConfig` (`ElyxionClient.tsx`) |
 | `viewmodelSkin` | railgun body tint/material | `buildRailgun` colors (`weapon-model.ts`) |
 | `playerTint` | your soldier's accent color | bot/remote material highlight (`applyHighlight`, `bots.ts`) |
-| `nameColor` | your name in killfeed/scoreboard | killfeed/scoreboard render (`InstagibClient.tsx`) |
-| `killConfirm` | style of the "Gibbed" text / kill flash hue | `KillConfirmOverlay`, `KillFlashLayer` (`InstagibClient.tsx`) |
+| `nameColor` | your name in killfeed/scoreboard | killfeed/scoreboard render (`ElyxionClient.tsx`) |
+| `killConfirm` | style of the "Gibbed" text / kill flash hue | `KillConfirmOverlay`, `KillFlashLayer` (`ElyxionClient.tsx`) |
 | `announcer` | multi-kill voice pack | `MEDAL_VOICE` / audio (`audio.ts`, `medals.ts`) |
 
 Manifest shape (static, in code — e.g. `src/game/cosmetics.ts`, shared with
@@ -174,7 +174,7 @@ export type Cosmetic = {
 Equipping: client sends `POST /api/equip { slot, id }`; server verifies the id is
 in the player's `unlocked` set and writes `equipped`. Other players receive a
 player's equipped cosmetics in the match snapshot so beams/tints render for
-everyone (extend the `state`/`joined` payloads in `server/instagib-game.ts`).
+everyone (extend the `state`/`joined` payloads in `server/elyxion-game.ts`).
 
 ---
 
@@ -215,7 +215,7 @@ Keep all writes rate-limited and idempotent where possible.
 - **End-of-match:** the results screen (already shown post-match) gains an XP bar
   that fills + a "LEVEL UP" / "UNLOCKED: X" flourish using the existing toast/
   banner system (`awardMedal`/`BannerOverlay` patterns in `game.ts` /
-  `InstagibClient.tsx`). Drive it off the new `POST /api/stats` response fields.
+  `ElyxionClient.tsx`). Drive it off the new `POST /api/stats` response fields.
 - **Command deck:** a **Profile** panel (level ring + XP bar + career stats) and a
   **Locker** (equip cosmetics) + **Shop** (spend credits) + **Challenges** tabs.
   These are pure React over the new endpoints — no engine changes.

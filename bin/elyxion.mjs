@@ -14,7 +14,7 @@ const packageJson = JSON.parse(
 const help = `Elyxion CLI v${packageJson.version}
 
 Usage:
-  instagib <command> [options]
+  elyxion <command> [options]
 
 Commands:
   dev                 Run the app with Vite live reload on one port
@@ -33,11 +33,11 @@ Commands:
   help                Show this help
 
 Examples:
-  instagib dev
-  instagib serve
-  instagib lan --server
-  instagib load --players 8 --duration 12
-  instagib run scripts/netcode-load.ts --players 2
+  elyxion dev
+  elyxion serve
+  elyxion lan --server
+  elyxion load --players 8 --duration 12
+  elyxion run scripts/netcode-load.ts --players 2
 
 Options passed after a command are forwarded to the underlying tool.
 `;
@@ -136,13 +136,13 @@ const runCommand = async (command, args) => {
       return runBin('eslint', ['.', ...args]);
     case 'run':
       if (!args[0]) {
-        console.error('Usage: instagib run <file> [args...]');
+        console.error('Usage: elyxion run <file> [args...]');
         return 2;
       }
       return runBin('tsx', args);
     case 'watch':
       if (!args[0]) {
-        console.error('Usage: instagib watch <file> [args...]');
+        console.error('Usage: elyxion watch <file> [args...]');
         return 2;
       }
       return runBin('tsx', ['watch', ...args]);
@@ -171,7 +171,7 @@ if (!first || first === '--help' || first === '-h') {
       process.exitCode = code;
     })
     .catch((error) => {
-      console.error(`[instagib] ${error.message}`);
+      console.error(`[elyxion] ${error.message}`);
       process.exitCode = 1;
     });
 }

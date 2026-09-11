@@ -49,7 +49,14 @@ fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 
 const databasePath = process.env.DATABASE_PATH
   ? path.resolve(process.env.DATABASE_PATH)
-  : path.join(dataDir, 'instagib.sqlite');
+  : path.join(
+      dataDir,
+      // Pre-rename deployments keep their database: table names and player
+      // data are unchanged by the rebrand, so reuse the existing file.
+      fs.existsSync(path.join(dataDir, 'instagib.sqlite'))
+        ? 'instagib.sqlite'
+        : 'elyxion.sqlite',
+    );
 
 const sqlite = new Database(databasePath);
 sqlite.pragma('journal_mode = WAL');

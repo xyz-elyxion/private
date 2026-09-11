@@ -1,5 +1,5 @@
 // Ranked Duel ladder API (read-only). The rating itself is written only by the
-// game server on an authoritative 1v1 result (see server/instagib-game.ts →
+// game server on an authoritative 1v1 result (see server/elyxion-game.ts →
 // recordRankedResult). These endpoints just surface the ladder + the caller's
 // own standing for the lobby UI. Login-gated reads: a guest has no ranked id.
 

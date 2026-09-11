@@ -10,7 +10,7 @@
 // client-reported and server-CLAMPED + cross-validated (server/stats.ts) — the
 // XP number itself is never client-reported. Stakes are low: cosmetic-only,
 // self-affecting. Hardening path: record online matches from the authoritative
-// WS server (server/instagib-game.ts) instead of the public POST. See ROADMAP
+// WS server (server/elyxion-game.ts) instead of the public POST. See ROADMAP
 // "Anti-cheat / integrity".
 
 export const MAX_LEVEL = 100;

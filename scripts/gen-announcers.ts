@@ -5,7 +5,7 @@
 //
 // The lines come from src/game/announcer-lines.ts (the single source of truth that
 // the client also reads to pick + preload variants). Each line variant N for a
-// clip is written as `<clip>_<N>.mp3` under public/sounds/instagib/announcer/<packId>/.
+// clip is written as `<clip>_<N>.mp3` under public/sounds/elyxion/announcer/<packId>/.
 // Stale .mp3s in that folder are cleared first so removed/renamed variants don't
 // linger. Browsers decode MP3 via Web Audio, so no OGG conversion is needed.
 //
@@ -37,7 +37,7 @@ if (!lines || Object.keys(lines).length === 0) {
 // A touch of expressiveness for an announcer; speaker boost keeps it present.
 const VOICE_SETTINGS = { stability: 0.4, similarity_boost: 0.85, style: 0.35, use_speaker_boost: true };
 
-const outDir = path.resolve('public/sounds/instagib/announcer', packId);
+const outDir = path.resolve('public/sounds/elyxion/announcer', packId);
 await mkdir(outDir, { recursive: true });
 // Clear stale clips so renamed/removed variants don't linger.
 for (const f of await readdir(outDir).catch(() => [] as string[])) {

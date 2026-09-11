@@ -1,10 +1,10 @@
 {
-  "name": "instagib-arena",
+  "name": "elyxion-arena",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "bin": {
-    "instagib": "./bin/instagib.mjs"
+    "elyxion": "./bin/elyxion.mjs"
   },
   "description": "Browser-based, server-authoritative Quake-style instagib FPS. Three.js client + Node WebSocket game server.",
   "engines": {
@@ -14,11 +14,11 @@
     "predev": "node scripts/ensure-native.mjs",
     "dev": "tsx watch server/index.ts",
     "predev:lan": "node scripts/ensure-native.mjs && node scripts/lan-url.mjs",
-    "dev:lan": "node bin/instagib.mjs dev:lan",
+    "dev:lan": "node bin/elyxion.mjs dev:lan",
     "predev:server": "node scripts/ensure-native.mjs",
     "dev:server": "tsx watch server/index.ts",
     "lan": "node scripts/lan-url.mjs",
-    "cli": "node bin/instagib.mjs",
+    "cli": "node bin/elyxion.mjs",
     "netcode:load": "tsx scripts/netcode-load.ts",
     "package:portable": "npm run build && node scripts/package-portable.mjs",
     "build": "vite build",

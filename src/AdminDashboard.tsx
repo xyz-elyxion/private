@@ -969,7 +969,7 @@ export default function AdminDashboard() {
         <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="font-display text-2xl uppercase tracking-[0.16em] text-cyan-300">
-              Instagib · Admin
+              Elyxion · Admin
             </h1>
             <p className="text-[11px] text-white/40">
               Signed in as {auth.account.username} · live metrics from production data

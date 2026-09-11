@@ -82,9 +82,9 @@ if (target.platform !== process.platform || target.arch !== process.arch) {
 }
 
 const outputRoot = path.join(projectRoot, 'release');
-const packageName = `instagib-arena-${targetName}`;
+const packageName = `elyxion-arena-${targetName}`;
 const outputDir = path.join(outputRoot, packageName);
-const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'instagib-runtime-'));
+const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'elyxion-runtime-'));
 const archiveName = `node-${nodeRelease}-${target.platform === 'win32' ? 'win' : target.platform}-${target.nodeArch}.${target.archive}`;
 const archivePath = path.join(tempDir, archiveName);
 const runtimeUrl = `https://nodejs.org/dist/${nodeRelease}/${archiveName}`;
@@ -124,18 +124,18 @@ const writeLaunchers = async () => {
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$HERE"
-INSTAGIB_PORTABLE=1 exec "$HERE/runtime/bin/node" "$HERE/bin/instagib.mjs" "$@"
+ELYXION_PORTABLE=1 exec "$HERE/runtime/bin/node" "$HERE/bin/elyxion.mjs" "$@"
 `;
   const windowsLauncher = `@echo off
 setlocal
 cd /d "%~dp0"
-set INSTAGIB_PORTABLE=1
-"%~dp0runtime\\node.exe" "%~dp0bin\\instagib.mjs" %*
+set ELYXION_PORTABLE=1
+"%~dp0runtime\\node.exe" "%~dp0bin\\elyxion.mjs" %*
 exit /b %errorlevel%
 `;
-  await fs.writeFile(path.join(outputDir, 'instagib'), posixLauncher, 'utf8');
-  await fs.writeFile(path.join(outputDir, 'instagib.cmd'), windowsLauncher, 'utf8');
-  await fs.chmod(path.join(outputDir, 'instagib'), 0o755);
+  await fs.writeFile(path.join(outputDir, 'elyxion'), posixLauncher, 'utf8');
+  await fs.writeFile(path.join(outputDir, 'elyxion.cmd'), windowsLauncher, 'utf8');
+  await fs.chmod(path.join(outputDir, 'elyxion'), 0o755);
 };
 
 const writeReadme = async () => {
@@ -145,8 +145,8 @@ This folder includes its own Node.js runtime. Node.js does not need to be
 installed on the target computer.
 
 Run the game server:
-  Windows: instagib.cmd start
-  macOS/Linux: ./instagib start
+  Windows: elyxion.cmd start
+  macOS/Linux: ./elyxion start
 
 Useful commands:
   start       Start the production server

@@ -330,7 +330,7 @@ export type MatchConfig =
   | { mode: 'spectator'; mapId: string; serverUrl: string; roomId: string };
 
 // The game server is served on the same origin as the web client (the Node
-// server hosts both the static build and the /ws/instagib socket), so the
+// server hosts both the static build and the /ws/elyxion socket), so the
 // default multiplayer URL is derived from the current location: ws in dev,
 // wss behind TLS. In dev, Vite proxies /ws to the backend (see vite.config.ts).
 function defaultServerUrl(): string {
@@ -400,7 +400,10 @@ const DEFAULT_SETTINGS: Settings = {
   hideChat: false,
 };
 
-const SETTINGS_KEY = 'instagib-settings-v2';
+const SETTINGS_KEY = 'elyxion-settings-v2';
+// Pre-rebrand key — read as a fallback (and cleared on migrate) so returning
+// players keep their settings, name, and keybinds under the new key.
+const LEGACY_SETTINGS_KEY = 'instagib-settings-v2';
 
 // Rarity → accent color for cosmetic cards in the Locker.
 const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
@@ -413,7 +416,7 @@ const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
 const CARD_STAT_DEFS: ReadonlyArray<{
   key: string;
   label: string;
-  from: (p:InstagibProfile) => string;
+  from: (p:ElyxionProfile) => string;
 }> = [
   { key: 'kills', label: 'KILLS', from: (p) => String(p.stats.totalKills) },
   { key: 'deaths', label: 'DEATHS', from: (p) => String(p.stats.totalDeaths) },
@@ -437,7 +440,7 @@ const CARD_STAT_DEFS: ReadonlyArray<{
 const MAX_CARD_STATS = 3;
 
 function buildCardPayload(
-  profile:InstagibProfile,
+  profile:ElyxionProfile,
   settings: Settings,
   account?: Account,
 ): CardPayload {
@@ -474,12 +477,12 @@ function CardStatsEditor({
   onChange: (s: Settings) => void;
   account?: Account;
 }) {
-  const [profile, setProfile] = useState<InstagibProfile | null>(null);
+  const [profile, setProfile] = useState<ElyxionProfile | null>(null);
   useEffect(() => {
     let active = true;
     fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?:InstagibProfile }) => {
+      .then((d: { profile?:ElyxionProfile }) => {
         if (active && d.profile) setProfile(d.profile);
       })
       .catch(() => {});
@@ -700,14 +703,20 @@ async function linkOrAutoLoginCrazyGames(): Promise<CgLinkResult> {
   }
 }
 
+// cgStorage = CrazyGames data module when available (syncs the save to the
+// player's CrazyGames account), plain localStorage otherwise. Same keys,
+// so existing local saves carry over — the data module mirrors guests to
+// localStorage itself, so no migration is needed.
+function storageGetItem(key: string): string | null {
+  const raw = cgStorage.getItem(key);
+  if (raw !== null && raw !== undefined) return raw;
+  return cgStorage.getItem(LEGACY_SETTINGS_KEY);
+}
+
 function loadSettings(): Settings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
   try {
-    // cgStorage = CrazyGames data module when available (syncs the save to the
-    // player's CrazyGames account), plain localStorage otherwise. Same keys,
-    // so existing local saves carry over — the data module mirrors guests to
-    // localStorage itself, so no migration is needed.
-    const raw = cgStorage.getItem(SETTINGS_KEY);
+    const raw = storageGetItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<Settings>;
     const merged: Settings = {
@@ -746,6 +755,9 @@ function saveSettings(s: Settings) {
     // the user types a real one (which is then persisted normally).
     const toSave = AUTO_NAME_RE.test(s.playerName) ? { ...s, playerName: '' } : s;
     cgStorage.setItem(SETTINGS_KEY, JSON.stringify(toSave));
+    // One-shot migration: a successful write under the new key retires the
+    // pre-rebrand entry (cgStorage mirrors guests to localStorage itself).
+    cgStorage.removeItem(LEGACY_SETTINGS_KEY);
   } catch {
     // ignore
   }
@@ -853,7 +865,7 @@ const INITIAL_HUD: HudState = {
 // Shape of the CrazyGames user mirrored into local React state.
 type CgUserState = { username: string; profilePictureUrl?: string } | null;
 
-export default function InstagibClient() {
+export default function ElyxionClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -941,7 +953,7 @@ export default function InstagibClient() {
       // Game-completion reporting (docs: reportGameCompletedPercentage): fire the
       // persisted milestone at boot so the platform always has a current value —
       // required after content updates shift the scale. 0 = nothing to report.
-      const cgPct = Number(cgStorage.getItem('instagib-cg-completion-pct') ?? '0');
+      const cgPct = Number(cgStorage.getItem('elyxion-cg-completion-pct') ?? '0');
       if (cgPct > 0) cgReportGameCompleted(cgPct);
     });
     return () => {
@@ -1042,7 +1054,10 @@ export default function InstagibClient() {
     settingsLoadedRef.current = true;
     // First visit (no onboarded flag) → show the welcome / name / controls primer.
     const firstRun =
-      typeof window !== 'undefined' && !window.localStorage.getItem('instagib-onboarded');
+      typeof window !== 'undefined' &&
+      !window.localStorage.getItem('elyxion-onboarded') &&
+      // Pre-rebrand visits already saw the primer.
+      !window.localStorage.getItem('instagib-onboarded');
     if (firstRun) setShowOnboarding(true);
   }, []);
 
@@ -1138,7 +1153,7 @@ export default function InstagibClient() {
   }, [config, startMatch]);
 
   const finishOnboarding = useCallback(() => {
-    if (typeof window !== 'undefined') window.localStorage.setItem('instagib-onboarded', '1');
+    if (typeof window !== 'undefined') window.localStorage.setItem('elyxion-onboarded', '1');
     setShowOnboarding(false);
     // A held invite-join now proceeds (the player saw the primer first).
     if (pendingJoinRef.current) {
@@ -1214,7 +1229,7 @@ export default function InstagibClient() {
 }
 
 // First-run welcome: pick a display name + a quick controls primer. Shown once
-// (guarded by the `instagib-onboarded` localStorage flag).
+// (guarded by the `elyxion-onboarded` localStorage flag).
 function OnboardingModal({
   onPlayGuest,
   onCreateAccount,
@@ -1382,7 +1397,7 @@ function GameView({
           completedReportedRef.current = true;
           cgReportGameCompleted(100);
           try {
-            cgStorage.setItem('instagib-cg-completion-pct', '100');
+            cgStorage.setItem('elyxion-cg-completion-pct', '100');
           } catch { /* ignore */ }
         }
       }
@@ -1454,7 +1469,7 @@ function GameView({
     let active = true;
     fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?:InstagibProfile }) => {
+      .then((d: { profile?:ElyxionProfile }) => {
         if (!active || !d.profile) return;
         const card = buildCardPayload(d.profile, settings);
         gameRef.current?.setCardPayload?.(card);
@@ -2126,7 +2141,7 @@ function Locker({
     let active = true;
     fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (!active || !d.profile) return;
         const p = d.profile;
         setProfile({
@@ -4450,7 +4465,7 @@ function randomMapId(): string {
   return QUICK_MAP_POOL[Math.floor(Math.random() * QUICK_MAP_POOL.length)];
 }
 
-type InstagibStats = {
+type ElyxionStats = {
   totalKills: number;
   totalDeaths: number;
   totalGames: number;
@@ -4465,8 +4480,9 @@ function savedPlayerName(): string | undefined {
   try {
     // Same storage bridge as loadSettings: CG data module when on CrazyGames,
     // localStorage otherwise. Keeps the saved display name in sync across
-    // devices for logged-in CrazyGames users.
-    const raw = cgStorage.getItem(SETTINGS_KEY);
+    // devices for logged-in CrazyGames users. Reads the legacy pre-rebrand
+    // key as a fallback so returning players keep their display name.
+    const raw = storageGetItem(SETTINGS_KEY);
     if (!raw) return undefined;
     const name = (JSON.parse(raw) as Partial<Settings>)?.playerName;
     return typeof name === 'string' && name.trim() ? name.trim() : undefined;
@@ -4664,7 +4680,7 @@ type RankedLeaderEntry = {
 const RANKED_BASE = 1000;
 // The live flair text for the dynamic ranked title from a profile's standing:
 // top-10 → "#N", otherwise the tier name; '' if the player has no ranked games.
-function rankedStandingText(ranked: InstagibProfile['ranked']): string {
+function rankedStandingText(ranked: ElyxionProfile['ranked']): string {
   if (!ranked) return '';
   const season = ranked.season;
   return season.rank >= 1 && season.rank <= 10 ? `#${season.rank}` : rankedTierName(season.rating);
@@ -5384,7 +5400,7 @@ function Lobby({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('controls');
   const [lockerOpen, setLockerOpen] = useState(false);
-  const [lobbyProfile, setLobbyProfile] = useState<InstagibProfile | null>(null);
+  const [lobbyProfile, setLobbyProfile] = useState<ElyxionProfile | null>(null);
   const [claimable, setClaimable] = useState(0); // completed-but-unclaimed challenges
   const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
@@ -5556,7 +5572,7 @@ function Lobby({
     let active = true;
     fetch(apiUrl('/api/profile'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (active && d.profile) setLobbyProfile(d.profile);
       })
       .catch(() => {});
@@ -6688,7 +6704,7 @@ function DifficultyPicker({
   );
 }
 
-type InstagibProfile = {
+type ElyxionProfile = {
   level: number;
   totalXp: number;
   xpIntoLevel: number;
@@ -6696,19 +6712,19 @@ type InstagibProfile = {
   credits: number;
   unlocked: string[];
   equipped: Record<string, string>;
-  stats: InstagibStats;
+  stats: ElyxionStats;
   ranked: RankedProfile | null;
 };
 
 function StatsModal({ onClose }: { onClose: () => void }) {
-  const [profile, setProfile] = useState<InstagibProfile | null>(null);
+  const [profile, setProfile] = useState<ElyxionProfile | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
 
   useEffect(() => {
     let active = true;
     fetch(apiUrl('/api/profile'))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile unavailable'))))
-      .then((d: { profile?: InstagibProfile }) => {
+      .then((d: { profile?: ElyxionProfile }) => {
         if (!active) return;
         setProfile(d.profile ?? null);
         setState('ready');
@@ -7902,7 +7918,7 @@ function SettingsModal({
                 <TextField
                   label='Server URL (blank = this server)'
                   value={settings.serverUrl}
-                  placeholder='wss://your-server.example/ws/instagib'
+                  placeholder='wss://your-server.example/ws/elyxion'
                   onChange={(v) => onChange({ ...settings, serverUrl: v.trim() })}
                 />
               )}

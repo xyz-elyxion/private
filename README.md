@@ -95,15 +95,15 @@ interesting parts are all in this repo.
 
 ```bash
 git clone https://github.com/8tp/instagib-arena.git
-cd instagib-arena
+cd elyxion-arena
 npm install
 npm run cli -- dev
-# or, after npm link, use the shorter `instagib dev` command
+# or, after npm link, use the shorter `elyxion dev` command
 ```
 
 The project includes a small Node-style CLI. `npm run cli -- <command>` works
 without installing anything globally; `npm link` exposes the same executable as
-`instagib <command>`. The default `dev` command runs one Node process on
+`elyxion <command>`. The default `dev` command runs one Node process on
 <http://localhost:8787>. It mounts Vite for client hot reload and also serves the
 WebSocket game and APIs, so development and production use the same single origin.
 Open <http://localhost:8787> and hit **Enter the arena**.
@@ -113,12 +113,12 @@ Open <http://localhost:8787> and hit **Enter the arena**.
 Useful CLI commands:
 
 ```bash
-instagib dev                         # single-port Vite + game server with live reload
-instagib serve                       # build and serve the production app
-instagib lan --server                # print the production LAN URL
-instagib load --players 8            # run the netcode load harness
-instagib run scripts/netcode-load.ts --players 2
-instagib --help
+elyxion dev                         # single-port Vite + game server with live reload
+elyxion serve                       # build and serve the production app
+elyxion lan --server                # print the production LAN URL
+elyxion load --players 8            # run the netcode load harness
+elyxion run scripts/netcode-load.ts --players 2
+elyxion --help
 ```
 
 The `dev:server` script remains available as an alias for compatibility.
@@ -143,9 +143,9 @@ npm run package:portable -- --target=macos-arm64
 npm run package:portable -- --target=windows-x64
 ```
 
-The package is written to `release/instagib-arena-<target>/`. Distribute that
-entire folder. On Windows run `instagib.cmd start`; on macOS/Linux run
-`./instagib start`. The generated package also includes a `README.txt`.
+The package is written to `release/elyxion-arena-<target>/`. Distribute that
+entire folder. On Windows run `elyxion.cmd start`; on macOS/Linux run
+`./elyxion start`. The generated package also includes a `README.txt`.
 
 For cross-platform builds, use the **Portable packages** GitHub Actions workflow
 from the repository's Actions tab. It creates downloadable artifacts for Linux,
@@ -163,7 +163,7 @@ npm run serve
 
 In production the **single Node server** (default port `8787`) serves the built
 client from `dist/`, the APIs under `/api`, and the game socket at
-`/ws/instagib` — all on one port. Put any TLS terminator / reverse proxy /
+`/ws/elyxion` — all on one port. Put any TLS terminator / reverse proxy /
 CDN in front of it; the WebSocket rides the same origin. See
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the Railway + Cloudflare setup
 the live site runs on.
@@ -215,7 +215,7 @@ optional:
 | `PORT`          | `8787`             | Port the Node server listens on.                               |
 | `HOST`          | `0.0.0.0` (prod)   | Bind address.                                                  |
 | `DATA_DIR`      | `./data`           | Directory for runtime data (the SQLite DB).                    |
-| `DATABASE_PATH` | `./data/instagib.sqlite` | Explicit DB file path (overrides `DATA_DIR`).           |
+| `DATABASE_PATH` | `./data/elyxion.sqlite` | Explicit DB file path (overrides `DATA_DIR`).           |
 | `APP_BASE_URL`  | _(unset)_          | Production WebSocket origin allow-list. When set, only browsers loading the app from this origin may open the game socket. Unset = same-origin only. |
 | `ADMIN_USERNAMES` | _(unset)_        | Comma-separated account names auto-promoted to admin.          |
 
@@ -224,13 +224,13 @@ optional:
 ## Project structure
 
 ```
-instagib-arena/
+elyxion-arena/
 ├─ index.html             # Vite entry (meta/OG/JSON-LD + crawlable noscript)
 ├─ vite.config.ts         # React + Tailwind plugins; mounted by the dev server
 ├─ src/
 │  ├─ main.tsx            # React root + router (/ and /play)
 │  ├─ pages/Landing.tsx   # marketing / controls splash
-│  ├─ InstagibClient.tsx  # the game client: canvas mount, HUD, menus, lobby
+│  ├─ ElyxionClient.tsx  # the game client: canvas mount, HUD, menus, lobby
 │  ├─ AdminDashboard.tsx  # /admin — metrics, players, feedback moderation
 │  └─ game/               # the Three.js engine (framework-agnostic)
 │     ├─ game.ts          #   main loop, match/HUD orchestration
@@ -246,7 +246,7 @@ instagib-arena/
 │     └─ …                #   audio, effects, hats, input, training, podium
 ├─ server/
 │  ├─ index.ts            # http + express static + /api + WS upgrade routing
-│  ├─ instagib-game.ts    # authoritative game server (modes, rooms, lag comp, anti-cheat)
+│  ├─ elyxion-game.ts    # authoritative game server (modes, rooms, lag comp, anti-cheat)
 │  ├─ db.ts               # better-sqlite3 store (stats, accounts, feedback, audit)
 │  ├─ auth.ts             # optional username/password accounts (cookie session)
 │  ├─ admin.ts            # admin metrics API + feedback moderation
@@ -275,7 +275,7 @@ owns spawns, tunables, and the wire format without pulling in a renderer.
 | [`docs/progression.md`](docs/progression.md) | XP / levels / credits / unlock design. |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Where this is going. |
 | [`docs/distribution-kit.md`](docs/distribution-kit.md) | Launch kit: portal listings, embeds, store copy. |
-| [`docs/instagib-arena-plan.md`](docs/instagib-arena-plan.md) | The original design doc (some of it aspirational). |
+| [`docs/elyxion-arena-plan.md`](docs/elyxion-arena-plan.md) | The original design doc (some of it aspirational). |
 
 ---
 
@@ -293,7 +293,7 @@ multiplayer match results, by contrast, are server-authoritative.
 ## Audio assets
 
 Announcer voice lines and multi-kill medal callouts ship as `.ogg` files in
-`public/sounds/instagib/`. The railgun **fire / hit / kill** SFX have no bundled
+`public/sounds/elyxion/`. The railgun **fire / hit / kill** SFX have no bundled
 clip and are **synthesized procedurally** via the Web Audio API at runtime. Drop
 a matching `.ogg` at the path listed in `src/game/audio.ts` (`SOUND_URLS`) to
 override any sound; missing announcer lines fall back to speech synthesis.
@@ -305,8 +305,8 @@ override any sound; missing announcer lines fall back to speech synthesis.
 | Script             | What it does                                              |
 | ------------------ | -------------------------------------------------------- |
 | `npm run dev`      | Single-port dev server with Vite hot reload.              |
-| `npm run cli -- <command>` | Run the Node-style `instagib` CLI without a global install. |
-| `instagib dev`     | Single-port dev server (after `npm link`).               |
+| `npm run cli -- <command>` | Run the Node-style `elyxion` CLI without a global install. |
+| `elyxion dev`     | Single-port dev server (after `npm link`).               |
 | `npm run dev:server` | Alias for the single-port dev server.                   |
 | `npm run build`    | Production client build to `dist/`.                      |
 | `npm start`        | Run the production server (expects `dist/`).             |

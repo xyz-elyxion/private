@@ -10,7 +10,7 @@ import netcodeUdp from '../../docs/NETCODE-UDP-PLAN.md?raw';
 import roadmap from '../../docs/ROADMAP.md?raw';
 import communityMaps from '../../docs/community-maps.md?raw';
 import distributionKit from '../../docs/distribution-kit.md?raw';
-import originalPlan from '../../docs/instagib-arena-plan.md?raw';
+import originalPlan from '../../docs/elyxion-arena-plan.md?raw';
 import progression from '../../docs/progression.md?raw';
 
 type Doc = {
@@ -29,7 +29,7 @@ const DOCS: Doc[] = [
   { slug: 'roadmap', title: 'Roadmap', description: 'Shipped work, guiding principles, and what comes next.', content: roadmap },
   { slug: 'community-maps', title: 'Community Maps', description: 'The versioned JSON map format.', content: communityMaps },
   { slug: 'distribution-kit', title: 'Distribution Kit', description: 'Launch copy, listings, embeds, and store assets.', content: distributionKit },
-  { slug: 'instagib-arena-plan', title: 'Original Design Plan', description: 'The original design rationale and aspirations.', content: originalPlan },
+  { slug: 'elyxion-arena-plan', title: 'Original Design Plan', description: 'The original design rationale and aspirations.', content: originalPlan },
   { slug: 'progression', title: 'Progression System', description: 'XP, levels, credits, cosmetics, and challenges.', content: progression },
 ];
 

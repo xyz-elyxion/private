@@ -32,6 +32,6 @@ jobs:
       - run: npm run package:portable -- --target=${{ matrix.target }}
       - uses: actions/upload-artifact@v7
         with:
-          name: instagib-arena-${{ matrix.target }}
-          path: release/instagib-arena-${{ matrix.target }}
+          name: elyxion-arena-${{ matrix.target }}
+          path: release/elyxion-arena-${{ matrix.target }}
           if-no-files-found: error

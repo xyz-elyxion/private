@@ -30,7 +30,7 @@ if (ips.length === 0) {
   console.log('[lan] No LAN IPv4 found — are you connected to WiFi/Ethernet?');
 } else {
   const label = mode === 'server' ? 'single-port (built client + server)' : 'dev (Vite hot reload)';
-  console.log(`\n  Instagib on your LAN — ${label}`);
+  console.log(`\n  Elyxion on your LAN — ${label}`);
   console.log('  Open this on any device on the same WiFi:\n');
   for (const ip of ips) console.log(`    →  http://${ip}:${port}`);
   if (ips.length > 1) console.log('\n  (multiple addresses — try them in order if one fails)');

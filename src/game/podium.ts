@@ -10,7 +10,7 @@ import { applyEmote, buildEmoteRig, type EmoteRig } from './emotes';
 // wearing their hats and playing their equipped emote. A self-contained Three.js
 // scene mounted on a results-screen canvas — separate from the match scene.
 
-const SOLDIER_URL = assetUrl('/models/instagib/soldier.glb');
+const SOLDIER_URL = assetUrl('/models/elyxion/soldier.glb');
 const MEDAL = [0xffd24a, 0xcdd6e0, 0xd08a4a]; // gold / silver / bronze (place 1/2/3)
 // (x position, pedestal height, model facing yaw) for places 1, 2, 3.
 const SLOTS: ReadonlyArray<{ x: number; h: number }> = [

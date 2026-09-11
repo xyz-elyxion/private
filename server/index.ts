@@ -3,7 +3,7 @@
 // One Node process hosts everything on a single port:
 //   • the built web client (dist/, in production)
 //   • the stats API           ->  /api/stats
-//   • the authoritative game   ->  /ws/instagib  (WebSocket)
+//   • the authoritative game   ->  /ws/elyxion  (WebSocket)
 //
 // In development, Vite runs in Express middleware mode on this same listener,
 // so the client, API, game socket, and HMR all share one origin and one port.
@@ -24,9 +24,11 @@ import { authRouter, adminUsernamesFromEnv } from './auth';
 import { crazyGamesRouter } from './crazygames';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
-import { attachInstagibWs } from './instagib-game';
+import { attachElyxionWs } from './elyxion-game';
 
-const INSTAGIB_WS_PATH = '/ws/instagib';
+const ELYXION_WS_PATH = '/ws/elyxion';
+// Pre-rename clients (cached HTML) may still dial the old path — accept it.
+const ELYXION_WS_LEGACY_PATH = '/ws/instagib';
 
 // Process-level safety net: a single uncaught throw (a `ws` internal error, a
 // timer callback, an unexpected exception) must NOT take the whole server — and
@@ -104,7 +106,7 @@ app.use((req, _res, next) => {
 });
 
 // Security headers on every response. The app is a single same-origin bundle —
-// Vite-built JS/CSS under /assets, game assets (.glb/.ogg) and the /ws/instagib
+// Vite-built JS/CSS under /assets, game assets (.glb/.ogg) and the /ws/elyxion
 // socket are all same-origin — so a tight CSP costs nothing: scripts and
 // connections (incl. the same-origin WebSocket) are 'self'; styles allow inline
 // (React style props + the Play-of-the-Match <style> tag) and Google Fonts;
@@ -337,7 +339,7 @@ const instagibWss = new WebSocketServer({
   maxPayload: 16 * 1024,
   perMessageDeflate: false,
 });
-({ liveCounts } = attachInstagibWs(instagibWss));
+({ liveCounts } = attachElyxionWs(instagibWss));
 // Let the token-gated metrics API report live concurrency too (one-call /report).
 setLiveCountsSource(liveCounts);
 instagibWss.on('error', (err) => console.error('[ws] server error', err));
@@ -365,7 +367,7 @@ function clientIp(req: http.IncomingMessage): string {
 server.on('upgrade', (req, socket, head) => {
   const { url } = req;
   const pathname = url ? url.split('?')[0] : '';
-  if (pathname !== INSTAGIB_WS_PATH) {
+  if (pathname !== ELYXION_WS_PATH && pathname !== ELYXION_WS_LEGACY_PATH) {
     // Vite owns its `vite-hmr` upgrade in development. All other unknown
     // upgrades are rejected so they cannot leave an idle socket behind.
     const protocol = req.headers['sec-websocket-protocol'];
@@ -429,7 +431,7 @@ wsHeartbeat.unref();
 
 server.listen(port, host, () => {
   console.log(`> Elyxion server ready on http://${host}:${port}`);
-  console.log(`>   game socket:  ws://${host}:${port}${INSTAGIB_WS_PATH}`);
+  console.log(`>   game socket:  ws://${host}:${port}${ELYXION_WS_PATH}`);
   console.log(`>   stats api:    http://${host}:${port}/api/stats`);
   console.log(
     `>   metrics api:  http://${host}:${port}/api/admin/metrics/report ` +

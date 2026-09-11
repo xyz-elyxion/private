@@ -75,7 +75,7 @@ Targeted shape. Nothing here exists yet — this is what the first PR scaffolds.
 
 ```
 bespick/
-  src/app/(tools)/arcade/instagib/          # Next.js client routes
+  src/app/(tools)/arcade/elyxion/          # Next.js client routes
     page.tsx                                # lobby / mode select
     play/page.tsx                           # mounts the game canvas
     _components/
@@ -96,7 +96,7 @@ packages/instagib-shared/                   # workspace pkg (new)
     constants.ts                            # tickrate, speeds, etc.
     map.ts                                  # map loading + collision baking
 
-services/instagib-game-server/              # new top-level service
+services/elyxion-game-server/              # new top-level service
   src/
     index.ts                                # orchestrator (spawns children)
     match.ts                                # single-match worker entrypoint
@@ -171,7 +171,7 @@ These are starting points — expect ~2 weeks of tuning during the prototype pha
 - **Match child process** binds to its assigned port, runs the 64Hz sim, accepts up to N WS connections (mode-dependent), closes itself when the match ends + 30s drain.
 
 **Match lifecycle:**
-1. Player clicks "Find match" in `/arcade/instagib`.
+1. Player clicks "Find match" in `/arcade/elyxion`.
 2. Next.js API hits orchestrator: "request match for mode=duel, players=[A,B]".
 3. Orchestrator allocates port, spawns child, returns `(host, port, matchId, token)` per player.
 4. Each player's browser connects directly to that port over WSS, presenting the token.
@@ -201,7 +201,7 @@ Each phase ends with something playable, even if ugly.
 - **Goal:** movement feels good in single-player. If it doesn't feel good here, nothing else matters.
 
 ### Phase 2 — Networking spike (1–2 weeks)
-- Stand up `services/instagib-game-server` minimal: one process, fixed port, WS endpoint, no orchestrator yet.
+- Stand up `services/elyxion-game-server` minimal: one process, fixed port, WS endpoint, no orchestrator yet.
 - Two browsers connect to same room, see each other as capsules.
 - No prediction, no lag comp — just naïve "render where the server says they are" to validate the wire format.
 

@@ -26,7 +26,7 @@ export type SoundClipName =
 
 // Announcer voice packs. The default ('legacy') uses the flat SOUND_URLS files
 // below + the procedural/TTS fallback — unchanged behavior. Other packs are sets
-// of generated clips under /sounds/instagib/announcer/<id>/<clip>.mp3 (see
+// of generated clips under /sounds/elyxion/announcer/<id>/<clip>.mp3 (see
 // scripts/gen-announcers.mjs). Only ANNOUNCER_CLIPS are pack-swappable; weapon SFX
 // (fire/hit/kill/reload-ready) always use SOUND_URLS.
 export type AnnouncerPackId = 'legacy' | 'kuon';
@@ -40,26 +40,26 @@ export const DEFAULT_ANNOUNCER_PACK: AnnouncerPackId = 'legacy';
 // User-supplied .ogg files override the procedural / TTS fallback when present.
 // Drop CC-licensed clips at these public/ paths. See plan §6.
 export const SOUND_URLS: Record<SoundClipName, string> = {
-  'fire':          assetUrl('/sounds/instagib/rail-fire.ogg'),
-  'hit':           assetUrl('/sounds/instagib/hit.ogg'),
-  'kill':          assetUrl('/sounds/instagib/kill.ogg'),
-  'reload-ready':  assetUrl('/sounds/instagib/reload-ready.ogg'),
-  'first-blood':   assetUrl('/sounds/instagib/first-blood.ogg'),
-  'double-kill':   assetUrl('/sounds/instagib/double-kill.ogg'),
-  'triple-kill':   assetUrl('/sounds/instagib/triple-kill.ogg'),
-  'quad-kill':     assetUrl('/sounds/instagib/quad-kill.ogg'),
-  'penta-kill':    assetUrl('/sounds/instagib/penta-kill.ogg'),
-  'killing-spree': assetUrl('/sounds/instagib/killing-spree.ogg'),
-  'rampage':       assetUrl('/sounds/instagib/rampage.ogg'),
-  'dominating':    assetUrl('/sounds/instagib/dominating.ogg'),
-  'unstoppable':   assetUrl('/sounds/instagib/unstoppable.ogg'),
-  'godlike':       assetUrl('/sounds/instagib/godlike.ogg'),
-  'headshot':      assetUrl('/sounds/instagib/headshot.ogg'),
-  'humiliation':   assetUrl('/sounds/instagib/humiliation.ogg'),
-  'comeback':      assetUrl('/sounds/instagib/comeback.ogg'),
-  'match-point':   assetUrl('/sounds/instagib/match-point.ogg'),
-  'victory':       assetUrl('/sounds/instagib/victory.ogg'),
-  'defeat':        assetUrl('/sounds/instagib/defeat.ogg'),
+  'fire':          assetUrl('/sounds/elyxion/rail-fire.ogg'),
+  'hit':           assetUrl('/sounds/elyxion/hit.ogg'),
+  'kill':          assetUrl('/sounds/elyxion/kill.ogg'),
+  'reload-ready':  assetUrl('/sounds/elyxion/reload-ready.ogg'),
+  'first-blood':   assetUrl('/sounds/elyxion/first-blood.ogg'),
+  'double-kill':   assetUrl('/sounds/elyxion/double-kill.ogg'),
+  'triple-kill':   assetUrl('/sounds/elyxion/triple-kill.ogg'),
+  'quad-kill':     assetUrl('/sounds/elyxion/quad-kill.ogg'),
+  'penta-kill':    assetUrl('/sounds/elyxion/penta-kill.ogg'),
+  'killing-spree': assetUrl('/sounds/elyxion/killing-spree.ogg'),
+  'rampage':       assetUrl('/sounds/elyxion/rampage.ogg'),
+  'dominating':    assetUrl('/sounds/elyxion/dominating.ogg'),
+  'unstoppable':   assetUrl('/sounds/elyxion/unstoppable.ogg'),
+  'godlike':       assetUrl('/sounds/elyxion/godlike.ogg'),
+  'headshot':      assetUrl('/sounds/elyxion/headshot.ogg'),
+  'humiliation':   assetUrl('/sounds/elyxion/humiliation.ogg'),
+  'comeback':      assetUrl('/sounds/elyxion/comeback.ogg'),
+  'match-point':   assetUrl('/sounds/elyxion/match-point.ogg'),
+  'victory':       assetUrl('/sounds/elyxion/victory.ogg'),
+  'defeat':        assetUrl('/sounds/elyxion/defeat.ogg'),
   'spawn':         '', // deploy/encouragement — pack-only (no legacy file or TTS)
 };
 
@@ -163,7 +163,7 @@ export class SoundManager {
 
   // URL of one announcer line variant (1-indexed) for the active pack.
   private announcerVariantUrl(name: SoundClipName, idx: number): string {
-    return assetUrl(`/sounds/instagib/announcer/${this.pack}/${name}_${idx}.mp3`);
+    return assetUrl(`/sounds/elyxion/announcer/${this.pack}/${name}_${idx}.mp3`);
   }
 
   // Pick a variant index (1..count) for a clip, avoiding an immediate repeat so

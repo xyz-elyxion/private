@@ -3,7 +3,7 @@
 Use the headless load harness to compare snapshot delivery as room size changes:
 
 ```sh
-PORT=8799 DATA_DIR=/tmp/instagib-netcode NETCODE_DIAG=1 npx tsx server/index.ts
+PORT=8799 DATA_DIR=/tmp/elyxion-netcode NETCODE_DIAG=1 npx tsx server/index.ts
 npm run netcode:load -- --players 2 --duration 12 --warmup 2
 npm run netcode:load -- --players 8 --duration 12 --warmup 2
 ```
