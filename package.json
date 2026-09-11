@@ -20,6 +20,7 @@
     "lan": "node scripts/lan-url.mjs",
     "cli": "node bin/elyxion.mjs",
     "netcode:load": "tsx scripts/netcode-load.ts",
+    "smoke:portal-zip": "node scripts/smoke-portal-zip.mjs",
     "package:portable": "npm run build && node scripts/package-portable.mjs",
     "build": "vite build",
     "preview": "vite preview",

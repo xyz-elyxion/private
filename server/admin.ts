@@ -10,6 +10,7 @@
 //      entirely (session-only). All mutations are audit-logged.
 
 import { timingSafeEqual } from 'node:crypto';
+import path from 'node:path';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { accountId } from './auth';
 import {
@@ -34,6 +35,10 @@ import {
   type FeedbackStatus,
 } from './db';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
+import { sendPortalZip } from './portal-zip';
+
+// App version for the portal README metadata (overridable via env for CI).
+const APP_VERSION = (process.env.APP_VERSION ?? '').trim() || '1.0.0';
 
 export const adminRouter = Router();
 
@@ -315,4 +320,73 @@ adminRouter.get('/metrics/report', (req, res) => {
     recentModeBreakdown: modeBreakdown(sample),
     weekly: { ...getWeeklyChallengeStats(), map: WEEKLY_CHALLENGE_MAP, fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT },
   });
+});
+
+// ── Portal distribution zip ─────────────────────────────────────────────────
+// Streams the production static build (dist/) as a downloadable ZIP so the
+// admin can hand the bundle to other gaming portals (CrazyGames, Poki, itch,
+// Kongregate…). Session-gated (denyToken: no bearer-token downloads) and
+// audit-logged since it exfiltrates the whole build. Only files under dist/
+// are archived; the README travels inside the archive as PORTAL-README.txt
+// (never written to disk), so no path-controlled content can be smuggled in.
+adminRouter.get('/portal-zip', async (req, res) => {
+  if (denyToken(req, res)) return;
+  const distDir = path.join(process.cwd(), 'dist');
+  const stamp = new Date().toISOString().slice(0, 10);
+  const readme = [
+    'Elyxion — static game bundle for portal distribution',
+    `Version: ${APP_VERSION} · Packaged: ${stamp}`,
+    '',
+    'WHAT THIS IS',
+    '  The production web build (HTML + JS + assets). Upload the contents',
+    '  as-is to any static host or portal that accepts an HTML5 game upload',
+    '  (CrazyGames, Poki, itch.io, Kongregate, GameDistribution…).',
+    '',
+    'HOW TO SERVE IT',
+    '  · Host the extracted files at the ROOT of a domain/subdomain (not a',
+    '    subdirectory) — the game resolves its assets relative to the site root.',
+    '  · HTTPS is required. Serve index.html for all unknown paths (SPA).',
+    '  · No server-side code is needed to serve the game itself.',
+    '',
+    'BACKEND / MULTIPLAYER',
+    '  Accounts, progression, leaderboards, chat and multiplayer run on the',
+    '  developer backend. The bundle works standalone (offline play vs bots)',
+    '  and automatically connects to the backend for online play.',
+    '',
+    'PORTAL-SPECIFIC NOTES',
+    '  · CrazyGames: submit the zip at developer.crazygames.com. The build',
+    '    already integrates the CrazyGames SDK (ads, happytime, invites,',
+    '    gameplay events) and activates on their domain automatically.',
+    '  · Other portals: the bundle detects it is not on CrazyGames and skips',
+    '    their SDK; everything else behaves identically.',
+    '  · Cross-origin backends: the game reads its backend address from the',
+    '    ?api= URL parameter or localStorage (key "elyxion-api-base") so one',
+    '    build can serve many portals without rebuilding. Add',
+    '    ?api=https://your-backend.example.com to the portal launch URL if the',
+    '    game must reach a different backend than its host origin.',
+    '',
+    'SUPPORT',
+    '  Contact the developer for portal-specific builds, sandbox keys or',
+    '  embed-origin allowlisting (needed for cross-origin iframe hosting).',
+  ].join('\n');
+  logEvent({
+    event: 'admin_portal_zip_downloaded',
+    actorId: (req as AdminRequest).admin.id,
+    actorName: (req as AdminRequest).admin.username,
+    detail: 'production build archive',
+  });
+  const result = sendPortalZip(res, {
+    distDir,
+    name: `elyxion-portal-${stamp}.zip`,
+    ver: APP_VERSION,
+    readme,
+  });
+  if (!result.ok) {
+    const missing = result.error === 'build_missing';
+    res.status(missing ? 404 : 500).json({ error: missing ? 'build_missing' : 'zip_failed' });
+    return;
+  }
+  // Keep the request alive until the archive has fully flushed to the socket
+  // (the download response only completes when the zip is fully written).
+  await result.done;
 });

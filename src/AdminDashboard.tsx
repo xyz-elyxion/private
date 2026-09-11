@@ -907,6 +907,50 @@ function Empty({ label }: { label: string }) {
 }
 
 // ── Page shell ───────────────────────────────────────────────────────────────
+// Downloads /api/admin/portal-zip (the production static build, zipped for
+// upload to other gaming portals). Fetched as a blob so a missing build or a
+// failed session surfaces as a message instead of a mystery JSON download.
+function PortalZipButton() {
+  const [state, setState] = useState<'idle' | 'working' | 'error'>('idle');
+  const download = async () => {
+    setState('working');
+    try {
+      const r = await fetch('/api/admin/portal-zip', { credentials: 'include' });
+      if (!r.ok) {
+        setState('error');
+        window.setTimeout(() => setState('idle'), 4000);
+        return;
+      }
+      const blob = await r.blob();
+      // Prefer the server's dated filename from Content-Disposition.
+      const cd = r.headers.get('content-disposition') ?? '';
+      const m = /filename="([^"]+)"/.exec(cd);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = m?.[1] ?? 'elyxion-portal.zip';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setState('idle');
+    } catch {
+      setState('error');
+      window.setTimeout(() => setState('idle'), 4000);
+    }
+  };
+  return (
+    <button
+      onClick={() => void download()}
+      disabled={state === 'working'}
+      title="Download the production static build (dist/) as a zip for submitting to other gaming portals"
+      className="rounded-md border border-white/15 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-50"
+    >
+      {state === 'error' ? 'Build unavailable' : state === 'working' ? 'Packaging…' : '↓ Portal zip'}
+    </button>
+  );
+}
+
 export default function AdminDashboard() {
   const auth = useAuth();
   const [tab, setTab] = useState<Tab>('overview');
@@ -975,12 +1019,15 @@ export default function AdminDashboard() {
               Signed in as {auth.account.username} · live metrics from production data
             </p>
           </div>
-          <a
-            href="/play"
-            className="rounded-md border border-white/15 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200"
-          >
-            ← Arena
-          </a>
+          <div className="flex items-center gap-2">
+            <PortalZipButton />
+            <a
+              href="/play"
+              className="rounded-md border border-white/15 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200"
+            >
+              ← Arena
+            </a>
+          </div>
         </header>
 
         <nav className="mb-6 flex flex-wrap gap-1 border-b border-white/10">

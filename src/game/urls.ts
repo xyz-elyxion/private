@@ -58,14 +58,65 @@ export function assetUrl(path: string): string {
 
 let apiBaseCache: string | null = null;
 
+// Runtime overrides (portal distribution). One static build ships to many
+// portals, so the backend origin must be changeable after the build:
+//   · `?api=` URL parameter — highest precedence, good for portal launch URLs
+//     (e.g. ?api=https://your-backend.example.com) and for quick testing.
+//   · localStorage 'elyxion-api-base' — persists the ?api= value so the
+//     override survives the portal stripping query params from launch links.
+// Only https origins (or localhost for testing) are accepted, and the value
+// must look like a bare origin — otherwise it is ignored, so a portal can't
+// be tricked into pointing at an arbitrary path on its own domain.
+const RUNTIME_API_KEY = 'elyxion-api-base';
+function runtimeApiOverride(): string {
+  const theLocal = hasDom
+    ? ((globalThis as Record<string, unknown>).window as unknown as {
+        location: { protocol: string; host: string; search: string };
+        localStorage?: { getItem(k: string): string | null; setItem(k: string, v: string): void };
+      })
+    : undefined;
+  let raw = '';
+  try {
+    const param = theLocal?.location.search ?? '';
+    const m = /[?&]api=([^&]+)/.exec(param);
+    if (m) raw = decodeURIComponent(m[1]).trim();
+    if (!raw && theLocal?.localStorage) raw = (theLocal.localStorage.getItem(RUNTIME_API_KEY) ?? '').trim();
+  } catch {
+    return '';
+  }
+  if (!raw) return '';
+  // Normalize: allow 'host', 'host:port', or full URL; store as origin.
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(candidate);
+    const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname);
+    if (u.protocol !== 'https:' && !isLocal) return '';
+    if (u.pathname !== '/' && u.pathname !== '') return '';
+    const origin = u.origin;
+    // Remember a URL-supplied override so it survives param-stripped reloads.
+    if (theLocal?.localStorage) {
+      try {
+        if (theLocal.localStorage.getItem(RUNTIME_API_KEY) !== origin) {
+          theLocal.localStorage.setItem(RUNTIME_API_KEY, origin);
+        }
+      } catch {
+        /* storage may be unavailable (private mode) — override still applies */
+      }
+    }
+    return origin === 'https://' || origin.endsWith('://') ? '' : origin;
+  } catch {
+    return '';
+  }
+}
+
 /** REST base (no trailing slash). '' = same-origin. */
 export function apiBase(): string {
   if (apiBaseCache !== null) return apiBaseCache;
   let base = '';
   try {
-    // Build-time override (Vite define): the bundle's real backend origin when
-    // hosted cross-origin (CrazyGames). Unset for normal same-origin deploys.
-    base = trimSlashes(typeof __CG_API_BASE__ === 'string' ? __CG_API_BASE__ : '');
+    // Runtime override first (portal distribution / testing), then the
+    // build-time define for CrazyGames-style cross-origin hosting.
+    base = trimSlashes(runtimeApiOverride() || (typeof __CG_API_BASE__ === 'string' ? __CG_API_BASE__ : ''));
   } catch {
     base = '';
   }
