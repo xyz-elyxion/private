@@ -29,8 +29,8 @@ openssl rand -hex 32
 Pass it as a header (either form works):
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_API_TOKEN" https://instagib.win/api/admin/metrics/report
-curl -H "X-Admin-Token: $ADMIN_API_TOKEN"        https://instagib.win/api/admin/metrics/report
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" $METRICS_URL
+curl -H "X-Admin-Token: $ADMIN_API_TOKEN"        $METRICS_URL
 ```
 
 ## Endpoints (read-only — token or admin session)

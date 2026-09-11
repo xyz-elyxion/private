@@ -260,7 +260,7 @@ if (!dev && hasBuild) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         } else {
           // Stable-named public files: models/*.glb, sounds/**/*.{ogg,mp3},
-          // og-image.png, fonts. Previously sent with NO Cache-Control, so every
+          // 16-9.png, fonts. Previously sent with NO Cache-Control, so every
           // visit revalidated (304 round-trips) or cold-downloaded multi-MB files
           // through the Node origin — which shares its egress with the realtime
           // game socket. A player surge cold-loading these (soldier.glb is 2.1MB)
@@ -273,29 +273,15 @@ if (!dev && hasBuild) {
     }),
   );
   // SPA fallback: every non-API GET serves index.html so client routes
-  // (e.g. /play) deep-link and reload correctly.
-  //
-  // Per-route canonical: the shell hardcodes `canonical: https://instagib.win/`,
-  // but a page that self-canonicalizes to a DIFFERENT url gets folded into it
-  // by Google ("Alternate page with proper canonical tag") — which conflicts
-  // with the sitemap listing /play as indexable. For the small allowlist of
-  // indexable routes, rewrite the canonical + og:url to the route itself.
-  // Variants are built once per process (the shell only changes on deploy).
-  const CANONICAL_ROUTES = ['/play'];
+  // (e.g. /play) deep-link and reload correctly. The shell is read once per
+  // process (it only changes on deploy). No hardcoded production domain:
+  // canonical/og:url are omitted from the shell, so scrapers resolve them
+  // against whatever origin serves the page.
   const shellHtml = fs.readFileSync(indexHtml, 'utf8');
-  const shellByRoute = new Map<string, string>();
-  for (const route of CANONICAL_ROUTES) {
-    shellByRoute.set(
-      route,
-      shellHtml
-        .replaceAll('href="https://instagib.win/"', `href="https://instagib.win${route}"`)
-        .replaceAll('content="https://instagib.win/"', `content="https://instagib.win${route}"`),
-    );
-  }
   app.get(/.*/, (req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
     res.setHeader('Cache-Control', 'no-cache');
-    res.type('html').send(shellByRoute.get(req.path) ?? shellHtml);
+    res.type('html').send(shellHtml);
   });
 } else if (!dev) {
   console.warn(

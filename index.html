@@ -34,23 +34,21 @@
          local dev stays clean. -->
     <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
     <title>Elyxion — Free Browser FPS, One Shot One Kill</title>
-    <link rel="canonical" href="https://instagib.win/" />
 
     <!-- Social link previews: a pasted invite / share link renders as a game,
-         not a naked URL. og-image.png lives in /public (1200x630).
-         OG image MUST be an absolute URL — relative paths fail in several
-         scrapers (Facebook, Slack, some Discord cases). -->
+         not a naked URL. 16-9.png lives in /public (1731×909). The image is
+         referenced root-relative so previews work on whatever domain the game
+         is served from (no hardcoded production domain in the bundle). -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Elyxion" />
-    <meta property="og:url" content="https://instagib.win/" />
     <meta property="og:title" content="Elyxion — one shot, one kill" />
     <meta
       property="og:description"
       content="Quake-style instagib in the browser. The railgun always kills — so the whole game is aim and movement. Strafe, dash, double-jump, wall-jump. Play free, no download."
     />
-    <meta property="og:image" content="https://instagib.win/og-image.png" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
+    <meta property="og:image" content="/16-9.png" />
+    <meta property="og:image:width" content="1731" />
+    <meta property="og:image:height" content="909" />
     <meta property="og:image:alt" content="Elyxion — a browser-based Quake-style instagib FPS" />
     <meta name="twitter:card" content="summary_large_image" />
     <!-- TODO: add your X handle so the card is attributed to you and feeds your following:
@@ -61,7 +59,7 @@
       name="twitter:description"
       content="Browser FPS. One railgun, one shot, pure aim + movement. Play free in your browser."
     />
-    <meta name="twitter:image" content="https://instagib.win/og-image.png" />
+    <meta name="twitter:image" content="/16-9.png" />
 
     <!-- Structured data: lets Google show a VideoGame rich result and helps
          AI/search crawlers understand the page even without running JS. -->
@@ -70,8 +68,7 @@
         "@context": "https://schema.org",
         "@type": "VideoGame",
         "name": "Elyxion",
-        "url": "https://instagib.win/",
-        "image": "https://instagib.win/og-image.png",
+        "image": "/16-9.png",
         "description": "A free, browser-based, server-authoritative Quake-style instagib FPS. One railgun, one shot, one kill — the whole game is aim and movement. Free-for-all, team deathmatch, ranked 1v1 duels, and last-man-standing.",
         "genre": ["First-person shooter", "Arena shooter", "Instagib"],
         "gamePlatform": ["Web browser"],

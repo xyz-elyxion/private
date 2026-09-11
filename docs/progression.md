@@ -1,7 +1,7 @@
 # Elyxion — Progression System Design
 
 A concrete, implementable design for an account-less progression system that fits
-the existing backend (anonymous `igpid` cookie, single `instagib_stats` SQLite
+the existing backend (anonymous `igpid` cookie, single `elyxion_stats` SQLite
 table, server-clamped match deltas). **Cosmetic-only — never pay/grind-to-win.**
 
 > Status: **shipped.** This began as the design proposal and now describes the
@@ -48,10 +48,10 @@ system** (`server/db.ts:22–39`). SQLite supports `ALTER TABLE ADD COLUMN` but 
 // server/db.ts — run once at startup, after the CREATE TABLE.
 function ensureColumns(db: Database) {
   const cols = new Set(
-    db.prepare(`PRAGMA table_info(instagib_stats)`).all().map((r: any) => r.name),
+    db.prepare(`PRAGMA table_info(elyxion_stats)`).all().map((r: any) => r.name),
   );
   const add = (name: string, ddl: string) => {
-    if (!cols.has(name)) db.exec(`ALTER TABLE instagib_stats ADD COLUMN ${ddl}`);
+    if (!cols.has(name)) db.exec(`ALTER TABLE elyxion_stats ADD COLUMN ${ddl}`);
   };
   add('total_xp',  'total_xp INTEGER NOT NULL DEFAULT 0');
   add('level',     'level INTEGER NOT NULL DEFAULT 1');
@@ -66,7 +66,7 @@ Challenges need their own table (per the "new tables need raw `CREATE TABLE`"
 convention):
 
 ```sql
-CREATE TABLE IF NOT EXISTS instagib_challenges (
+CREATE TABLE IF NOT EXISTS elyxion_challenges (
   player_id  TEXT NOT NULL,
   challenge  TEXT NOT NULL,          -- e.g. 'daily:headshots'
   period     TEXT NOT NULL,          -- 'YYYYMMDD' (daily) or 'YYYY-Wnn' (weekly)
@@ -254,7 +254,7 @@ Keep all writes rate-limited and idempotent where possible.
 **P2 — Earn loops:**
 6. Credits + Locker/Shop; expand catalog (crosshair, nameColor, killConfirm,
    announcer).
-7. `instagib_challenges` table + daily/weekly + claim flow.
+7. `elyxion_challenges` table + daily/weekly + claim flow.
 8. First-win-of-day bonus.
 
 **P3+:** competitive rank, seasons — see [`ROADMAP.md`](./ROADMAP.md).

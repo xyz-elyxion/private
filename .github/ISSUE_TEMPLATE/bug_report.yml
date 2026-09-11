@@ -44,7 +44,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      placeholder: macOS 15, Chrome 126, keyboard/mouse, instagib.win or local main
+      placeholder: macOS 15, Chrome 126, keyboard/mouse, production build or local main
   - type: textarea
     id: media
     attributes:

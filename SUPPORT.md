@@ -7,7 +7,7 @@ right channel so reports are easy to triage.
 
 - Use the in-game **Send feedback** button for quick player feedback.
 - Use GitHub issues for reproducible bugs, feature requests, and documentation
-  problems: <https://github.com/8tp/instagib-arena/issues/new/choose>
+  problems: use the in-game **Send feedback** button
 
 ## Security and game integrity
 

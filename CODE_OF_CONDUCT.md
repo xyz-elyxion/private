@@ -39,7 +39,7 @@ community space.
 ## Enforcement
 
 Report Code of Conduct concerns to the maintainer, currently
-[@8tp](https://github.com/8tp). If the concern is security-sensitive or involves a
+the project maintainer. If the concern is security-sensitive or involves a
 working exploit, use GitHub private vulnerability reporting as described in
 [SECURITY.md](SECURITY.md).
 

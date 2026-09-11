@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { GITHUB_NEW_ISSUE } from './links';
 import { apiUrl } from './game/urls';
 
 // In-game feedback / bug report form. POSTs to /api/feedback (stored server-side,
@@ -72,14 +71,6 @@ export function FeedbackModal({ onClose, playerName }: { onClose: () => void; pl
       <div className="deck-bg w-[460px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl">
         <div className="flex items-center justify-between border-b border-white/10 px-7 py-4">
           <h2 className="text-[12px] font-bold uppercase tracking-[0.18em] text-cyan-300">Send feedback</h2>
-          <a
-            href={GITHUB_NEW_ISSUE}
-            target="_blank"
-            rel="noreferrer"
-            className="text-[10px] uppercase tracking-[0.14em] text-white/35 transition hover:text-white/70"
-          >
-            Prefer GitHub? →
-          </a>
         </div>
 
         {sent ? (

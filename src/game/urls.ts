@@ -11,7 +11,7 @@
 //      import.meta.env.BASE_URL (which honors Vite's `base` config).
 //   2. API base (REST): defaults to same-origin. When the bundle runs on a
 //      foreign host (CrazyGames, itch embed, etc.) set VITE_API_BASE
-//      (e.g. "https://instagib.win") at build time so accounts/progression
+//      (e.g. "https://your-backend.example.com") at build time so accounts/progression
 //      still reach the real backend.
 //   3. WebSocket base: derived from the API base (https→wss), falling back to
 //      window.location.host for same-origin deploys.

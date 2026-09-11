@@ -68,8 +68,39 @@ sqlite.pragma('busy_timeout = 5000');
 // longer risk stalling the 64Hz game tick on a slow (e.g. network-backed) disk.
 sqlite.pragma('synchronous = NORMAL');
 
+// ── Pre-rebrand table migration ─────────────────────────────────────────────
+// Databases created before the Instagib → Elyxion rename use instagib_* table
+// names. ALTER TABLE ... RENAME preserves every row; run it once, then drop
+// the old-name indexes so names match the new tables. Idempotent: on a fresh
+// (already-renamed) database this block finds nothing and is skipped.
+{
+  const legacyTables = sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'instagib_%'",
+    )
+    .all() as Array<{ name: string }>;
+  for (const { name } of legacyTables) {
+    const newName = 'elyxion_' + name.slice('instagib_'.length);
+    sqlite.exec('ALTER TABLE "' + name + '" RENAME TO "' + newName + '"');
+    console.log('[db] migrated table', name, '→', newName);
+  }
+  if (legacyTables.length > 0) {
+    // RENAME TO rewrites child indexes onto the renamed table but leaves the
+    // old index names behind; drop them (schema exec below recreates them
+    // under the new names).
+    const legacyIndexes = sqlite
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%instagib%'",
+      )
+      .all() as Array<{ name: string }>;
+    for (const { name } of legacyIndexes) {
+      sqlite.exec('DROP INDEX IF EXISTS "' + name + '"');
+    }
+  }
+}
+
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_stats (
+CREATE TABLE IF NOT EXISTS elyxion_stats (
   player_id TEXT PRIMARY KEY,
   user_name TEXT NOT NULL,
   total_kills INTEGER NOT NULL DEFAULT 0,
@@ -84,12 +115,12 @@ CREATE TABLE IF NOT EXISTS instagib_stats (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_instagib_stats_kills ON instagib_stats(total_kills);
+CREATE INDEX IF NOT EXISTS idx_elyxion_stats_kills ON elyxion_stats(total_kills);
 
--- Per-window (daily/weekly) leaderboard buckets. Same shape as instagib_stats but
+-- Per-window (daily/weekly) leaderboard buckets. Same shape as elyxion_stats but
 -- keyed by a period string ("d:YYYYMMDD" / "w:YYYYMMDD" of the week's Monday, UTC),
 -- upserted alongside the all-time row on every recorded match.
-CREATE TABLE IF NOT EXISTS instagib_period_stats (
+CREATE TABLE IF NOT EXISTS elyxion_period_stats (
   player_id        TEXT NOT NULL,
   period_key       TEXT NOT NULL,
   user_name        TEXT NOT NULL,
@@ -103,11 +134,11 @@ CREATE TABLE IF NOT EXISTS instagib_period_stats (
   updated_at       INTEGER NOT NULL,
   PRIMARY KEY (player_id, period_key)
 );
-CREATE INDEX IF NOT EXISTS idx_period_kills ON instagib_period_stats(period_key, total_kills);
+CREATE INDEX IF NOT EXISTS idx_period_kills ON elyxion_period_stats(period_key, total_kills);
 
 -- Mode-specific online leaderboard buckets. The mode is part of the key so
 -- casual FFA, Duel, TDM, and ranked results never compete in one board.
-CREATE TABLE IF NOT EXISTS instagib_mode_stats (
+CREATE TABLE IF NOT EXISTS elyxion_mode_stats (
   player_id        TEXT NOT NULL,
   mode             TEXT NOT NULL,
   user_name        TEXT NOT NULL,
@@ -121,9 +152,9 @@ CREATE TABLE IF NOT EXISTS instagib_mode_stats (
   updated_at       INTEGER NOT NULL,
   PRIMARY KEY (player_id, mode)
 );
-CREATE INDEX IF NOT EXISTS idx_mode_kills ON instagib_mode_stats(mode, total_kills);
+CREATE INDEX IF NOT EXISTS idx_mode_kills ON elyxion_mode_stats(mode, total_kills);
 
-CREATE TABLE IF NOT EXISTS instagib_mode_period_stats (
+CREATE TABLE IF NOT EXISTS elyxion_mode_period_stats (
   player_id        TEXT NOT NULL,
   mode             TEXT NOT NULL,
   period_key       TEXT NOT NULL,
@@ -138,12 +169,12 @@ CREATE TABLE IF NOT EXISTS instagib_mode_period_stats (
   updated_at       INTEGER NOT NULL,
   PRIMARY KEY (player_id, mode, period_key)
 );
-CREATE INDEX IF NOT EXISTS idx_mode_period_kills ON instagib_mode_period_stats(mode, period_key, total_kills);
+CREATE INDEX IF NOT EXISTS idx_mode_period_kills ON elyxion_mode_period_stats(mode, period_key, total_kills);
 
--- Registered accounts. Progression keys off the account id (= instagib_stats
+-- Registered accounts. Progression keys off the account id (= elyxion_stats
 -- player_id), so guests (no account) accrue nothing. Passwords are scrypt-hashed
 -- with a per-user salt (see server/auth.ts). Email is optional, recovery-only.
-CREATE TABLE IF NOT EXISTS instagib_users (
+CREATE TABLE IF NOT EXISTS elyxion_users (
   id             TEXT PRIMARY KEY,
   username       TEXT NOT NULL,
   username_lower TEXT NOT NULL UNIQUE,
@@ -153,12 +184,12 @@ CREATE TABLE IF NOT EXISTS instagib_users (
   created_at     INTEGER NOT NULL
 );
 -- Opaque session tokens (httpOnly cookie) → account id. Revocable; reaped on logout.
-CREATE TABLE IF NOT EXISTS instagib_sessions (
+CREATE TABLE IF NOT EXISTS elyxion_sessions (
   token      TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON instagib_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON elyxion_sessions(user_id);
 `);
 
 // Additive progression columns. SQLite has no `ADD COLUMN IF NOT EXISTS`, and we
@@ -166,12 +197,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON instagib_sessions(user_id);
 // (docs/progression.md §2). Safe to run on every boot.
 function ensureColumns() {
   const cols = new Set(
-    (sqlite.prepare(`PRAGMA table_info(instagib_stats)`).all() as { name: string }[]).map(
+    (sqlite.prepare(`PRAGMA table_info(elyxion_stats)`).all() as { name: string }[]).map(
       (r) => r.name,
     ),
   );
   const add = (name: string, ddl: string) => {
-    if (!cols.has(name)) sqlite.exec(`ALTER TABLE instagib_stats ADD COLUMN ${ddl}`);
+    if (!cols.has(name)) sqlite.exec(`ALTER TABLE elyxion_stats ADD COLUMN ${ddl}`);
   };
   add('total_xp', 'total_xp INTEGER NOT NULL DEFAULT 0');
   add('level', 'level INTEGER NOT NULL DEFAULT 1');
@@ -225,19 +256,19 @@ export function getPlayerRecentMatches(
     }) as MatchRow[];
 }
 
-// Additive account-moderation columns on instagib_users (same no-migration
+// Additive account-moderation columns on elyxion_users (same no-migration
 // pattern): is_admin gates the /api/admin actions + grants all cosmetics;
 // is_verified drives the blue "verified player" check. Both default off.
 function ensureUserColumns() {
   const cols = new Set(
-    (sqlite.prepare(`PRAGMA table_info(instagib_users)`).all() as { name: string }[]).map(
+    (sqlite.prepare(`PRAGMA table_info(elyxion_users)`).all() as { name: string }[]).map(
       (r) => r.name,
     ),
   );
   if (!cols.has('is_admin'))
-    sqlite.exec(`ALTER TABLE instagib_users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
+    sqlite.exec(`ALTER TABLE elyxion_users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
   if (!cols.has('is_verified'))
-    sqlite.exec(`ALTER TABLE instagib_users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0`);
+    sqlite.exec(`ALTER TABLE elyxion_users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0`);
 }
 ensureUserColumns();
 
@@ -246,39 +277,39 @@ ensureUserColumns();
 // sides see each other in their friends list, but only the initiator can remove.
 // Used for friends lists + party invite-to-lobby polish.
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_friends (
+CREATE TABLE IF NOT EXISTS elyxion_friends (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id  TEXT NOT NULL,
   friend_id  TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   UNIQUE(player_id, friend_id)
 );
-CREATE INDEX IF NOT EXISTS idx_friends_player ON instagib_friends(player_id);
-CREATE INDEX IF NOT EXISTS idx_friends_friend ON instagib_friends(friend_id);
+CREATE INDEX IF NOT EXISTS idx_friends_player ON elyxion_friends(player_id);
+CREATE INDEX IF NOT EXISTS idx_friends_friend ON elyxion_friends(friend_id);
 `);
 
 const friendAddStmt = sqlite.prepare(
-  `INSERT OR IGNORE INTO instagib_friends (player_id, friend_id, created_at) VALUES (@playerId, @friendId, @now)`);
+  `INSERT OR IGNORE INTO elyxion_friends (player_id, friend_id, created_at) VALUES (@playerId, @friendId, @now)`);
 const friendRemoveStmt = sqlite.prepare(
-  `DELETE FROM instagib_friends WHERE player_id = @playerId AND friend_id = @friendId`);
+  `DELETE FROM elyxion_friends WHERE player_id = @playerId AND friend_id = @friendId`);
 const friendListByPlayerStmt = sqlite.prepare(
   `SELECT f.friend_id, u.username, u.is_verified, s.level, s.total_xp, s.total_kills, s.total_games
-    FROM instagib_friends f
-    JOIN instagib_users u ON u.id = f.friend_id
-    LEFT JOIN instagib_stats s ON s.player_id = f.friend_id
+    FROM elyxion_friends f
+    JOIN elyxion_users u ON u.id = f.friend_id
+    LEFT JOIN elyxion_stats s ON s.player_id = f.friend_id
    WHERE f.player_id = ?
    ORDER BY f.created_at DESC LIMIT ?`);
 const friendListByFriendStmt = sqlite.prepare(
   `SELECT f.player_id, u.username, u.is_verified, s.level, s.total_xp, s.total_kills, s.total_games
-    FROM instagib_friends f
-    JOIN instagib_users u ON u.id = f.player_id
-    LEFT JOIN instagib_stats s ON s.player_id = f.player_id
+    FROM elyxion_friends f
+    JOIN elyxion_users u ON u.id = f.player_id
+    LEFT JOIN elyxion_stats s ON s.player_id = f.player_id
    WHERE f.friend_id = ?
    ORDER BY f.created_at DESC LIMIT ?`);
 const friendExistsStmt = sqlite.prepare(
-  `SELECT 1 FROM instagib_friends WHERE player_id = @playerId AND friend_id = @friendId`);
+  `SELECT 1 FROM elyxion_friends WHERE player_id = @playerId AND friend_id = @friendId`);
 const friendCountStmt = sqlite.prepare(
-  `SELECT COUNT(*) AS n FROM instagib_friends WHERE player_id = ?`);
+  `SELECT COUNT(*) AS n FROM elyxion_friends WHERE player_id = ?`);
 
 // Profile recovery codes: optional, account-less recovery. A server-minted
 // secret that maps to a player_id; entering it on a new browser re-binds the
@@ -286,7 +317,7 @@ const friendCountStmt = sqlite.prepare(
 // wiped my progress"). Still no email/password. Codes are single-use, expirable,
 // and rate-limited at issue time.
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_recovery_codes (
+CREATE TABLE IF NOT EXISTS elyxion_recovery_codes (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id  TEXT NOT NULL,
   code       TEXT NOT NULL UNIQUE,
@@ -296,23 +327,23 @@ CREATE TABLE IF NOT EXISTS instagib_recovery_codes (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_recovery_code ON instagib_recovery_codes(code);
-CREATE INDEX IF NOT EXISTS idx_recovery_player ON instagib_recovery_codes(player_id);
+CREATE INDEX IF NOT EXISTS idx_recovery_code ON elyxion_recovery_codes(code);
+CREATE INDEX IF NOT EXISTS idx_recovery_player ON elyxion_recovery_codes(player_id);
 `);
 
 const recoveryIssueStmt = sqlite.prepare(`
-  INSERT INTO instagib_recovery_codes (player_id, code, secret, created_at, expires_at)
+  INSERT INTO elyxion_recovery_codes (player_id, code, secret, created_at, expires_at)
   VALUES (@playerId, @code, @secret, @now, @expiresAt)`);
 const recoveryVerifyStmt = sqlite.prepare(
-  `SELECT id, player_id, secret, used, expires_at FROM instagib_recovery_codes
+  `SELECT id, player_id, secret, used, expires_at FROM elyxion_recovery_codes
     WHERE code = ? AND used = 0 AND expires_at > ?`);
 const recoveryRedeemStmt = sqlite.prepare(
-  `UPDATE instagib_recovery_codes SET used = 1, used_at = @now WHERE id = @id AND used = 0`);
+  `UPDATE elyxion_recovery_codes SET used = 1, used_at = @now WHERE id = @id AND used = 0`);
 const recoveryForPlayerStmt = sqlite.prepare(
   `SELECT id, code, created_at, expires_at, used, used_at
-    FROM instagib_recovery_codes WHERE player_id = ? ORDER BY created_at DESC LIMIT ?`);
+    FROM elyxion_recovery_codes WHERE player_id = ? ORDER BY created_at DESC LIMIT ?`);
 const recoveryIdByCodeStmt = sqlite.prepare(
-  `SELECT id FROM instagib_recovery_codes WHERE code = ?`);
+  `SELECT id FROM elyxion_recovery_codes WHERE code = ?`);
 
 const ONE_DAY = 86_400_000;
 const CODE_LENGTH = 6;
@@ -335,7 +366,7 @@ export type RecoveryCodeIssueResult =
 export function issueRecoveryCode(playerId: string, now: number = Date.now()): RecoveryCodeIssueResult {
   if (!playerId) return { ok: false, reason: 'unknown' };
   // Invalidate any existing unused codes for this player.
-  sqlite.prepare(`DELETE FROM instagib_recovery_codes WHERE player_id = ? AND used = 0`).run(playerId);
+  sqlite.prepare(`DELETE FROM elyxion_recovery_codes WHERE player_id = ? AND used = 0`).run(playerId);
   const code = randCode();
   const secret = randomBytes(24).toString('base64url');
   const createdAt = now;
@@ -356,7 +387,7 @@ export function verifyRecoveryCode(code: string, now: number = Date.now()): Reco
     | undefined;
   if (!row) {
     // Distinguish expired/used from never-existed for better UX.
-    const any = sqlite.prepare(`SELECT used, expires_at FROM instagib_recovery_codes WHERE code = ?`).get(code) as
+    const any = sqlite.prepare(`SELECT used, expires_at FROM elyxion_recovery_codes WHERE code = ?`).get(code) as
       | { used: number; expires_at: number }
       | undefined;
     if (!any) return { ok: false, reason: 'unknown' };
@@ -475,7 +506,7 @@ export function friendCount(playerId: string): number {
 // admin actions. Powers auditing now and a metrics dashboard later. `detail` is
 // a small JSON blob; `ip` is best-effort (proxy-forwarded) for abuse triage.
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_audit (
+CREATE TABLE IF NOT EXISTS elyxion_audit (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   ts         INTEGER NOT NULL,
   event      TEXT NOT NULL,
@@ -485,12 +516,12 @@ CREATE TABLE IF NOT EXISTS instagib_audit (
   detail     TEXT NOT NULL DEFAULT '',
   ip         TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_audit_ts ON instagib_audit(ts);
-CREATE INDEX IF NOT EXISTS idx_audit_event ON instagib_audit(event, ts);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON elyxion_audit(ts);
+CREATE INDEX IF NOT EXISTS idx_audit_event ON elyxion_audit(event, ts);
 `);
 
 const insertAuditStmt = sqlite.prepare(`
-  INSERT INTO instagib_audit (ts, event, actor_id, actor_name, target_id, detail, ip)
+  INSERT INTO elyxion_audit (ts, event, actor_id, actor_name, target_id, detail, ip)
   VALUES (@ts, @event, @actorId, @actorName, @targetId, @detail, @ip)`);
 
 export type AuditInput = {
@@ -537,10 +568,10 @@ export type AuditRow = {
   ip: string;
 };
 const auditAllStmt = sqlite.prepare(
-  `SELECT * FROM instagib_audit ORDER BY ts DESC, id DESC LIMIT ?`,
+  `SELECT * FROM elyxion_audit ORDER BY ts DESC, id DESC LIMIT ?`,
 );
 const auditByEventStmt = sqlite.prepare(
-  `SELECT * FROM instagib_audit WHERE event = ? ORDER BY ts DESC, id DESC LIMIT ?`,
+  `SELECT * FROM elyxion_audit WHERE event = ? ORDER BY ts DESC, id DESC LIMIT ?`,
 );
 export function getAuditLog(limit: number, event?: string): AuditRow[] {
   const n = Math.max(1, Math.min(500, Math.floor(limit)));
@@ -553,7 +584,7 @@ export function getAuditLog(limit: number, event?: string): AuditRow[] {
 // and `user_agent` are best-effort, for spam triage only. Surfaced in the /admin
 // "Feedback" tab; never shown to other players.
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_feedback (
+CREATE TABLE IF NOT EXISTS elyxion_feedback (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   ts          INTEGER NOT NULL,
   player_id   TEXT NOT NULL DEFAULT '',
@@ -566,8 +597,8 @@ CREATE TABLE IF NOT EXISTS instagib_feedback (
   user_agent  TEXT NOT NULL DEFAULT '',
   updated_at  INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_feedback_ts ON instagib_feedback(ts);
-CREATE INDEX IF NOT EXISTS idx_feedback_status ON instagib_feedback(status, id);
+CREATE INDEX IF NOT EXISTS idx_feedback_ts ON elyxion_feedback(ts);
+CREATE INDEX IF NOT EXISTS idx_feedback_status ON elyxion_feedback(status, id);
 `);
 
 export type FeedbackType = 'bug' | 'feature' | 'general';
@@ -604,7 +635,7 @@ type FeedbackDbRow = {
 };
 
 const insertFeedbackStmt = sqlite.prepare(`
-  INSERT INTO instagib_feedback (ts, player_id, player_name, type, title, body, status, ip, user_agent, updated_at)
+  INSERT INTO elyxion_feedback (ts, player_id, player_name, type, title, body, status, ip, user_agent, updated_at)
   VALUES (@ts, @playerId, @playerName, @type, @title, @body, 'open', @ip, @userAgent, @ts)`);
 
 export type FeedbackInput = {
@@ -624,8 +655,8 @@ export type FeedbackInput = {
 // 20k is years of headroom.
 const FEEDBACK_MAX_ROWS = 20_000;
 const trimFeedbackStmt = sqlite.prepare(
-  `DELETE FROM instagib_feedback
-   WHERE id NOT IN (SELECT id FROM instagib_feedback ORDER BY id DESC LIMIT ?)`,
+  `DELETE FROM elyxion_feedback
+   WHERE id NOT IN (SELECT id FROM elyxion_feedback ORDER BY id DESC LIMIT ?)`,
 );
 
 // Store a player feedback/bug report. Returns the new row id (0 on failure —
@@ -680,7 +711,7 @@ function feedbackListStmt(hasStatus: boolean, hasType: boolean, hasBefore: boole
     if (hasType) where.push('type = @type');
     if (hasBefore) where.push('id < @before');
     stmt = sqlite.prepare(
-      `SELECT * FROM instagib_feedback${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT @limit`,
+      `SELECT * FROM elyxion_feedback${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT @limit`,
     );
     feedbackListStmts.set(key, stmt);
   }
@@ -709,7 +740,7 @@ export function listFeedback(opts: {
 }
 
 const mSetFeedbackStatus = sqlite.prepare(
-  `UPDATE instagib_feedback SET status = @status, updated_at = @now WHERE id = @id`,
+  `UPDATE elyxion_feedback SET status = @status, updated_at = @now WHERE id = @id`,
 );
 // Update a feedback row's moderation status. Returns true if a row changed.
 export function setFeedbackStatus(id: number, status: FeedbackStatus, now?: number): boolean {
@@ -718,7 +749,7 @@ export function setFeedbackStatus(id: number, status: FeedbackStatus, now?: numb
 
 // Feedback row counts by status — for the admin tab badge + filter chips.
 const mFeedbackCounts = sqlite.prepare(
-  `SELECT status, COUNT(*) AS n FROM instagib_feedback GROUP BY status`,
+  `SELECT status, COUNT(*) AS n FROM elyxion_feedback GROUP BY status`,
 );
 export function feedbackCounts(): Record<string, number> {
   const out: Record<string, number> = {};
@@ -728,7 +759,7 @@ export function feedbackCounts(): Record<string, number> {
 
 // …and by type (bug / feature / general) — the admin tab's second chip row.
 const mFeedbackTypeCounts = sqlite.prepare(
-  `SELECT type, COUNT(*) AS n FROM instagib_feedback GROUP BY type`,
+  `SELECT type, COUNT(*) AS n FROM elyxion_feedback GROUP BY type`,
 );
 export function feedbackTypeCounts(): Record<string, number> {
   const out: Record<string, number> = {};
@@ -740,7 +771,7 @@ export function feedbackTypeCounts(): Record<string, number> {
 // (src/game/challenges.ts); this only stores progress + claim state, keyed by
 // (player, challenge, period) so each daily/weekly instance is independent.
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_challenges (
+CREATE TABLE IF NOT EXISTS elyxion_challenges (
   player_id  TEXT NOT NULL,
   challenge  TEXT NOT NULL,
   period     TEXT NOT NULL,
@@ -750,7 +781,7 @@ CREATE TABLE IF NOT EXISTS instagib_challenges (
   PRIMARY KEY (player_id, challenge, period)
 );
 
-CREATE TABLE IF NOT EXISTS instagib_season_progress (
+CREATE TABLE IF NOT EXISTS elyxion_season_progress (
   player_id TEXT NOT NULL,
   season_id TEXT NOT NULL,
   xp INTEGER NOT NULL DEFAULT 0,
@@ -806,14 +837,14 @@ const toPublic = (row: Row | undefined): PublicStats =>
 const selectStmt = sqlite.prepare(
   `SELECT total_kills, total_deaths, total_games, total_wins,
           best_kill_streak, headshots, best_accuracy
-     FROM instagib_stats WHERE player_id = ?`,
+     FROM elyxion_stats WHERE player_id = ?`,
 );
 
 // Atomic upsert: increments are applied in SQL (column + delta), not
 // read-modify-write in JS, so two near-simultaneous POSTs for the same player
 // can't clobber each other's deltas. RETURNING hands back the final row.
 const upsertStmt = sqlite.prepare(`
-INSERT INTO instagib_stats (
+INSERT INTO elyxion_stats (
   player_id, user_name, total_kills, total_deaths, total_games, total_wins,
   best_kill_streak, headshots, shots_fired, shots_hit, best_accuracy,
   created_at, updated_at
@@ -840,7 +871,7 @@ RETURNING total_kills, total_deaths, total_games, total_wins,
 
 // Per-period bucket upsert — same accumulation as the all-time row, keyed by period.
 const modeUpsertStmt = sqlite.prepare(`
-INSERT INTO instagib_mode_stats (
+INSERT INTO elyxion_mode_stats (
   player_id, mode, user_name, total_kills, total_deaths, total_games,
   total_wins, best_kill_streak, headshots, best_accuracy, updated_at
 ) VALUES (
@@ -860,7 +891,7 @@ ON CONFLICT(player_id, mode) DO UPDATE SET
 `);
 
 const modePeriodUpsertStmt = sqlite.prepare(`
-INSERT INTO instagib_mode_period_stats (
+INSERT INTO elyxion_mode_period_stats (
   player_id, mode, period_key, user_name, total_kills, total_deaths, total_games,
   total_wins, best_kill_streak, headshots, best_accuracy, updated_at
 ) VALUES (
@@ -880,7 +911,7 @@ ON CONFLICT(player_id, mode, period_key) DO UPDATE SET
 `);
 
 const periodUpsertStmt = sqlite.prepare(`
-INSERT INTO instagib_period_stats (
+INSERT INTO elyxion_period_stats (
   player_id, period_key, user_name, total_kills, total_deaths, total_games,
   total_wins, best_kill_streak, headshots, best_accuracy, updated_at
 ) VALUES (
@@ -966,27 +997,27 @@ type ProgRow = {
 
 const progSelectStmt = sqlite.prepare(
   `SELECT total_xp, level, credits, unlocked, equipped, first_win_day
-     FROM instagib_stats WHERE player_id = ?`,
+     FROM elyxion_stats WHERE player_id = ?`,
 );
 
 const progUpdateStmt = sqlite.prepare(`
-  UPDATE instagib_stats
+  UPDATE elyxion_stats
      SET total_xp = @totalXp, level = @level, credits = @credits,
          unlocked = @unlocked, equipped = @equipped, first_win_day = @firstWinDay
    WHERE player_id = @playerId`);
 
 const equipUpdateStmt = sqlite.prepare(
-  `UPDATE instagib_stats SET equipped = @equipped WHERE player_id = @playerId`,
+  `UPDATE elyxion_stats SET equipped = @equipped WHERE player_id = @playerId`,
 );
 
 const buyUpdateStmt = sqlite.prepare(
-  `UPDATE instagib_stats SET credits = @credits, unlocked = @unlocked WHERE player_id = @playerId`,
+  `UPDATE elyxion_stats SET credits = @credits, unlocked = @unlocked WHERE player_id = @playerId`,
 );
 
 // Create a bare row for a player who is equipping/buying before ever recording a
 // match, so the UPDATEs above have a row to touch.
 const ensureRowStmt = sqlite.prepare(
-  `INSERT OR IGNORE INTO instagib_stats (player_id, user_name, created_at, updated_at)
+  `INSERT OR IGNORE INTO elyxion_stats (player_id, user_name, created_at, updated_at)
    VALUES (?, 'Player', ?, ?)`,
 );
 
@@ -1018,7 +1049,7 @@ function parseEquipped(json: string | undefined): Record<string, string> {
 const ALL_COSMETIC_IDS: readonly string[] = ALL_COSMETICS.map((c) => c.id);
 
 // Is this account id an admin? Cheap point lookup; cached statement.
-const adminCheckStmt = sqlite.prepare(`SELECT is_admin FROM instagib_users WHERE id = ?`);
+const adminCheckStmt = sqlite.prepare(`SELECT is_admin FROM elyxion_users WHERE id = ?`);
 export function isAdminId(playerId: string): boolean {
   if (!playerId) return false;
   const r = adminCheckStmt.get(playerId) as { is_admin: number } | undefined;
@@ -1178,16 +1209,16 @@ export function recordMatch(delta: MatchDelta): MatchRecordResult {
 }
 
 const seasonProgressRowStmt = sqlite.prepare(
-  `SELECT xp, claimed FROM instagib_season_progress WHERE player_id = ? AND season_id = ?`,
+  `SELECT xp, claimed FROM elyxion_season_progress WHERE player_id = ? AND season_id = ?`,
 );
 const seasonProgressEnsureStmt = sqlite.prepare(
-  `INSERT OR IGNORE INTO instagib_season_progress (player_id, season_id, updated_at) VALUES (?, ?, ?)`,
+  `INSERT OR IGNORE INTO elyxion_season_progress (player_id, season_id, updated_at) VALUES (?, ?, ?)`,
 );
 const seasonProgressXpStmt = sqlite.prepare(
-  `UPDATE instagib_season_progress SET xp = xp + @xp, updated_at = @now WHERE player_id = @playerId AND season_id = @seasonId`,
+  `UPDATE elyxion_season_progress SET xp = xp + @xp, updated_at = @now WHERE player_id = @playerId AND season_id = @seasonId`,
 );
 const seasonProgressClaimStmt = sqlite.prepare(
-  `UPDATE instagib_season_progress SET claimed = @claimed, updated_at = @now WHERE player_id = @playerId AND season_id = @seasonId AND claimed = @expectedClaimed`,
+  `UPDATE elyxion_season_progress SET claimed = @claimed, updated_at = @now WHERE player_id = @playerId AND season_id = @seasonId AND claimed = @expectedClaimed`,
 );
 
 function trackSeason(playerId: string, kills: number, won: boolean, now: number): void {
@@ -1387,7 +1418,7 @@ export function openCase(playerId: string): CaseResult {
 // Focused XP/credits/unlock update (leaves equipped + first_win_day untouched) —
 // used to pay out challenge rewards on top of match XP.
 const progXpUpdateStmt = sqlite.prepare(
-  `UPDATE instagib_stats
+  `UPDATE elyxion_stats
       SET total_xp = @totalXp, level = @level, credits = @credits, unlocked = @unlocked
     WHERE player_id = @playerId`,
 );
@@ -1395,19 +1426,19 @@ const progXpUpdateStmt = sqlite.prepare(
 // Progress upserts. 'add' accumulates, 'max' keeps the best single match; both
 // clamp at the goal. SQLite's 2-arg MIN/MAX are scalar.
 const chAddStmt = sqlite.prepare(`
-  INSERT INTO instagib_challenges (player_id, challenge, period, progress, goal, claimed)
+  INSERT INTO elyxion_challenges (player_id, challenge, period, progress, goal, claimed)
   VALUES (@playerId, @challenge, @period, MIN(@goal, @value), @goal, 0)
   ON CONFLICT(player_id, challenge, period) DO UPDATE SET progress = MIN(goal, progress + @value)`);
 const chMaxStmt = sqlite.prepare(`
-  INSERT INTO instagib_challenges (player_id, challenge, period, progress, goal, claimed)
+  INSERT INTO elyxion_challenges (player_id, challenge, period, progress, goal, claimed)
   VALUES (@playerId, @challenge, @period, MIN(@goal, @value), @goal, 0)
   ON CONFLICT(player_id, challenge, period) DO UPDATE SET progress = MIN(goal, MAX(progress, @value))`);
 const chRowStmt = sqlite.prepare(
-  `SELECT progress, claimed FROM instagib_challenges
+  `SELECT progress, claimed FROM elyxion_challenges
     WHERE player_id = ? AND challenge = ? AND period = ?`,
 );
 const chClaimStmt = sqlite.prepare(
-  `UPDATE instagib_challenges SET claimed = 1
+  `UPDATE elyxion_challenges SET claimed = 1
     WHERE player_id = @playerId AND challenge = @challenge AND period = @period AND claimed = 0`,
 );
 
@@ -1561,7 +1592,7 @@ export type LeaderboardEntry = {
 
 // One prepared statement per sort column so we never interpolate user input
 // into SQL — the router whitelists `sort`, and we pick a stmt from this map.
-// kills uses the existing idx_instagib_stats_kills index; all tiebreak on
+// kills uses the existing idx_elyxion_stats_kills index; all tiebreak on
 // total_kills DESC. We only surface players who have actually played a match
 // (total_games > 0). `limit` is bound as a parameter (and clamped by callers).
 // Minimum games before a player appears on / is ranked by the accuracy board —
@@ -1574,19 +1605,19 @@ const LEADERBOARD_COLS = `player_id, user_name, total_kills, total_deaths, total
 const leaderboardStmts = {
   kills: sqlite.prepare(`
     SELECT ${LEADERBOARD_COLS}
-      FROM instagib_stats
+      FROM elyxion_stats
      WHERE total_games > 0
      ORDER BY total_kills DESC
      LIMIT ?`),
   wins: sqlite.prepare(`
     SELECT ${LEADERBOARD_COLS}
-      FROM instagib_stats
+      FROM elyxion_stats
      WHERE total_games > 0
      ORDER BY total_wins DESC, total_kills DESC
      LIMIT ?`),
   accuracy: sqlite.prepare(`
     SELECT ${LEADERBOARD_COLS}
-      FROM instagib_stats
+      FROM elyxion_stats
      WHERE total_games >= ${MIN_ACC_GAMES}
      ORDER BY best_accuracy DESC, total_kills DESC
      LIMIT ?`),
@@ -1594,85 +1625,85 @@ const leaderboardStmts = {
 
 // Rank = 1 + (players strictly ahead on the primary metric). Ties share a rank.
 const rankStmts = {
-  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games > 0 AND total_kills > ?`),
-  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games > 0 AND total_wins > ?`),
-  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_stats WHERE total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_stats WHERE total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_stats WHERE total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
 } as const;
 
 const playerStatsRowStmt = sqlite.prepare(
-  `SELECT ${LEADERBOARD_COLS} FROM instagib_stats WHERE player_id = ?`,
+  `SELECT ${LEADERBOARD_COLS} FROM elyxion_stats WHERE player_id = ?`,
 );
 
 // Same queries against the period table, parameterised by period_key (bound, not
 // interpolated). Window 'daily'/'weekly' use these; 'all' uses the statements above.
 const periodLeaderboardStmts = {
   kills: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_period_stats
      WHERE period_key = ? AND total_games > 0
      ORDER BY total_kills DESC LIMIT ?`),
   wins: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_period_stats
      WHERE period_key = ? AND total_games > 0
      ORDER BY total_wins DESC, total_kills DESC LIMIT ?`),
   accuracy: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_period_stats
      WHERE period_key = ? AND total_games >= ${MIN_ACC_GAMES}
      ORDER BY best_accuracy DESC, total_kills DESC LIMIT ?`),
 } as const;
 
 const periodRankStmts = {
-  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_period_stats WHERE period_key = ? AND total_games > 0 AND total_kills > ?`),
-  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_period_stats WHERE period_key = ? AND total_games > 0 AND total_wins > ?`),
-  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_period_stats WHERE period_key = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_period_stats WHERE period_key = ? AND total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_period_stats WHERE period_key = ? AND total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_period_stats WHERE period_key = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
 } as const;
 
 const periodRowStmt = sqlite.prepare(
-  `SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats WHERE player_id = ? AND period_key = ?`,
+  `SELECT ${LEADERBOARD_COLS} FROM elyxion_period_stats WHERE player_id = ? AND period_key = ?`,
 );
 
 const modeLeaderboardStmts = {
   kills: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_stats
      WHERE mode = ? AND total_games > 0
      ORDER BY total_kills DESC LIMIT ?`),
   wins: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_stats
      WHERE mode = ? AND total_games > 0
      ORDER BY total_wins DESC, total_kills DESC LIMIT ?`),
   accuracy: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_stats
      WHERE mode = ? AND total_games >= ${MIN_ACC_GAMES}
      ORDER BY best_accuracy DESC, total_kills DESC LIMIT ?`),
 } as const;
 const modeRankStmts = {
-  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_stats WHERE mode = ? AND total_games > 0 AND total_kills > ?`),
-  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_stats WHERE mode = ? AND total_games > 0 AND total_wins > ?`),
-  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_stats WHERE mode = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_mode_stats WHERE mode = ? AND total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_mode_stats WHERE mode = ? AND total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_mode_stats WHERE mode = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
 } as const;
 const modeRowStmt = sqlite.prepare(
-  `SELECT ${LEADERBOARD_COLS} FROM instagib_mode_stats WHERE player_id = ? AND mode = ?`,
+  `SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_stats WHERE player_id = ? AND mode = ?`,
 );
 const modePeriodLeaderboardStmts = {
   kills: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_period_stats
      WHERE mode = ? AND period_key = ? AND total_games > 0
      ORDER BY total_kills DESC LIMIT ?`),
   wins: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_period_stats
      WHERE mode = ? AND period_key = ? AND total_games > 0
      ORDER BY total_wins DESC, total_kills DESC LIMIT ?`),
   accuracy: sqlite.prepare(`
-    SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats
+    SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_period_stats
      WHERE mode = ? AND period_key = ? AND total_games >= ${MIN_ACC_GAMES}
      ORDER BY best_accuracy DESC, total_kills DESC LIMIT ?`),
 } as const;
 const modePeriodRankStmts = {
-  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games > 0 AND total_kills > ?`),
-  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games > 0 AND total_wins > ?`),
-  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_mode_period_stats WHERE mode = ? AND period_key = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
 } as const;
 const modePeriodRowStmt = sqlite.prepare(
-  `SELECT ${LEADERBOARD_COLS} FROM instagib_mode_period_stats WHERE player_id = ? AND mode = ? AND period_key = ?`,
+  `SELECT ${LEADERBOARD_COLS} FROM elyxion_mode_period_stats WHERE player_id = ? AND mode = ? AND period_key = ?`,
 );
 
 export type LeaderMode = 'ffa' | 'duel' | 'tdm' | 'ctf' | 'lms' | 'gun-game' | 'ranked';
@@ -1710,7 +1741,7 @@ function attachUserFlags(entries: LeaderboardEntry[]): LeaderboardEntry[] {
   const ids = entries.map((e) => e.id);
   const ph = ids.map(() => '?').join(',');
   const rows = sqlite
-    .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
+    .prepare(`SELECT id, is_admin, is_verified FROM elyxion_users WHERE id IN (${ph})`)
     .all(...ids) as { id: string; is_admin: number; is_verified: number }[];
   const byId = new Map(rows.map((r) => [r.id, r]));
   for (const e of entries) {
@@ -1788,25 +1819,25 @@ export function getPlayerRank(
 // server/auth.ts (scrypt); this layer only stores/reads. The account id is the
 // progression player_id, so logging in carries your XP/cosmetics across devices.
 const insertUserStmt = sqlite.prepare(
-  `INSERT INTO instagib_users (id, username, username_lower, pw_hash, pw_salt, email, created_at)
+  `INSERT INTO elyxion_users (id, username, username_lower, pw_hash, pw_salt, email, created_at)
    VALUES (@id, @username, @usernameLower, @pwHash, @pwSalt, @email, @createdAt)`,
 );
 const userByLowerStmt = sqlite.prepare(
-  `SELECT id, username, pw_hash, pw_salt FROM instagib_users WHERE username_lower = ?`,
+  `SELECT id, username, pw_hash, pw_salt FROM elyxion_users WHERE username_lower = ?`,
 );
 const userByIdStmt = sqlite.prepare(
-  `SELECT id, username, is_admin, is_verified FROM instagib_users WHERE id = ?`,
+  `SELECT id, username, is_admin, is_verified FROM elyxion_users WHERE id = ?`,
 );
 const accountByLowerStmt = sqlite.prepare(
-  `SELECT id, username, is_admin, is_verified FROM instagib_users WHERE username_lower = ?`,
+  `SELECT id, username, is_admin, is_verified FROM elyxion_users WHERE username_lower = ?`,
 );
 const insertSessionStmt = sqlite.prepare(
-  `INSERT INTO instagib_sessions (token, user_id, created_at) VALUES (?, ?, ?)`,
+  `INSERT INTO elyxion_sessions (token, user_id, created_at) VALUES (?, ?, ?)`,
 );
-const sessionStmt = sqlite.prepare(`SELECT user_id FROM instagib_sessions WHERE token = ?`);
-const deleteSessionStmt = sqlite.prepare(`DELETE FROM instagib_sessions WHERE token = ?`);
-const setVerifiedStmt = sqlite.prepare(`UPDATE instagib_users SET is_verified = @v WHERE id = @id`);
-const setAdminStmt = sqlite.prepare(`UPDATE instagib_users SET is_admin = @v WHERE id = @id`);
+const sessionStmt = sqlite.prepare(`SELECT user_id FROM elyxion_sessions WHERE token = ?`);
+const deleteSessionStmt = sqlite.prepare(`DELETE FROM elyxion_sessions WHERE token = ?`);
+const setVerifiedStmt = sqlite.prepare(`UPDATE elyxion_users SET is_verified = @v WHERE id = @id`);
+const setAdminStmt = sqlite.prepare(`UPDATE elyxion_users SET is_admin = @v WHERE id = @id`);
 
 export type UserRow = { id: string; username: string; pw_hash: string; pw_salt: string };
 // Public account info (no secrets) — id, name, and moderation flags.
@@ -1850,7 +1881,7 @@ export function syncAdminsFromEnv(usernamesLower: string[]): number {
   if (usernamesLower.length === 0) return 0;
   const ph = usernamesLower.map(() => '?').join(',');
   return sqlite
-    .prepare(`UPDATE instagib_users SET is_admin = 1 WHERE username_lower IN (${ph})`)
+    .prepare(`UPDATE elyxion_users SET is_admin = 1 WHERE username_lower IN (${ph})`)
     .run(...usernamesLower).changes;
 }
 export function createSession(token: string, userId: string, now: number): void {
@@ -1869,8 +1900,8 @@ export function deleteSession(token: string): void {
 
 // ── Admin metrics (dashboard) ────────────────────────────────────────────────
 // Read-only aggregates for the /admin dashboard. Everything here derives from
-// data we already keep: instagib_stats (career totals + created_at/updated_at),
-// instagib_users (registrations), and instagib_audit (the per-event timeline —
+// data we already keep: elyxion_stats (career totals + created_at/updated_at),
+// elyxion_users (registrations), and elyxion_audit (the per-event timeline —
 // every 'match', 'login', 'register' with a ts). All callers go through the
 // requireAdmin gate. Statements are prepared once; the queries run infrequently.
 
@@ -1885,14 +1916,14 @@ function dayIndexToISO(d: number): string {
   return new Date(d * DAY_MS).toISOString().slice(0, 10);
 }
 
-const mAccountsTotal = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_users`);
-const mPlayersWithGames = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games > 0`);
-const mMatchesTotal = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'match'`);
+const mAccountsTotal = sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_users`);
+const mPlayersWithGames = sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_stats WHERE total_games > 0`);
+const mMatchesTotal = sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_audit WHERE event = 'match'`);
 // Offline/practice matches serialize "offline":true into the detail JSON; the
 // online count is everything that isn't that. A coarse but reliable LIKE — our
 // detail serialization is stable (see server/stats.ts).
 const mOnlineMatchesTotal = sqlite.prepare(
-  `SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'match' AND detail NOT LIKE '%"offline":true%'`,
+  `SELECT COUNT(*) AS n FROM elyxion_audit WHERE event = 'match' AND detail NOT LIKE '%"offline":true%'`,
 );
 const mAgg = sqlite.prepare(`
   SELECT COALESCE(SUM(total_kills),0)  AS kills,
@@ -1900,19 +1931,19 @@ const mAgg = sqlite.prepare(`
          COALESCE(SUM(shots_fired),0)  AS fired,
          COALESCE(SUM(shots_hit),0)    AS hit,
          COALESCE(SUM(total_xp),0)     AS xp
-    FROM instagib_stats`);
+    FROM elyxion_stats`);
 const mLifetime = sqlite.prepare(
-  `SELECT AVG(updated_at - created_at) AS ms FROM instagib_stats WHERE total_games > 0`,
+  `SELECT AVG(updated_at - created_at) AS ms FROM elyxion_stats WHERE total_games > 0`,
 );
 const mWinMatches = sqlite.prepare(
-  `SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'match' AND ts >= ?`,
+  `SELECT COUNT(*) AS n FROM elyxion_audit WHERE event = 'match' AND ts >= ?`,
 );
 const mWinActive = sqlite.prepare(
-  `SELECT COUNT(DISTINCT actor_id) AS n FROM instagib_audit
+  `SELECT COUNT(DISTINCT actor_id) AS n FROM elyxion_audit
      WHERE event IN ('match','login') AND actor_id <> '' AND ts >= ?`,
 );
-const mWinNewAccounts = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_users WHERE created_at >= ?`);
-const mWinLogins = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'login' AND ts >= ?`);
+const mWinNewAccounts = sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_users WHERE created_at >= ?`);
+const mWinLogins = sqlite.prepare(`SELECT COUNT(*) AS n FROM elyxion_audit WHERE event = 'login' AND ts >= ?`);
 
 export type MetricsWindow = {
   matches: number;
@@ -1967,19 +1998,19 @@ export function getMetricsOverview(now: number = Date.now()): MetricsOverview {
 
 const mTsMatches = sqlite.prepare(
   `SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, COUNT(*) AS n
-     FROM instagib_audit WHERE event = 'match' AND ts >= ? GROUP BY d`,
+     FROM elyxion_audit WHERE event = 'match' AND ts >= ? GROUP BY d`,
 );
 const mTsLogins = sqlite.prepare(
   `SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, COUNT(*) AS n
-     FROM instagib_audit WHERE event = 'login' AND ts >= ? GROUP BY d`,
+     FROM elyxion_audit WHERE event = 'login' AND ts >= ? GROUP BY d`,
 );
 const mTsActive = sqlite.prepare(
   `SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, COUNT(DISTINCT actor_id) AS n
-     FROM instagib_audit WHERE event IN ('match','login') AND actor_id <> '' AND ts >= ? GROUP BY d`,
+     FROM elyxion_audit WHERE event IN ('match','login') AND actor_id <> '' AND ts >= ? GROUP BY d`,
 );
 const mTsRegs = sqlite.prepare(
   `SELECT CAST(created_at/${DAY_MS} AS INTEGER) AS d, COUNT(*) AS n
-     FROM instagib_users WHERE created_at >= ? GROUP BY d`,
+     FROM elyxion_users WHERE created_at >= ? GROUP BY d`,
 );
 
 export type DayPoint = {
@@ -2024,16 +2055,16 @@ const mRetention = sqlite.prepare(`
   SELECT CAST(u.created_at/${DAY_MS} AS INTEGER) AS d,
          COUNT(*) AS size,
          SUM(CASE WHEN EXISTS (
-           SELECT 1 FROM instagib_audit a
+           SELECT 1 FROM elyxion_audit a
             WHERE a.actor_id = u.id AND a.event IN ('match','login')
               AND a.ts >= u.created_at + ${DAY_MS} AND a.ts < u.created_at + 2*${DAY_MS}
          ) THEN 1 ELSE 0 END) AS d1,
          SUM(CASE WHEN EXISTS (
-           SELECT 1 FROM instagib_audit a
+           SELECT 1 FROM elyxion_audit a
             WHERE a.actor_id = u.id AND a.event IN ('match','login')
               AND a.ts >= u.created_at + ${DAY_MS} AND a.ts < u.created_at + 8*${DAY_MS}
          ) THEN 1 ELSE 0 END) AS d7
-    FROM instagib_users u
+    FROM elyxion_users u
    WHERE u.created_at >= ?
    GROUP BY d ORDER BY d`);
 
@@ -2047,11 +2078,11 @@ export function getRetention(days: number, now: number = Date.now()): RetentionC
 }
 
 const mRecentMatches = sqlite.prepare(
-  `SELECT id, ts, actor_id, actor_name, detail FROM instagib_audit
+  `SELECT id, ts, actor_id, actor_name, detail FROM elyxion_audit
      WHERE event = 'match' ORDER BY id DESC LIMIT ?`,
 );
 const mRecentMatchesBefore = sqlite.prepare(
-  `SELECT id, ts, actor_id, actor_name, detail FROM instagib_audit
+  `SELECT id, ts, actor_id, actor_name, detail FROM elyxion_audit
      WHERE event = 'match' AND id < ? ORDER BY id DESC LIMIT ?`,
 );
 
@@ -2163,7 +2194,7 @@ export function getPlayersTable(opts: {
   const rows = sqlite
     .prepare(
       `SELECT ${PLAYER_COLS}
-         FROM instagib_stats s LEFT JOIN instagib_users u ON u.id = s.player_id
+         FROM elyxion_stats s LEFT JOIN elyxion_users u ON u.id = s.player_id
         WHERE s.total_games > 0 AND s.user_name LIKE ?
         ORDER BY ${orderBy} LIMIT ?`,
     )
@@ -2194,7 +2225,7 @@ export function getPlayersTable(opts: {
 // are both retained. Login-gated, so player_id is always a real account id.
 // Cosmetic-adjacent: rank is bragging rights, never an advantage.
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_ranked (
+CREATE TABLE IF NOT EXISTS elyxion_ranked (
   player_id  TEXT PRIMARY KEY,
   user_name  TEXT NOT NULL,
   rating     INTEGER NOT NULL DEFAULT 1000,
@@ -2206,12 +2237,12 @@ CREATE TABLE IF NOT EXISTS instagib_ranked (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ranked_rating ON instagib_ranked(rating);
+CREATE INDEX IF NOT EXISTS idx_ranked_rating ON elyxion_ranked(rating);
 
 -- Current-season Duel ratings. Season rows are keyed by a deterministic
 -- 12-week season id, so a new season starts at the base rating without deleting
 -- historical lifetime MMR.
-CREATE TABLE IF NOT EXISTS instagib_ranked_seasons (
+CREATE TABLE IF NOT EXISTS elyxion_ranked_seasons (
   season_id  INTEGER NOT NULL,
   player_id  TEXT NOT NULL,
   user_name  TEXT NOT NULL,
@@ -2225,7 +2256,7 @@ CREATE TABLE IF NOT EXISTS instagib_ranked_seasons (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (season_id, player_id)
 );
-CREATE INDEX IF NOT EXISTS idx_ranked_season_rating ON instagib_ranked_seasons(season_id, rating);
+CREATE INDEX IF NOT EXISTS idx_ranked_season_rating ON elyxion_ranked_seasons(season_id, rating);
 `);
 
 export const RANKED_BASE_RATING = 1000;
@@ -2246,34 +2277,34 @@ function kFactor(games: number, rating: number): number {
   return 24;
 }
 
-const rankedRowStmt = sqlite.prepare(`SELECT * FROM instagib_ranked WHERE player_id = ?`);
+const rankedRowStmt = sqlite.prepare(`SELECT * FROM elyxion_ranked WHERE player_id = ?`);
 const rankedEnsureStmt = sqlite.prepare(`
-  INSERT OR IGNORE INTO instagib_ranked (player_id, user_name, rating, peak, created_at, updated_at)
+  INSERT OR IGNORE INTO elyxion_ranked (player_id, user_name, rating, peak, created_at, updated_at)
   VALUES (@playerId, @userName, ${RANKED_BASE_RATING}, ${RANKED_BASE_RATING}, @now, @now)`);
 const rankedUpdateStmt = sqlite.prepare(`
-  UPDATE instagib_ranked
+  UPDATE elyxion_ranked
      SET user_name = @userName, rating = @rating, peak = max(peak, @rating),
          games = games + 1, wins = wins + @win, losses = losses + @loss,
          streak = @streak, updated_at = @now
    WHERE player_id = @playerId`);
 const rankedRankStmt = sqlite.prepare(
-  `SELECT COUNT(*) AS n FROM instagib_ranked WHERE games > 0 AND rating > ?`,
+  `SELECT COUNT(*) AS n FROM elyxion_ranked WHERE games > 0 AND rating > ?`,
 );
 const seasonRowStmt = sqlite.prepare(
-  `SELECT * FROM instagib_ranked_seasons WHERE season_id = ? AND player_id = ?`,
+  `SELECT * FROM elyxion_ranked_seasons WHERE season_id = ? AND player_id = ?`,
 );
 const seasonEnsureStmt = sqlite.prepare(`
-  INSERT OR IGNORE INTO instagib_ranked_seasons
+  INSERT OR IGNORE INTO elyxion_ranked_seasons
     (season_id, player_id, user_name, rating, peak, created_at, updated_at)
   VALUES (@seasonId, @playerId, @userName, ${RANKED_BASE_RATING}, ${RANKED_BASE_RATING}, @now, @now)`);
 const seasonUpdateStmt = sqlite.prepare(`
-  UPDATE instagib_ranked_seasons
+  UPDATE elyxion_ranked_seasons
      SET user_name = @userName, rating = @rating, peak = max(peak, @rating),
          games = games + 1, wins = wins + @win, losses = losses + @loss,
          streak = @streak, updated_at = @now
    WHERE season_id = @seasonId AND player_id = @playerId`);
 const seasonRankStmt = sqlite.prepare(
-  `SELECT COUNT(*) AS n FROM instagib_ranked_seasons WHERE season_id = ? AND games > 0 AND rating > ?`,
+  `SELECT COUNT(*) AS n FROM elyxion_ranked_seasons WHERE season_id = ? AND games > 0 AND rating > ?`,
 );
 
 type RankedRow = {
@@ -2500,10 +2531,10 @@ export function recordRankedResult(
 }
 
 const rankedLeaderboardStmt = sqlite.prepare(
-  `SELECT * FROM instagib_ranked WHERE games > 0 ORDER BY rating DESC, wins DESC LIMIT ?`,
+  `SELECT * FROM elyxion_ranked WHERE games > 0 ORDER BY rating DESC, wins DESC LIMIT ?`,
 );
 const seasonLeaderboardStmt = sqlite.prepare(
-  `SELECT * FROM instagib_ranked_seasons WHERE season_id = ? AND games > 0 ORDER BY rating DESC, wins DESC LIMIT ?`,
+  `SELECT * FROM elyxion_ranked_seasons WHERE season_id = ? AND games > 0 ORDER BY rating DESC, wins DESC LIMIT ?`,
 );
 export type RankedLeaderEntry = {
   id: string;
@@ -2534,7 +2565,7 @@ export function getRankedLeaderboard(limit: number, season = true): RankedLeader
   if (base.length) {
     const ph = base.map(() => '?').join(',');
     const flags = sqlite
-      .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
+      .prepare(`SELECT id, is_admin, is_verified FROM elyxion_users WHERE id IN (${ph})`)
       .all(...base.map((e) => e.id)) as { id: string; is_admin: number; is_verified: number }[];
     const byId = new Map(flags.map((f) => [f.id, f]));
     for (const e of base) {
@@ -2555,9 +2586,9 @@ export function getRankedLeaderboard(limit: number, season = true): RankedLeader
 // (best_kills). Account-only and SEPARATE from career stats — it never touches
 // K/D. The match is offline (vs bots) so scores are client-reported + clamped
 // (best-effort, like career stats); the stakes are a cosmetic weekly board, and
-// each board-defining run also stores a rewatchable replay (instagib_weekly_replay).
+// each board-defining run also stores a rewatchable replay (elyxion_weekly_replay).
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_weekly_challenge (
+CREATE TABLE IF NOT EXISTS elyxion_weekly_challenge (
   player_id    TEXT NOT NULL,
   week_key     TEXT NOT NULL,
   user_name    TEXT NOT NULL,
@@ -2567,17 +2598,17 @@ CREATE TABLE IF NOT EXISTS instagib_weekly_challenge (
   updated_at   INTEGER NOT NULL,
   PRIMARY KEY (player_id, week_key)
 );
-CREATE INDEX IF NOT EXISTS idx_weekly_challenge ON instagib_weekly_challenge(week_key, best_kills);
+CREATE INDEX IF NOT EXISTS idx_weekly_challenge ON elyxion_weekly_challenge(week_key, best_kills);
 `);
 
 const wcRowStmt = sqlite.prepare(
-  `SELECT * FROM instagib_weekly_challenge WHERE player_id = ? AND week_key = ?`,
+  `SELECT * FROM elyxion_weekly_challenge WHERE player_id = ? AND week_key = ?`,
 );
 const wcEnsureStmt = sqlite.prepare(`
-  INSERT OR IGNORE INTO instagib_weekly_challenge (player_id, week_key, user_name, updated_at)
+  INSERT OR IGNORE INTO elyxion_weekly_challenge (player_id, week_key, user_name, updated_at)
   VALUES (@playerId, @weekKey, @userName, @now)`);
 const wcUpdateStmt = sqlite.prepare(`
-  UPDATE instagib_weekly_challenge
+  UPDATE elyxion_weekly_challenge
      SET user_name = @userName, best_kills = @bestKills, best_time_ms = @bestTimeMs,
          runs = runs + 1, updated_at = @now
    WHERE player_id = @playerId AND week_key = @weekKey`);
@@ -2590,13 +2621,13 @@ const WC_ORDER = `ORDER BY
   best_kills DESC,
   updated_at ASC`;
 const wcLeaderboardStmt = sqlite.prepare(
-  `SELECT * FROM instagib_weekly_challenge WHERE week_key = ? ${WC_ORDER} LIMIT ?`,
+  `SELECT * FROM elyxion_weekly_challenge WHERE week_key = ? ${WC_ORDER} LIMIT ?`,
 );
 // Count entries strictly ahead of (@timeMs, @kills): every winner beats a
 // non-winner; among winners the faster one beats; among non-winners more kills
 // beats. @timeMs <= 0 means the caller is a non-winner.
 const wcRankStmt = sqlite.prepare(`
-  SELECT COUNT(*) AS n FROM instagib_weekly_challenge
+  SELECT COUNT(*) AS n FROM elyxion_weekly_challenge
    WHERE week_key = @weekKey AND (
      (best_time_ms > 0 AND (@timeMs <= 0 OR best_time_ms < @timeMs))
      OR
@@ -2609,7 +2640,7 @@ const wcRankStmt = sqlite.prepare(`
 // player sets a new board-defining run. The blob is the gzipped replay-codec
 // binary. Storage is bounded by pruning every week but the current one on write.
 sqlite.exec(`
-CREATE TABLE IF NOT EXISTS instagib_weekly_replay (
+CREATE TABLE IF NOT EXISTS elyxion_weekly_replay (
   player_id   TEXT NOT NULL,
   week_key    TEXT NOT NULL,
   data        BLOB NOT NULL,       -- gzipped replay-codec binary
@@ -2620,23 +2651,23 @@ CREATE TABLE IF NOT EXISTS instagib_weekly_replay (
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (player_id, week_key)
 );
-CREATE INDEX IF NOT EXISTS idx_weekly_replay_week ON instagib_weekly_replay(week_key);
+CREATE INDEX IF NOT EXISTS idx_weekly_replay_week ON elyxion_weekly_replay(week_key);
 `);
 
 const wrUpsertStmt = sqlite.prepare(`
-  INSERT INTO instagib_weekly_replay
+  INSERT INTO elyxion_weekly_replay
     (player_id, week_key, data, raw_bytes, duration_ms, kills, won, created_at)
   VALUES (@playerId, @weekKey, @data, @rawBytes, @durationMs, @kills, @won, @createdAt)
   ON CONFLICT(player_id, week_key) DO UPDATE SET
     data = @data, raw_bytes = @rawBytes, duration_ms = @durationMs,
     kills = @kills, won = @won, created_at = @createdAt`);
 const wrGetStmt = sqlite.prepare(
-  `SELECT data, raw_bytes, duration_ms, kills, won FROM instagib_weekly_replay
+  `SELECT data, raw_bytes, duration_ms, kills, won FROM elyxion_weekly_replay
     WHERE player_id = ? AND week_key = ?`,
 );
-const wrPruneStmt = sqlite.prepare(`DELETE FROM instagib_weekly_replay WHERE week_key != ?`);
+const wrPruneStmt = sqlite.prepare(`DELETE FROM elyxion_weekly_replay WHERE week_key != ?`);
 const wrWeekPlayersStmt = sqlite.prepare(
-  `SELECT player_id FROM instagib_weekly_replay WHERE week_key = ?`,
+  `SELECT player_id FROM elyxion_weekly_replay WHERE week_key = ?`,
 );
 
 // Store (gzip) a player's board-defining run for the week, overwriting any prior
@@ -2700,9 +2731,9 @@ const wcStatsStmt = sqlite.prepare(`
          COALESCE(SUM(CASE WHEN best_time_ms > 0 THEN 1 ELSE 0 END), 0) AS winners,
          MIN(CASE WHEN best_time_ms > 0 THEN best_time_ms END) AS best_time_ms,
          COALESCE(MAX(best_kills), 0) AS top_kills
-    FROM instagib_weekly_challenge WHERE week_key = ?`);
+    FROM elyxion_weekly_challenge WHERE week_key = ?`);
 const wrStatsStmt = sqlite.prepare(
-  `SELECT COUNT(*) AS n, COALESCE(SUM(raw_bytes), 0) AS bytes FROM instagib_weekly_replay WHERE week_key = ?`,
+  `SELECT COUNT(*) AS n, COALESCE(SUM(raw_bytes), 0) AS bytes FROM elyxion_weekly_replay WHERE week_key = ?`,
 );
 
 export type WeeklyChallengeStats = {
@@ -2833,7 +2864,7 @@ export function getWeeklyChallengeLeaderboard(
   if (base.length) {
     const ph = base.map(() => '?').join(',');
     const flags = sqlite
-      .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
+      .prepare(`SELECT id, is_admin, is_verified FROM elyxion_users WHERE id IN (${ph})`)
       .all(...base.map((e) => e.id)) as { id: string; is_admin: number; is_verified: number }[];
     const byId = new Map(flags.map((f) => [f.id, f]));
     const withReplay = weeklyReplayPlayerIds(wk);
@@ -2873,18 +2904,18 @@ export function getWeeklyChallengeMe(
 // pattern as the moderation columns: additive ALTER guarded by PRAGMA.
 {
   const cols = new Set(
-    (sqlite.prepare('PRAGMA table_info(instagib_users)').all() as { name: string }[]).map(
+    (sqlite.prepare('PRAGMA table_info(elyxion_users)').all() as { name: string }[]).map(
       (r) => r.name,
     ),
   );
   if (!cols.has('crazygames_user_id'))
-    sqlite.exec('ALTER TABLE instagib_users ADD COLUMN crazygames_user_id TEXT');
+    sqlite.exec('ALTER TABLE elyxion_users ADD COLUMN crazygames_user_id TEXT');
 }
 const linkCgStmt = sqlite.prepare(
-  'UPDATE instagib_users SET crazygames_user_id = ? WHERE id = ?',
+  'UPDATE elyxion_users SET crazygames_user_id = ? WHERE id = ?',
 );
 const accountByCgStmt = sqlite.prepare(
-  'SELECT id, username, is_admin, is_verified FROM instagib_users WHERE crazygames_user_id = ?',
+  'SELECT id, username, is_admin, is_verified FROM elyxion_users WHERE crazygames_user_id = ?',
 );
 
 export function linkCrazyGamesAccount(accountId: string, cgUserId: string): void {

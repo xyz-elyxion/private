@@ -27,7 +27,7 @@ please treat it like a vulnerability and report it **privately** through the cha
 above rather than demonstrating it on the live server or sharing it publicly.
 
 Responsible testing: do not run denial-of-service, brute-force, or load attacks
-against the production server (`instagib.win`). Test against a local build instead.
+against the production server (the production deployment). Test against a local build instead.
 
 ## Scope
 

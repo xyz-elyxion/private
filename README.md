@@ -7,19 +7,18 @@
 A browser-based, server-authoritative, Quake-style instagib FPS.<br/>
 No health bars, no loadouts — the whole game is **aim and movement**.
 
-<a href="https://instagib.win"><strong>▶ &nbsp;PLAY NOW — instagib.win</strong></a><br/>
+<strong>▶ &nbsp;PLAY NOW</strong><br/>
 <sub>free · no download · no install · optional account</sub>
 
 <br/>
 
-[![CI](https://github.com/8tp/instagib-arena/actions/workflows/ci.yml/badge.svg)](https://github.com/8tp/instagib-arena/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![TypeScript](https://img.shields.io/badge/TypeScript-end_to_end-3178c6.svg)](tsconfig.json)
 
 <br/>
 
-<img src="public/og-image.png" alt="Elyxion — a browser-based Quake-style instagib FPS" width="720" />
+<img src="public/16-9.png" alt="Elyxion — a browser-based Quake-style instagib FPS" width="720" />
 
 <sub>Raw **Three.js** rendering · **64 Hz binary netcode** with lag compensation · one **Node** process (Express + `ws` + SQLite)</sub>
 
@@ -94,7 +93,6 @@ interesting parts are all in this repo.
 [`fnm`](https://github.com/Schniz/fnm) or `nvm`, e.g. `fnm use 20.19.0`.
 
 ```bash
-git clone https://github.com/8tp/instagib-arena.git
 cd elyxion-arena
 npm install
 npm run cli -- dev
@@ -253,7 +251,7 @@ elyxion-arena/
 │  ├─ feedback.ts         # in-game feedback/bug-report endpoint
 │  ├─ stats.ts, leaderboard.ts, ranked.ts, challenge.ts
 ├─ scripts/               # netcode load/stress harnesses
-├─ public/                # models, sounds, og-image, robots.txt, sitemap.xml
+├─ public/                # models, sounds, 16-9.png, robots.txt, sitemap.xml
 └─ docs/                  # architecture + netcode + ops docs (see below)
 ```
 
@@ -323,8 +321,7 @@ override any sound; missing announcer lines fall back to speech synthesis.
 PRs and issues welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Contributions
 require agreeing to the lightweight [Contributor License Agreement](CLA.md) via
 the checkbox in the pull request template. Found a bug or have an idea? Use the
-in-game **Send feedback** button (it lands in the admin panel) or
-[open an issue](https://github.com/8tp/instagib-arena/issues/new/choose).
+in-game **Send feedback** button (it lands in the admin panel).
 
 ## Security
 
@@ -341,4 +338,4 @@ must offer your users the corresponding source under the same terms.
 
 **Commercial / dual licensing:** to use this code in a closed-source or commercial
 product without the AGPL's obligations, a separate commercial license is available —
-contact [@8tp](https://github.com/8tp).
+contact the maintainer.

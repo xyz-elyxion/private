@@ -6,7 +6,7 @@ Thanks for your interest — bug reports, ideas, and pull requests are all welco
 
 - **Report a bug or suggest a feature** — use the in-game **Send feedback** button
   (it goes straight to the admin panel) or
-  [open a GitHub issue](https://github.com/8tp/instagib-arena/issues/new/choose).
+  use the in-game **Send feedback** button.
 - **Send a pull request** — fix a bug, add a map/mode/cosmetic, improve the netcode
   or the docs.
 

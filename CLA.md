@@ -4,7 +4,7 @@ Thank you for contributing to Elyxion (the "Project"). This Contributor
 License Agreement ("Agreement") clarifies the intellectual-property rights granted
 with Contributions from any person or entity. It protects you, the Project, and its
 users, and it lets the Project's maintainer (the "Maintainer", currently
-[@8tp](https://github.com/8tp), the Project's copyright holder) offer the Project
+the maintainer, the Project's copyright holder) offer the Project
 under both the open-source AGPL-3.0 license and separate commercial licenses.
 
 By submitting a Contribution to the Project (for example, via a pull request), you

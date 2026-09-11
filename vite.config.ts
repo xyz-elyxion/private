@@ -14,7 +14,7 @@ export default defineConfig({
   },
   // CRAZYGAMES: when the bundle is hosted on CrazyGames' domain but the backend
   // stays on the developer's origin, set VITE_API_BASE (e.g.
-  // `VITE_API_BASE=https://instagib.win vite build`) so /api calls and the game
+  // `VITE_API_BASE=https://your-backend.example.com vite build`) so /api calls and the game
   // WebSocket cross over to the real backend. Unset (default) = same-origin,
   // which is correct for the self-hosted site and for local dev.
   define: {

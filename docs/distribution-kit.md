@@ -4,7 +4,7 @@ Everything you need to list the game on portals and seed communities. Automation
 can't create accounts or submit on your behalf — those are identity-bound and
 need your login/ToS acceptance — so this kit makes each one ~10 min of copy-paste.
 
-URL: **https://instagib.win** · Genre: browser instagib arena FPS · Price: free
+URL: **your hosted URL** · Genre: browser instagib arena FPS · Price: free
 
 ---
 
@@ -95,7 +95,7 @@ win but gated behind the iframe fix + review. Poki is a long shot.
   have a **replay system** — use it: record a clean run, export, screen-capture
   the first-person replay into a short montage. This doubles as TikTok/Shorts
   content. Highest-leverage asset you can make.
-- **og-image.png** already exists (1200×630) and is now wired up correctly.
+- **16-9.png** already exists in /public (1731×909) and is wired up as the og:image / twitter:image.
 
 ---
 
@@ -105,7 +105,7 @@ win but gated behind the iframe fix + review. Poki is a long shot.
 1. Create account → Dashboard → "Create new project".
 2. Kind of project: **HTML** but set "This game will be played in browser" OFF if
    you can't upload a self-contained build (multiplayer needs your backend). Use
-   the **external link** approach: add a prominent link/button to https://instagib.win,
+   the **external link** approach: add a prominent link/button to your hosted URL,
    or upload a tiny HTML that redirects. Simplest: project page + big "Play now" link.
 3. Paste name, tagline, long description, tags. Upload cover + screenshots.
 4. Set pricing to **Free**. Publish. Post a short **devlog** (itch surfaces these).
@@ -117,7 +117,7 @@ Pure backlinks — low effort, compounding SEO + trickle of the exact audience.
 
 ### CrazyGames (after the iframe fix)
 1. developer.crazygames.com → register as a developer.
-2. Submit a new game → provide your hosted URL (https://instagib.win) — they iframe it.
+2. Submit a new game → provide your hosted URL (your hosted URL) — they iframe it.
 3. Test the deployed `/play` URL in their iframe and confirm the game socket and pointer lock work.
 4. Integrate the CrazyGames SDK if you want ads/featuring (optional for first submit).
 5. Fill name/desc/controls/tags from this kit. Upload thumbnail + screenshots.

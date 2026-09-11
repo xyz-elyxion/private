@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { CONTROLS } from '../controls';
 import { useLiveCount } from '../live';
 import { FeedbackModal } from '../FeedbackModal';
-import { DISCORD_URL, GITHUB_URL } from '../links';
+import { DISCORD_URL } from '../links';
 
 // Coarse pointer (phone/tablet) → this is a keyboard+mouse FPS; warn before the
 // player taps into the lobby, downloads the 3D chunk, and hits disabled buttons.
@@ -109,9 +109,6 @@ export default function Landing() {
             <Link to="/docs" className="transition hover:text-white/90">
               Docs
             </Link>
-            <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
-              Source ↗
-            </a>
             <button type="button" onClick={() => setShowFeedback(true)} className="uppercase tracking-[0.18em] transition hover:text-white/90">
               Feedback
             </button>

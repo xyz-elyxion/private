@@ -286,8 +286,8 @@ cosmetic equips.
 
 `GET /api/leaderboard?sort=kills|wins|accuracy&window=all|weekly|daily&mode=all|ffa|duel|tdm|ranked&limit=N`
 (`server/leaderboard.ts`) — one prepared statement per (sort × window × mode), no user
-input reaching SQL. `all` reads `instagib_stats`; `weekly`/`daily` read
-`instagib_period_stats` (buckets keyed `d:YYYYMMDD` / `w:<Monday>`, upserted on
+input reaching SQL. `all` reads `elyxion_stats`; `weekly`/`daily` read
+`elyxion_period_stats` (buckets keyed `d:YYYYMMDD` / `w:<Monday>`, upserted on
 online matches only). A mode filter reads the corresponding mode bucket, including
 mode-plus-window buckets, so casual FFA/Duel/TDM and Ranked Duel standings remain
 separate. It pins the caller's own rank, floors the accuracy board at
@@ -296,8 +296,8 @@ being trivially inflated, `POST /api/stats` is rate-limited (a dependency-free
 in-memory sliding window: ~30 submits per identity per minute, keyed by the player
 cookie or IP).
 
-Ranked Duel uses `instagib_ranked` for lifetime Elo history and
-`instagib_ranked_seasons` for the current 12-week season. The season bucket is
+Ranked Duel uses `elyxion_ranked` for lifetime Elo history and
+`elyxion_ranked_seasons` for the current 12-week season. The season bucket is
 keyed by a deterministic season id, starts every 12 weeks, and resets ratings,
 placements, and standings without deleting lifetime history. The ranked queue is
 account-only and server-gated at account level 10; the queue reports the rejection
