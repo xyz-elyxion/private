@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiBase, apiUrl } from './game/urls';
+import { hasAcceptedLegal, LegalAgreeCheckbox, LegalDocModal } from './legal';
 
 // Client auth: guest by default, optional account. The session lives in an
 // httpOnly cookie set by the server, so the client only holds the username (or
@@ -201,6 +202,10 @@ export function LoginModal({
   const [email, setEmail] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Legal consent: players who already accepted (first-visit gate or a prior
+  // signup) start checked; everyone else must tick the box before submitting.
+  const [agree, setAgree] = useState(hasAcceptedLegal());
+  const [legalDoc, setLegalDoc] = useState<'terms' | 'privacy' | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -212,6 +217,10 @@ export function LoginModal({
 
   const submit = async () => {
     if (busy) return;
+    if (!agree) {
+      setErr('Please accept the Terms of Service and Privacy Policy first.');
+      return;
+    }
     setBusy(true);
     setErr(null);
     const code =
@@ -291,6 +300,7 @@ export function LoginModal({
               />
             </>
           )}
+          <LegalAgreeCheckbox checked={agree} onChange={setAgree} onOpenDoc={setLegalDoc} />
           {err && <div className='mt-4 text-[12px] text-rose-300'>{err}</div>}
         </div>
         <div className='flex items-center justify-between border-t border-white/10 px-7 py-4'>
@@ -306,6 +316,7 @@ export function LoginModal({
           </button>
         </div>
       </div>
+      {legalDoc && <LegalDocModal doc={legalDoc} onClose={() => setLegalDoc(null)} />}
     </div>
   );
 }

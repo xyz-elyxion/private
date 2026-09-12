@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { CONTROLS } from '../controls';
 import { useLiveCount } from '../live';
 import { FeedbackModal } from '../FeedbackModal';
+import { LegalFooterLinks, LegalGate, hasAcceptedLegal } from '../legal';
 import { DISCORD_URL } from '../links';
 
 // Coarse pointer (phone/tablet) → this is a keyboard+mouse FPS; warn before the
@@ -62,13 +63,16 @@ export default function Landing() {
   const coarse = useCoarsePointer();
   const live = useLiveCount();
   const [showFeedback, setShowFeedback] = useState(false);
+  // First-visit consent gate: shown until the player accepts (or defers with
+  // "Not now" — it re-appears next visit until accepted).
+  const [showLegalGate, setShowLegalGate] = useState(() => !hasAcceptedLegal());
   const navigate = useNavigate();
 
   // Launcher convention: Enter deploys straight into the menu. Never hijack the
   // key while a dialog is open (explicit state guard — don't rely on focus
   // location alone) or while focus sits on a link/button/field.
   useEffect(() => {
-    if (coarse || showFeedback) return;
+    if (coarse || showFeedback || showLegalGate) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || e.repeat || showFeedback) return;
       const el = e.target as HTMLElement | null;
@@ -78,7 +82,7 @@ export default function Landing() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [coarse, showFeedback, navigate]);
+  }, [coarse, showFeedback, showLegalGate, navigate]);
 
   return (
     <div className="deck-bg relative h-full overflow-hidden text-white">
@@ -236,9 +240,17 @@ export default function Landing() {
         <footer className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-white/10 px-5 py-4 font-mono text-[10px] uppercase tracking-[0.18em] text-white/30 sm:px-8">
           <span>Desktop · best in Chrome / Edge</span>
           <span>Open source · AGPL</span>
+          <LegalFooterLinks />
         </footer>
       </div>
 
+      {showLegalGate && (
+        <LegalGate
+          onAccepted={() => {
+            setShowLegalGate(false);
+          }}
+        />
+      )}
       {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
     </div>
   );

@@ -6,6 +6,7 @@ import { initCrazyGames, syncCgSettings, cgLoadingStart } from './crazygames';
 import Landing from './pages/Landing';
 import PublicProfile from './pages/PublicProfile';
 import Docs from './pages/Docs';
+import { LegalPage } from './legal';
 
 /* ── CrazyGames boot ─────────────────────────────────────────────────────
  * Init the SDK before the React tree renders, per the v3 docs ("do this
@@ -152,7 +153,7 @@ function CgSdkWatcher({ onSettled }: { onSettled: () => void }) {
 // static host — and drop the player straight into the game (portal QA expects
 // instant gameplay, no menu cascade). The self-hosted site keeps BrowserRouter
 // with clean URLs.
-const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab)(\/|$)/;
+const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal)(\/|$)/;
 function isPortalEmbed(): boolean {
   if (typeof window === 'undefined') return false;
   const p = window.location.pathname;
@@ -173,6 +174,7 @@ createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route path="/" element={<Navigate to="/play" replace />} />
           <Route path="/play" element={gameRoute} />
+          <Route path="/legal/:doc" element={<LegalPage />} />
           <Route
             path="/play/profile/:username"
             element={
@@ -192,6 +194,7 @@ createRoot(document.getElementById('root')!).render(
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/docs" element={<Docs />} />
+        <Route path="/legal/:doc" element={<LegalPage />} />
         <Route
           path="/play"
           element={
