@@ -5,6 +5,17 @@
 // match the game's cyan/zinc deck aesthetic.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Activity,
+  Crosshair,
+  Gamepad2,
+  Inbox,
+  LayoutDashboard,
+  Package,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Users,
+} from 'lucide-react';
 import { useAuth , authHeaders } from './auth';
 import { apiUrl } from './game/urls';
 
@@ -258,15 +269,107 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
+// ── Sidebar navigation (command-deck shell) ────────────────────────────────
+// Workspace-style sidebar format: collapsible left rail with grouped nav,
+// per-item badges (live counts), shortcut hints, and a top bar with breadcrumb.
+// Same six panels as before — just re-homed. lucide icons at 1.5 stroke match
+// the deck's thin technical line style.
 type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback';
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'activity', label: 'Activity' },
-  { id: 'retention', label: 'Retention' },
-  { id: 'matches', label: 'Matches' },
-  { id: 'players', label: 'Players' },
-  { id: 'feedback', label: 'Feedback' },
-];
+const TAB_TITLES: Record<Tab, string> = {
+  overview: 'Overview',
+  activity: 'Activity',
+  retention: 'Retention',
+  matches: 'Matches',
+  players: 'Players',
+  feedback: 'Feedback',
+};
+
+function NavItem({
+  item,
+  activeId,
+  onSelect,
+}: {
+  item: { id: Tab; title: string; icon: React.ElementType; badge?: number | string };
+  activeId: Tab;
+  onSelect: (id: Tab) => void;
+}) {
+  const isActive = activeId === item.id;
+  const Icon = item.icon;
+  return (
+    <button
+      onClick={() => onSelect(item.id)}
+      className={`group flex w-full items-center justify-between rounded-md px-2.5 py-[7px] text-left transition-all duration-200 select-none ${
+        isActive
+          ? 'bg-cyan-400/10 text-cyan-200'
+          : 'text-white/50 hover:bg-white/5 hover:text-white/90'
+      }`}
+    >
+      <span className="flex items-center gap-2.5">
+        <Icon
+          className={`h-4 w-4 transition-colors ${
+            isActive ? 'text-cyan-300' : 'text-white/35 group-hover:text-white/70'
+          }`}
+          strokeWidth={1.5}
+        />
+        <span className="truncate text-[13px] tracking-wide">{item.title}</span>
+      </span>
+      {item.badge !== undefined && item.badge !== 0 && (
+        <span
+          className={`flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-medium tabular-nums ${
+            isActive ? 'bg-cyan-400/20 text-cyan-200' : 'bg-white/10 text-white/60'
+          }`}
+        >
+          {item.badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function SidebarNav({
+  tab,
+  onTab,
+  badges,
+}: {
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  badges: Partial<Record<Tab, number | string>>;
+}) {
+  const groups: { heading?: string; items: { id: Tab; title: string; icon: React.ElementType; badge?: number | string }[] }[] = [
+    {
+      items: [{ id: 'overview', title: 'Overview', icon: LayoutDashboard, badge: badges.overview }],
+    },
+    {
+      heading: 'Metrics',
+      items: [
+        { id: 'activity', title: 'Activity', icon: Activity },
+        { id: 'retention', title: 'Retention', icon: Users },
+        { id: 'matches', title: 'Matches', icon: Crosshair },
+        { id: 'players', title: 'Players', icon: Users },
+      ],
+    },
+    {
+      heading: 'Community',
+      items: [{ id: 'feedback', title: 'Feedback', icon: Inbox, badge: badges.feedback }],
+    },
+  ];
+  return (
+    <div className="flex flex-1 flex-col gap-4 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {groups.map((g, i) => (
+        <div key={i} className="flex flex-col gap-0.5">
+          {g.heading && (
+            <span className="mb-1 px-2.5 text-[10px] font-semibold tracking-[0.18em] text-white/25 uppercase">
+              {g.heading}
+            </span>
+          )}
+          {g.items.map((item) => (
+            <NavItem key={item.id} item={item} activeId={tab} onSelect={onTab} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ── Tab: Overview ────────────────────────────────────────────────────────────
 function OverviewTab({ overview, live }: { overview: Overview | null; live: LiveCounts | null }) {
@@ -945,9 +1048,10 @@ function PortalZipButton() {
       onClick={() => void download()}
       disabled={state === 'working'}
       title="Download the production static build (dist/) as a zip for submitting to other gaming portals"
-      className="rounded-md border border-white/15 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-50"
+      className="flex items-center gap-2 rounded-md border border-white/15 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-50"
     >
-      {state === 'error' ? 'Build unavailable' : state === 'working' ? 'Packaging…' : '↓ Portal zip'}
+      <Package className="h-3.5 w-3.5" strokeWidth={1.5} />
+      {state === 'error' ? 'Build unavailable' : state === 'working' ? 'Packaging…' : 'Portal zip'}
     </button>
   );
 }
@@ -957,6 +1061,8 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>('overview');
   const [overview, setOverview] = useState<Overview | null>(null);
   const [live, setLive] = useState<LiveCounts | null>(null);
+  const [navOpen, setNavOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const isAdmin = !!auth.account?.isAdmin;
 
@@ -1008,51 +1114,89 @@ export default function AdminDashboard() {
     );
   }
 
+  const activeTitle = TAB_TITLES[tab];
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <div className="mx-auto max-w-6xl px-4 py-6">
-        <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="font-display text-2xl uppercase tracking-[0.16em] text-cyan-300">
-              Elyxion · Admin
-            </h1>
-            <p className="text-[11px] text-white/40">
-              Signed in as {auth.account.username} · live metrics from production data
-            </p>
+    <div className="deck-bg flex h-screen overflow-hidden text-white">
+      {/* ── Sidebar rail ── */}
+      <div
+        className={`h-full shrink-0 overflow-hidden border-r border-white/10 bg-black/40 backdrop-blur transition-all duration-300 ease-in-out ${
+          navOpen ? 'w-[240px] opacity-100' : 'w-0 border-none opacity-0'
+        }`}
+      >
+        <div className="flex h-full w-[240px] flex-col p-3">
+          {/* Workspace tile */}
+          <div className="mb-4 flex items-center gap-3 rounded-lg px-2 py-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-[6px] bg-cyan-400/15 font-display text-[15px] font-semibold text-cyan-300 ring-1 ring-cyan-400/30">
+              E
+            </div>
+            <div className="flex min-w-0 flex-col">
+              <span className="max-w-[140px] truncate font-display text-[13px] leading-none tracking-[0.08em] text-white/90">
+                ELYXION
+              </span>
+              <span className="mt-1 text-[11px] leading-none text-white/40">
+                {live ? `${live.online} online` : 'command deck'}
+              </span>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <PortalZipButton />
+
+          <SidebarNav tab={tab} onTab={setTab} badges={{ overview: live?.online }} />
+
+          {/* Bottom: back to arena (portal zip lives in the top bar) */}
+          <div className="mt-auto flex flex-col gap-0.5 border-t border-white/10 pt-3">
             <a
               href="/play"
-              className="rounded-md border border-white/15 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200"
+              className="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-white/50 transition hover:bg-white/5 hover:text-white/90"
             >
-              ← Arena
+              <Gamepad2 className="h-4 w-4 text-white/35 transition-colors group-hover:text-white/70" strokeWidth={1.5} />
+              <span className="text-[13px] tracking-wide">Back to arena</span>
             </a>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Main column ── */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/30 px-4 backdrop-blur">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setNavOpen(!navOpen)}
+              className="rounded-md p-1.5 text-white/50 transition hover:bg-white/5 hover:text-white/90"
+              title={navOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            >
+              {navOpen ? (
+                <PanelLeftClose className="h-[18px] w-[18px]" strokeWidth={1.5} />
+              ) : (
+                <PanelLeftOpen className="h-[18px] w-[18px]" strokeWidth={1.5} />
+              )}
+            </button>
+            <div className="flex items-center gap-2 text-[13px] text-white/45">
+              <span className="truncate">Elyxion</span>
+              <span className="text-white/20">/</span>
+              <span className="truncate font-medium text-white/90">{activeTitle}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <PortalZipButton />
+            <div
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-cyan-400/10 text-[11px] font-medium text-cyan-300 ring-1 ring-cyan-400/25"
+              title={`Signed in as ${auth.account.username}`}
+            >
+              {auth.account.username.charAt(0).toUpperCase()}
+            </div>
           </div>
         </header>
 
-        <nav className="mb-6 flex flex-wrap gap-1 border-b border-white/10">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`-mb-px border-b-2 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.16em] transition ${
-                tab === t.id
-                  ? 'border-cyan-400 text-cyan-300'
-                  : 'border-transparent text-white/40 hover:text-white/70'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
-        {tab === 'overview' && <OverviewTab overview={overview} live={live} />}
-        {tab === 'activity' && <ActivityTab />}
-        {tab === 'retention' && <RetentionTab />}
-        {tab === 'matches' && <MatchesTab />}
-        {tab === 'players' && <PlayersTab />}
-        {tab === 'feedback' && <FeedbackTab />}
+        <main className="flex-1 overflow-y-auto p-6 [scrollbar-width:thin]">
+          <div className="mx-auto max-w-6xl">
+            {tab === 'overview' && <OverviewTab overview={overview} live={live} />}
+            {tab === 'activity' && <ActivityTab />}
+            {tab === 'retention' && <RetentionTab />}
+            {tab === 'matches' && <MatchesTab />}
+            {tab === 'players' && <PlayersTab />}
+            {tab === 'feedback' && <FeedbackTab />}
+          </div>
+        </main>
       </div>
     </div>
   );
