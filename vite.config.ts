@@ -7,6 +7,12 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Relative asset URLs (./assets/…) so the same zip works on ANY host layout:
+  // our own domain root, itch.io's per-game subdirectories
+  // (https://html-classic.itch.zone/games/<id>/…), or any portal CDN. The
+  // server re-anchors these for deep SPA routes (see server/index.ts) and the
+  // client resolves runtime assets via assetUrl() against BASE_URL.
+  base: './',
   build: {
     outDir: 'dist',
     sourcemap: false,

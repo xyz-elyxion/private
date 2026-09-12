@@ -28,32 +28,59 @@ const trimSlashes = (s: string) => s.replace(/\/+$/, '');
 const hasDom = typeof globalThis !== 'undefined' && typeof (globalThis as { window?: unknown }).window !== 'undefined';
 const theWindow = hasDom
   ? ((globalThis as Record<string, unknown>).window as {
-      location: { protocol: string; host: string };
+      location: { protocol: string; host: string; pathname: string; origin: string };
+      document: { querySelector(sel: string): { getAttribute(name: string): string | null } | null };
     })
   : undefined;
 const theImportMeta = typeof import.meta !== 'undefined' ? import.meta : undefined;
 
 let assetBaseCache: string | null = null;
 
-/** Prefix for files in /public (models, sounds). Always ends WITHOUT a slash. */
+/**
+ * Prefix for files in /public (models, sounds). Resolve with assetUrl().
+ *
+ * The bundle builds with Vite `base: './'` so one zip works at ANY depth:
+ * our domain root, or portal subdirectories (itch.io serves each game from
+ * https://host/games/<id>/…). BASE_URL is then './', which is correct for
+ * the document that loaded the bundle — but this app also serves deep SPA
+ * routes (/play/profile/x) from the root shell, where './' would climb out
+ * of the bundle. So at runtime the base is re-anchored one '../' per path
+ * segment: that lands on the site root for our own deep routes and on the
+ * bundle directory for subdirectory hosts. URL resolution clamps above the
+ * root, so over-counting is harmless.
+ */
 export function assetBase(): string {
   if (assetBaseCache !== null) return assetBaseCache;
   let base = '/';
   try {
-    // Vite injects BASE_URL ('/' by default, or the configured `base` path).
+    // Vite injects BASE_URL ('./' with the relative base, or an absolute path).
     const env = (theImportMeta as { env?: { BASE_URL?: string } } | undefined)?.env;
     base = env?.BASE_URL ?? '/';
   } catch {
     base = '/';
   }
+  if (base === './' || base === '.') {
+    let depth = 0;
+    try {
+      depth = theWindow ? theWindow.location.pathname.split('/').filter(Boolean).length : 0;
+    } catch {
+      depth = 0;
+    }
+    // No trailing slash: assetUrl() joins with '/'.
+    assetBaseCache = depth === 0 ? '.' : ('./' + '../'.repeat(depth)).replace(/\/$/, '');
+    return assetBaseCache;
+  }
+  // Absolute base (e.g. someone builds with base '/game/'): use as-is.
   assetBaseCache = trimSlashes(base) || '';
   return assetBaseCache;
 }
 
-/** Resolve a root-relative public-asset path ('/models/x.glb') for hosting. */
+/** Resolve a public-asset path ('/models/x.glb') against the bundle base. */
 export function assetUrl(path: string): string {
   if (!path || /^(https?:|blob:|data:)/i.test(path)) return path;
-  return `${assetBase()}${path.startsWith('/') ? path : `/${path}`}`;
+  const base = assetBase();
+  const rel = path.startsWith('/') ? path.slice(1) : path;
+  return base.endsWith('/') ? `${base}${rel}` : `${base}/${rel}`;
 }
 
 let apiBaseCache: string | null = null;
@@ -114,9 +141,37 @@ export function apiBase(): string {
   if (apiBaseCache !== null) return apiBaseCache;
   let base = '';
   try {
-    // Runtime override first (portal distribution / testing), then the
-    // build-time define for CrazyGames-style cross-origin hosting.
+    // Precedence: ?api=/localStorage override → build-time define → the
+    // backend stamp the server baked into the portal zip's index.html
+    // (meta[name=elyxion-backend]). Malformed stamps are ignored.
     base = trimSlashes(runtimeApiOverride() || (typeof __CG_API_BASE__ === 'string' ? __CG_API_BASE__ : ''));
+    if (!base && theWindow) {
+      const stamp = theWindow.document
+        .querySelector('meta[name="elyxion-backend"]')
+        ?.getAttribute('content') ?? null;
+      // Ignore the stamp when the page IS served from the stamped origin —
+      // the self-hosted site keeps clean same-origin (relative) API URLs.
+      const stampOrigin = stamp
+        ? (() => {
+            try {
+              return new URL(stamp).origin;
+            } catch {
+              return '';
+            }
+          })()
+        : '';
+      const onStampedOrigin = !!stampOrigin && theWindow.location.origin === stampOrigin;
+      if (stamp && stampOrigin && !onStampedOrigin) {
+        try {
+          const u = new URL(stamp);
+          if (u.protocol === 'https:' || /^(localhost|127\.)/.test(u.hostname)) {
+            base = trimSlashes(u.origin);
+          }
+        } catch {
+          /* malformed stamp — ignore, stay same-origin */
+        }
+      }
+    }
   } catch {
     base = '';
   }

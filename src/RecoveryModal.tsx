@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { apiUrl } from './game/urls';
 
 // Profile recovery: optional, account-less recovery. A server-minted code that
 // maps to a player_id; entering it on a new browser re-binds the session cookie
@@ -51,7 +52,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
   // Load existing codes for the current account.
   useEffect(() => {
     let active = true;
-    fetch('/api/recovery/codes', { credentials: 'include' })
+    fetch(apiUrl('/api/recovery/codes'), { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('fetch'))))
       .then((d: { codes?: RecoveryCode[] }) => {
         if (active) setCodes((d.codes ?? []).filter((c) => !c.used));
@@ -68,7 +69,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
   const issue = async () => {
     setError(null);
     try {
-      const r = await fetch('/api/recovery/issue', {
+      const r = await fetch(apiUrl('/api/recovery/issue'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -80,7 +81,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
         setIssueExpires(d.expiresAt);
         setTab(TAB.CODES);
         // Refresh the codes list.
-        const r2 = await fetch('/api/recovery/codes', { credentials: 'include' });
+        const r2 = await fetch(apiUrl('/api/recovery/codes'), { credentials: 'include' });
         if (r2.ok) {
           const d2 = (await r2.json()) as { codes?: RecoveryCode[] };
           setCodes((d2.codes ?? []).filter((c) => !c.used));
@@ -98,7 +99,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
     setVerifying(true);
     setVerifyResult(null);
     try {
-      const r = await fetch('/api/recovery/verify', {
+      const r = await fetch(apiUrl('/api/recovery/verify'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -130,7 +131,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
     if (!verifyResult?.ok) return;
     setRedeeming(true);
     try {
-      const r = await fetch('/api/recovery/redeem', {
+      const r = await fetch(apiUrl('/api/recovery/redeem'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -140,7 +141,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
         setError(null);
         setTab(TAB.CODES);
         // Refresh codes.
-        const r2 = await fetch('/api/recovery/codes', { credentials: 'include' });
+        const r2 = await fetch(apiUrl('/api/recovery/codes'), { credentials: 'include' });
         if (r2.ok) {
           const d2 = (await r2.json()) as { codes?: RecoveryCode[] };
           setCodes((d2.codes ?? []).filter((c) => !c.used));

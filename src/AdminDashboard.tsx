@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './auth';
+import { apiUrl } from './game/urls';
 
 // ── API shapes (mirror server/db.ts) ─────────────────────────────────────────
 type MetricsWindow = { matches: number; activePlayers: number; newAccounts: number; logins: number };
@@ -65,7 +66,7 @@ type LiveCounts = { online: number; inMatch: number; rooms: number };
 
 async function getJSON<T>(url: string): Promise<T | null> {
   try {
-    const r = await fetch(url, { credentials: 'include' });
+    const r = await fetch(apiUrl(url), { credentials: 'include' });
     if (!r.ok) return null;
     return (await r.json()) as T;
   } catch {
@@ -718,7 +719,7 @@ const FB_STATUS_COLOR: Record<string, string> = {
 
 async function postJSON<T>(url: string, body: object): Promise<T | null> {
   try {
-    const r = await fetch(url, {
+    const r = await fetch(apiUrl(url), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

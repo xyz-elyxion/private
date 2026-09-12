@@ -278,10 +278,25 @@ if (!dev && hasBuild) {
   // canonical/og:url are omitted from the shell, so scrapers resolve them
   // against whatever origin serves the page.
   const shellHtml = fs.readFileSync(indexHtml, 'utf8');
+  // The bundle builds with Vite base './' (relative) so the SAME zip works on
+  // subdirectory hosts like itch.io. On our own domain, deep SPA routes
+  // (/play/profile/x) would otherwise resolve './assets/…' against the wrong
+  // depth — rewrite each './' ref to the correct number of '../' for the
+  // request's path depth. Root-level requests keep './'.
+  const shellByDepth = new Map<number, string>();
+  const shellForDepth = (depth: number): string => {
+    let html = shellByDepth.get(depth);
+    if (html === undefined) {
+      const prefix = depth === 0 ? './' : './' + '../'.repeat(depth);
+      html = shellHtml.replaceAll(/((?:src|href)=")\.\//g, `$1${prefix}`);
+      shellByDepth.set(depth, html);
+    }
+    return html;
+  };
   app.get(/.*/, (req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
-    res.setHeader('Cache-Control', 'no-cache');
-    res.type('html').send(shellHtml);
+    res.setHeader('Cache-Control', 'no-cache'); // rewrite varies by path depth
+    res.type('html').send(shellForDepth(req.path.split('/').filter(Boolean).length));
   });
 } else if (!dev) {
   console.warn(

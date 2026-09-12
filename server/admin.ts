@@ -333,6 +333,38 @@ adminRouter.get('/portal-zip', async (req, res) => {
   if (denyToken(req, res)) return;
   const distDir = path.join(process.cwd(), 'dist');
   const stamp = new Date().toISOString().slice(0, 10);
+  //
+  // Backend-origin stamp: the bundle must know where accounts / multiplayer /
+  // leaderboards live when it is NOT served from the backend's own origin
+  // (itch, Poki, any portal CDN). APP_BASE_URL is authoritative; otherwise
+  // fall back to the request's own scheme+host (trust proxy is on, so the
+  // reverse proxy's X-Forwarded-Proto/Host are honored). The stamp rides in
+  // the shell as a meta tag, applied in-memory by the zip writer.
+  let backendOrigin = '';
+  const cfgBase = (process.env.APP_BASE_URL ?? '').trim();
+  if (cfgBase) {
+    try {
+      backendOrigin = new URL(cfgBase).origin;
+    } catch {
+      backendOrigin = '';
+    }
+  }
+  if (!backendOrigin) {
+    const host = req.get('host') ?? '';
+    if (host) {
+      // Behind the local proxy in dev the request may be plain http; anything
+      // else is treated as public https.
+      const proto = req.protocol === 'http' && /^(localhost|127\.)/.test(host) ? 'http' : 'https';
+      backendOrigin = `${proto}://${host}`;
+    }
+  }
+  const indexHtmlTransform = backendOrigin
+    ? (html: string) =>
+        html.replace(
+          '</head>',
+          `    <meta name="elyxion-backend" content="${backendOrigin}">\n</head>`,
+        )
+    : undefined;
   const readme = [
     'Elyxion — static game bundle for portal distribution',
     `Version: ${APP_VERSION} · Packaged: ${stamp}`,
@@ -343,15 +375,15 @@ adminRouter.get('/portal-zip', async (req, res) => {
     '  (CrazyGames, Poki, itch.io, Kongregate, GameDistribution…).',
     '',
     'HOW TO SERVE IT',
-    '  · Host the extracted files at the ROOT of a domain/subdomain (not a',
-    '    subdirectory) — the game resolves its assets relative to the site root.',
+    '  · Works at any hosting depth: a domain root OR a subdirectory (itch.io',
+    '    style per-game paths). Assets are referenced relatively.',
     '  · HTTPS is required. Serve index.html for all unknown paths (SPA).',
     '  · No server-side code is needed to serve the game itself.',
     '',
-    'BACKEND / MULTIPLAYER',
-    '  Accounts, progression, leaderboards, chat and multiplayer run on the',
-    '  developer backend. The bundle works standalone (offline play vs bots)',
-    '  and automatically connects to the backend for online play.',
+    '  · Accounts, progression, leaderboards, chat and multiplayer run on the',
+    `  developer backend${backendOrigin ? ` (${backendOrigin})` : ''}. The bundle`,
+    '  works standalone (offline play vs bots) and automatically connects to',
+    '  the backend for online play — no manual configuration needed.',
     '',
     'PORTAL-SPECIFIC NOTES',
     '  · CrazyGames: submit the zip at developer.crazygames.com. The build',
@@ -380,6 +412,7 @@ adminRouter.get('/portal-zip', async (req, res) => {
     name: `elyxion-portal-${stamp}.zip`,
     ver: APP_VERSION,
     readme,
+    indexHtmlTransform,
   });
   if (!result.ok) {
     const missing = result.error === 'build_missing';

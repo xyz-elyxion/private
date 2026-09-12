@@ -6,6 +6,7 @@
 // than BUFFER_LIMIT are refused so the in-memory buffering below can never
 // balloon silently; if a future asset exceeds it, fail loudly instead of OOM.
 import { createReadStream, readdirSync, statSync } from 'node:fs';
+import { readFile as fsReadFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Response } from 'express';
 
@@ -82,7 +83,14 @@ export type PortalZipResult =
  */
 export function sendPortalZip(
   res: Response,
-  opts: { distDir: string; name: string; ver: string; readme?: string },
+  opts: {
+    distDir: string;
+    name: string;
+    ver: string;
+    readme?: string;
+    /** Transform for the shell index.html as it enters the archive (never on disk). */
+    indexHtmlTransform?: (html: string) => string;
+  },
 ): PortalZipResult {
   void opts.ver; // reserved: per-entry comment/metadata once portals want it
   let files: { full: string; rel: string }[];
@@ -127,6 +135,13 @@ export function sendPortalZip(
   const reads = files.map(
     (f) =>
       new Promise<Buffer>((resolve, reject) => {
+        // The shell gets the backend-origin stamp applied in-memory only.
+        if (opts.indexHtmlTransform && f.rel === 'index.html') {
+          fsReadFile(f.full, 'utf8')
+            .then((html) => resolve(Buffer.from(opts.indexHtmlTransform!(html), 'utf8')))
+            .catch(reject);
+          return;
+        }
         const rs = createReadStream(f.full);
         const parts: Buffer[] = [];
         rs.on('data', (c) => parts.push(c as Buffer));
