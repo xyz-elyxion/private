@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import { apiUrl } from './game/urls';
+import { apiBase, apiUrl } from './game/urls';
 
 // Client auth: guest by default, optional account. The session lives in an
 // httpOnly cookie set by the server, so the client only holds the username (or
 // null = guest). Progression is bound to the account server-side.
+//
+// PORTAL FALLBACK: browsers that partition third-party cookies never deliver
+// the cross-origin session cookie on a portal embed (itch, Poki, …). When a
+// login/register/CG-link response carries a session `token`, it is stored and
+// attached as `X-Session-Token` on every cross-origin request (and `?sess=` on
+// sockets) — only while the page origin differs from the API origin. On the
+// self-hosted site no token is ever stored or sent: the cookie path is used
+// exclusively.
 
 export type Account = { username: string; isAdmin: boolean; isVerified: boolean } | null;
 
@@ -16,7 +24,59 @@ export type AuthApi = {
   refresh: () => Promise<void>; // re-pull /me (session cookie changed outside the form — CrazyGames auto-login)
 };
 
-type AuthResponse = { user?: { username: string; isAdmin?: boolean; isVerified?: boolean } };
+type AuthResponse = {
+  token?: string;
+  user?: { username: string; isAdmin?: boolean; isVerified?: boolean };
+};
+
+const TOKEN_KEY = 'elyxion-session-token';
+
+/** Page origin differs from the API origin (portal embed). */
+function isCrossOriginApi(): boolean {
+  const base = apiBase();
+  if (!base) return false; // same-origin: cookie path
+  try {
+    return window.location.origin !== new URL(base).origin;
+  } catch {
+    return false;
+  }
+}
+
+/** Store/clear the portal-fallback session token (cross-origin embeds only). */
+function saveToken(token: string | null): void {
+  try {
+    if (token && isCrossOriginApi()) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** Stored portal-fallback token, or null when same-origin / not stored. */
+function loadToken(): string | null {
+  try {
+    if (!isCrossOriginApi()) return null;
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Headers for API calls: attaches the stored session token on cross-origin
+ * requests so cookie-blocked portal embeds stay authenticated. Empty headers
+ * otherwise — same-origin traffic authenticates purely by cookie.
+ */
+export function authHeaders(): Record<string, string> {
+  const token = loadToken();
+  return token ? { 'X-Session-Token': token } : {};
+}
+
+/** `?sess=` fragment for game sockets (WS can't send headers). Empty if none. */
+export function wsSessQuery(): string {
+  const token = loadToken();
+  return token ? `sess=${encodeURIComponent(token)}` : '';
+}
 
 async function post(
   path: string,
@@ -25,7 +85,7 @@ async function post(
   try {
     const r = await fetch(apiUrl(path), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       credentials: 'include',
       body: JSON.stringify(body),
     });
@@ -43,10 +103,18 @@ export function useAuth(): AuthApi {
 
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/auth/me'), { credentials: 'include' })
+    fetch(apiUrl('/api/auth/me'), {
+      credentials: 'include',
+      headers: authHeaders(),
+    })
       .then((r) => (r.ok ? r.json() : { user: null }))
-      .then((d: { user: Account }) => {
-        if (active) setAccount(d.user ?? null);
+      .then((d: { user: Account; token?: string | null }) => {
+        if (!active) return;
+        // Cross-origin portal embed: persist the token the server echoes so
+        // later calls authenticate by header. Never stored same-origin.
+        if (d.token && isCrossOriginApi()) saveToken(d.token);
+        else if (!d.user) saveToken(null);
+        setAccount(d.user ?? null);
       })
       .catch(() => {})
       .finally(() => {
@@ -61,6 +129,7 @@ export function useAuth(): AuthApi {
     const r = await post('/api/auth/login', { username, password });
     if (r.ok) {
       const u = r.data?.user;
+      saveToken(r.data?.token ?? null); // portal fallback store (no-op same-origin)
       setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified });
       return null;
     }
@@ -71,6 +140,7 @@ export function useAuth(): AuthApi {
     const r = await post('/api/auth/register', { username, password, email: email || undefined });
     if (r.ok) {
       const u = r.data?.user;
+      saveToken(r.data?.token ?? null); // portal fallback store (no-op same-origin)
       setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified });
       return null;
     }
@@ -79,6 +149,7 @@ export function useAuth(): AuthApi {
 
   const logout = useCallback(async () => {
     await post('/api/auth/logout', {});
+    saveToken(null); // drop the portal fallback credential too
     setAccount(null);
   }, []);
 
@@ -87,8 +158,13 @@ export function useAuth(): AuthApi {
   // /me when that happens. Keeps the current account on network failure.
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl('/api/auth/me'), { credentials: 'include' });
-      const d: { user: Account } = r.ok ? await r.json() : { user: null };
+      const r = await fetch(apiUrl('/api/auth/me'), {
+        credentials: 'include',
+        headers: authHeaders(),
+      });
+      const d: { user: Account; token?: string | null } = r.ok ? await r.json() : { user: null };
+      if (d.token && isCrossOriginApi()) saveToken(d.token);
+      else if (!d.user) saveToken(null);
       setAccount(d.user ?? null);
     } catch {
       // keep whatever we had — transient network issues shouldn't log the UI out

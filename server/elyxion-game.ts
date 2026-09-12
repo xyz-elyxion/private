@@ -71,6 +71,7 @@ import {
   recordRankedResult,
   RANKED_MIN_LEVEL,
   unlockedSetFor,
+  userIdFromSession,
 } from './db';
 import type { IncomingMessage } from 'node:http';
 import { accountIdFromCookieHeader } from './auth';
@@ -1670,7 +1671,20 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // The progression identity (the logged-in account behind the httpOnly
     // `igsession` cookie) rides the WS upgrade on the same origin — we use it to
     // ownership-check cosmetic equips. Guests resolve to '' (defaults only).
-    const playerId = accountIdFromCookieHeader(req?.headers?.cookie);
+    const sessParam = (() => {
+      try {
+        return new URL(req?.url ?? '', 'http://localhost').searchParams.get('sess') ?? '';
+      } catch {
+        return '';
+      }
+    })();
+    // PORTAL FALLBACK: cookie-blocked cross-origin embeds send the session
+    // token as ?sess= (stored client-side from register/login/CG-link). The
+    // ws upgrade is already origin-gated by isAllowedWsOrigin, so this is
+    // only reachable from allowed embed origins or same-origin (where the
+    // cookie path would have worked anyway).
+    const playerId =
+      accountIdFromCookieHeader(req?.headers?.cookie) || (sessParam ? userIdFromSession(sessParam) : '');
     // The display name is SERVER-AUTHORITATIVE — never taken from the client.
     // A logged-in player gets their account username (moderated at registration,
     // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a

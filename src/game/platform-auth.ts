@@ -12,6 +12,8 @@
  * pulling in the SDK wrapper; the app registers the actual token provider.
  * ────────────────────────────────────────────────────────────────────────── */
 
+import { apiBase } from './urls';
+
 let provider: (() => Promise<string | null>) | null = null;
 
 /**
@@ -36,4 +38,28 @@ export async function wsAuthQuery(): Promise<string> {
   } catch {
     return '';
   }
+}
+
+/**
+ * `sess=<token>` fragment: the portal session-token fallback for socket
+ * upgrades (browsers cannot attach headers to a WebSocket handshake). Stored
+ * by the app's auth layer when a portal-embedded bundle logs in cross-origin
+ * and the browser blocks the third-party session cookie. Empty when absent.
+ */
+export function wsSessQuery(): string {
+  try {
+    const base = apiBase();
+    const crossOrigin = base ? window.location.origin !== new URL(base).origin : false;
+    if (!crossOrigin) return '';
+    const token = localStorage.getItem('elyxion-session-token');
+    return token ? `sess=${encodeURIComponent(token)}` : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Compose both fragments into one ready-to-append URL query string. */
+export function wsQueryPair(pairs: Array<string>): string {
+  const list = pairs.filter(Boolean);
+  return list.length ? `?${list.join('&')}` : '';
 }

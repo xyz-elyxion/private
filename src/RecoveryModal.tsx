@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { authHeaders } from './auth';
 import { apiUrl } from './game/urls';
 
 // Profile recovery: optional, account-less recovery. A server-minted code that
@@ -52,7 +53,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
   // Load existing codes for the current account.
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/recovery/codes'), { credentials: 'include' })
+    fetch(apiUrl('/api/recovery/codes'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('fetch'))))
       .then((d: { codes?: RecoveryCode[] }) => {
         if (active) setCodes((d.codes ?? []).filter((c) => !c.used));
@@ -81,7 +82,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
         setIssueExpires(d.expiresAt);
         setTab(TAB.CODES);
         // Refresh the codes list.
-        const r2 = await fetch(apiUrl('/api/recovery/codes'), { credentials: 'include' });
+        const r2 = await fetch(apiUrl('/api/recovery/codes'), { ...authHeaders(), credentials: 'include' });
         if (r2.ok) {
           const d2 = (await r2.json()) as { codes?: RecoveryCode[] };
           setCodes((d2.codes ?? []).filter((c) => !c.used));
@@ -141,7 +142,7 @@ export function RecoveryModal({ onClose }: { onClose: () => void }) {
         setError(null);
         setTab(TAB.CODES);
         // Refresh codes.
-        const r2 = await fetch(apiUrl('/api/recovery/codes'), { credentials: 'include' });
+        const r2 = await fetch(apiUrl('/api/recovery/codes'), { ...authHeaders(), credentials: 'include' });
         if (r2.ok) {
           const d2 = (await r2.json()) as { codes?: RecoveryCode[] };
           setCodes((d2.codes ?? []).filter((c) => !c.used));

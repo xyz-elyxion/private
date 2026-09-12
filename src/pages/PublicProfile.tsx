@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { authHeaders } from '../auth';
 import { useParams, Link } from 'react-router-dom';
 import { CrosshairMark } from '../pages/Landing';
 import { apiUrl } from '../game/urls';
@@ -89,7 +90,7 @@ export default function PublicProfile() {
     if (!username) return;
     let active = true;
     fetch(apiUrl(`/api/players/${encodeURIComponent(username)}`), {
-      credentials: 'include',
+      ...authHeaders(), credentials: 'include',
     })
       .then((r) => {
         if (r.status === 404) throw new Error('not_found');

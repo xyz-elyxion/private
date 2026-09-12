@@ -1,7 +1,7 @@
 import type { GameMode } from './constants';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, toView } from './netcodec';
-import { wsAuthQuery } from './platform-auth';
+import { wsAuthQuery, wsSessQuery } from './platform-auth';
 
 export type Vec3 = { x: number; y: number; z: number };
 
@@ -435,11 +435,12 @@ export class NetClient {
     // Platform auth (CrazyGames): resolve a fresh SDK token and append it as a
     // query param before opening. '' when off-platform — URL unchanged.
     void wsAuthQuery().then((authQ) => {
+      const sessQ = wsSessQuery();
       if (this.disposed) return;
       if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
       try {
         this.setStatus('connecting');
-        this.ws = new WebSocket(authQ ? `${this.url}?${authQ}` : this.url);
+        this.ws = new WebSocket(sessQ ? (authQ ? `${this.url}?${authQ}&${sessQ}` : `${this.url}?${sessQ}`) : authQ ? `${this.url}?${authQ}` : this.url);
         // Receive binary frames as ArrayBuffer (synchronous decode) rather than the
         // default Blob — the state snapshot arrives as a binary frame at 64Hz.
         this.ws.binaryType = 'arraybuffer';
@@ -1273,10 +1274,11 @@ export class LobbyClient {
     // token lets the server bind the account when the cross-origin session
     // cookie is blocked (partitioned third-party cookies in the CG embed).
     void wsAuthQuery().then((authQ) => {
+      const sessQ = wsSessQuery();
       if (this.disposed) return;
       if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     try {
-      this.ws = new WebSocket(authQ ? `${this.url}?${authQ}` : this.url);
+      this.ws = new WebSocket(sessQ ? (authQ ? `${this.url}?${authQ}&${sessQ}` : `${this.url}?${sessQ}`) : authQ ? `${this.url}?${authQ}` : this.url);
     } catch {
       this.handleDrop();
       return;

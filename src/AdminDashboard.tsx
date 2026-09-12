@@ -5,7 +5,7 @@
 // match the game's cyan/zinc deck aesthetic.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useAuth } from './auth';
+import { useAuth , authHeaders } from './auth';
 import { apiUrl } from './game/urls';
 
 // ── API shapes (mirror server/db.ts) ─────────────────────────────────────────
@@ -66,7 +66,7 @@ type LiveCounts = { online: number; inMatch: number; rooms: number };
 
 async function getJSON<T>(url: string): Promise<T | null> {
   try {
-    const r = await fetch(apiUrl(url), { credentials: 'include' });
+    const r = await fetch(apiUrl(url), { ...authHeaders(), credentials: 'include' });
     if (!r.ok) return null;
     return (await r.json()) as T;
   } catch {
@@ -916,7 +916,7 @@ function PortalZipButton() {
   const download = async () => {
     setState('working');
     try {
-      const r = await fetch('/api/admin/portal-zip', { credentials: 'include' });
+      const r = await fetch('/api/admin/portal-zip', { ...authHeaders(), credentials: 'include' });
       if (!r.ok) {
         setState('error');
         window.setTimeout(() => setState('idle'), 4000);

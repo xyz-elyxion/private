@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { authHeaders } from './auth';
 import { apiUrl } from './game/urls';
 
 // Live concurrency for the "N playing now" social-proof readout. Polled gently
@@ -11,7 +12,7 @@ export function useLiveCount(): LiveCounts | null {
   useEffect(() => {
     let active = true;
     const poll = () =>
-      fetch(apiUrl('/api/live'), { credentials: 'include' })
+      fetch(apiUrl('/api/live'), { ...authHeaders(), credentials: 'include' })
         .then((r) => (r.ok ? r.json() : null))
         .then((d: LiveCounts | null) => {
           if (active && d && typeof d.online === 'number') setCounts(d);

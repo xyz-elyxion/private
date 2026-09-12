@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { setWsAuthProvider } from './game/platform-auth';
-import { useAuth, LoginModal, type Account } from './auth';
+import { useAuth, LoginModal, type Account , authHeaders } from './auth';
 import { FeedbackModal } from './FeedbackModal';
 import { RecoveryModal } from './RecoveryModal';
 import { CONTROLS } from './controls';
@@ -480,7 +480,7 @@ function CardStatsEditor({
   const [profile, setProfile] = useState<ElyxionProfile | null>(null);
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/profile'), { credentials: 'include' })
+    fetch(apiUrl('/api/profile'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?:ElyxionProfile }) => {
         if (active && d.profile) setProfile(d.profile);
@@ -1467,7 +1467,7 @@ function GameView({
   // the local kill-confirm flex.
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/profile'), { credentials: 'include' })
+    fetch(apiUrl('/api/profile'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?:ElyxionProfile }) => {
         if (!active || !d.profile) return;
@@ -2139,7 +2139,7 @@ function Locker({
 
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/profile'), { credentials: 'include' })
+    fetch(apiUrl('/api/profile'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
       .then((d: { profile?: ElyxionProfile }) => {
         if (!active || !d.profile) return;
@@ -2230,7 +2230,7 @@ function Locker({
     setBusy('__case');
     setNote(null);
     try {
-      const res = await fetch(apiUrl('/api/shop/open-case'), { method: 'POST', credentials: 'include' });
+      const res = await fetch(apiUrl('/api/shop/open-case'), { method: 'POST', ...authHeaders(), credentials: 'include' });
       const d = (await res.json()) as {
         ok?: boolean;
         reason?: string;
@@ -4797,7 +4797,7 @@ function RankedModal({
 
   const refreshProfile = useCallback(() => {
     if (!account) return;
-    fetch(apiUrl('/api/ranked/me'), { credentials: 'include' })
+    fetch(apiUrl('/api/ranked/me'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: RankedProfile; level?: number; eligible?: boolean; minLevel?: number } | null) => {
         setProfile(d?.profile ?? null);
@@ -4808,7 +4808,7 @@ function RankedModal({
         });
       })
       .catch(() => {});
-    fetch(apiUrl('/api/ranked/leaderboard'), { credentials: 'include' })
+    fetch(apiUrl('/api/ranked/leaderboard'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: RankedLeaderEntry[] } | null) => setLadder(d?.entries ?? []))
       .catch(() => {});
@@ -5022,7 +5022,7 @@ function WeeklyChallengeModal({
   const [watch, setWatch] = useState<{ id: string; name: string } | null>(null);
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/challenge/weekly/leaderboard'), { credentials: 'include' })
+    fetch(apiUrl('/api/challenge/weekly/leaderboard'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: WeeklyChallengeEntry[]; me?: WeeklyChallengeMe | null; map?: string; fragLimit?: number } | null) => {
         if (!active || !d) return;
@@ -5172,7 +5172,7 @@ function ReplayViewerOverlay({
       try {
         const res = await fetch(
           `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}`,
-          { credentials: 'include' },
+          { ...authHeaders(), credentials: 'include' },
         );
         if (!res.ok) throw new Error('unavailable');
         const buf = await res.arrayBuffer();
@@ -5570,13 +5570,13 @@ function Lobby({
   // Re-pulls whenever a modal that can change them closes (refreshTick).
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/profile'), { credentials: 'include' })
+    fetch(apiUrl('/api/profile'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?: ElyxionProfile }) => {
         if (active && d.profile) setLobbyProfile(d.profile);
       })
       .catch(() => {});
-    fetch(apiUrl('/api/challenges'), { credentials: 'include' })
+    fetch(apiUrl('/api/challenges'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ch'))))
       .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
         if (!active || !d.challenges) return;
@@ -6828,8 +6828,8 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
 
   const load = useCallback(() => {
     Promise.all([
-      fetch(apiUrl('/api/challenges'), { credentials: 'include' }),
-      fetch(apiUrl('/api/season'), { credentials: 'include' }),
+      fetch(apiUrl('/api/challenges'), { ...authHeaders(), credentials: 'include' }),
+      fetch(apiUrl('/api/season'), { ...authHeaders(), credentials: 'include' }),
     ])
       .then(async ([challengeResponse, seasonResponse]) => {
         if (!challengeResponse.ok || !seasonResponse.ok) throw new Error('challenges');
@@ -7087,7 +7087,7 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
     let active = true;
     setState('loading');
     if (window === 'ranked') {
-      fetch(apiUrl('/api/ranked/leaderboard'), { credentials: 'include' })
+      fetch(apiUrl('/api/ranked/leaderboard'), { ...authHeaders(), credentials: 'include' })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ranked unavailable'))))
         .then((d: { entries?: RankedLeaderEntry[]; me?: RankedProfile | null }) => {
           if (!active) return;
@@ -7103,7 +7103,7 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
       };
     }
     const modeQuery = mode === 'all' ? '' : `&mode=${mode}`;
-    fetch(apiUrl(`/api/leaderboard?sort=${sort}&window=${window}&limit=25${modeQuery}`), { credentials: 'include' })
+    fetch(apiUrl(`/api/leaderboard?sort=${sort}&window=${window}&limit=25${modeQuery}`), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
       .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
         if (!active) return;
@@ -7298,7 +7298,7 @@ function AdminModal({ onClose }: { onClose: () => void }) {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
 
   const refreshAudit = useCallback(() => {
-    fetch(apiUrl('/api/admin/audit?limit=25'), { credentials: 'include' })
+    fetch(apiUrl('/api/admin/audit?limit=25'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('audit'))))
       .then((d: { events?: AuditEntry[] }) => setAudit(Array.isArray(d.events) ? d.events : []))
       .catch(() => setAudit([]));
@@ -7314,7 +7314,7 @@ function AdminModal({ onClose }: { onClose: () => void }) {
     setNote(null);
     try {
       const r = await fetch(apiUrl(`/api/admin/lookup?username=${encodeURIComponent(q)}`), {
-        credentials: 'include',
+        ...authHeaders(), credentials: 'include',
       });
       if (r.ok) {
         setTarget((await r.json()) as AdminLookup);
@@ -7998,7 +7998,7 @@ function AnnouncerPackField({
   const [unlocked, setUnlocked] = useState<Set<string> | null>(null);
   useEffect(() => {
     let active = true;
-    fetch(apiUrl('/api/profile'), { credentials: 'include' })
+    fetch(apiUrl('/api/profile'), { ...authHeaders(), credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: { unlocked?: string[] } } | null) => {
         if (active) setUnlocked(new Set(d?.profile?.unlocked ?? [])); // empty (e.g. guest) → only default

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { apiUrl } from './game/urls';
+import { authHeaders } from './auth';
 
 // In-game feedback / bug report form. POSTs to /api/feedback (stored server-side,
 // surfaced in the /admin "Feedback" tab). Guests may submit; when the player is
@@ -45,7 +46,7 @@ export function FeedbackModal({ onClose, playerName }: { onClose: () => void; pl
     try {
       const r = await fetch(apiUrl('/api/feedback'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         credentials: 'include',
         body: JSON.stringify({ type, title: title.trim(), body: body.trim(), name: playerName }),
       });
