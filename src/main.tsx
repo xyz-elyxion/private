@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './index.css';
 import { initCrazyGames, syncCgSettings, cgLoadingStart } from './crazygames';
 import Landing from './pages/Landing';
@@ -143,7 +143,50 @@ function CgSdkWatcher({ onSettled }: { onSettled: () => void }) {
 // context, pointer-lock, and a WebSocket; React 18/19 StrictMode double-invokes
 // effects in dev, which would spin up two GL contexts / two sockets. Production
 // builds never run StrictMode anyway, so we keep dev and prod identical here.
+
+// PORTAL EMBEDS (itch.io serves each game from /html/<id>/index.html, other
+// portals use similar paths): there is no server SPA fallback there, so
+// path-based routes can neither match ("No routes matched" → black screen)
+// nor navigate. When the page URL is not one of the app's own route paths,
+// switch to HashRouter — routes ride in the #fragment, which works from any
+// static host — and drop the player straight into the game (portal QA expects
+// instant gameplay, no menu cascade). The self-hosted site keeps BrowserRouter
+// with clean URLs.
+const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab)(\/|$)/;
+function isPortalEmbed(): boolean {
+  if (typeof window === 'undefined') return false;
+  const p = window.location.pathname;
+  return !(p === '/' || ROUTE_PATHS.test(p));
+}
+const portal = isPortalEmbed();
+
+const gameRoute = (
+  <Suspense fallback={<Loading />}>
+    <ElyxionClient />
+  </Suspense>
+);
+
 createRoot(document.getElementById('root')!).render(
+  portal ? (
+    <HashRouter>
+      <BootGate>
+        <Routes>
+          <Route path="/" element={<Navigate to="/play" replace />} />
+          <Route path="/play" element={gameRoute} />
+          <Route
+            path="/play/profile/:username"
+            element={
+              <Suspense fallback={<Loading />}>
+                <PublicProfile />
+              </Suspense>
+            }
+          />
+          {/* Unknown hash paths also land in the game — never a blank screen. */}
+          <Route path="*" element={gameRoute} />
+        </Routes>
+      </BootGate>
+    </HashRouter>
+  ) : (
   <BrowserRouter>
     <BootGate>
       <Routes>
@@ -191,5 +234,6 @@ createRoot(document.getElementById('root')!).render(
         />
       </Routes>
     </BootGate>
-  </BrowserRouter>,
+  </BrowserRouter>
+  ),
 );
