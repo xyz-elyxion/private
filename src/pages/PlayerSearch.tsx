@@ -59,7 +59,7 @@ export default function PlayerSearch() {
   // Load the caller's friends list once so result cards show the right action.
   useEffect(() => {
     void (async () => {
-      const res = await fetch(apiUrl('/api/stats/friends'), { credentials: 'include', headers: authHeaders() });
+      const res = await fetch(apiUrl('/api/friends'), { credentials: 'include', headers: authHeaders() });
       if (res.status === 401 || res.status === 400) {
         setLoggedIn(false);
         return;
@@ -82,7 +82,7 @@ export default function PlayerSearch() {
     debounceRef.current = setTimeout(() => {
       void (async () => {
         try {
-          const res = await fetch(apiUrl(`/api/stats/players?q=${encodeURIComponent(q)}`));
+          const res = await fetch(apiUrl(`/api/players?q=${encodeURIComponent(q)}`));
           const data = (await res.json().catch(() => ({}))) as { results?: SearchHit[] };
           setResults(data.results ?? []);
         } catch {
@@ -103,7 +103,7 @@ export default function PlayerSearch() {
       setBusyId(hit.id);
       const isFriend = friends.has(hit.id);
       try {
-        const res = await fetch(apiUrl(isFriend ? '/api/stats/friends/remove' : '/api/stats/friends/add'), {
+        const res = await fetch(apiUrl(isFriend ? '/api/friends/remove' : '/api/friends/add'), {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
