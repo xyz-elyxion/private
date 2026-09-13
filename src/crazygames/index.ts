@@ -236,16 +236,23 @@ export function syncCgSettings(): void {
  * (client boot, map chunk, etc). No-op when the SDK is unavailable.
  */
 export function cgLoadingStart(): void {
-  try {
-    sdk?.game.loadingStart();
-  } catch { /* ignore */ }
+  // The sdk handle is assigned before the awaited init() resolves, so a call
+  // racing init would hit the SDK pre-init and log "CrazySDK is not
+  // initialized yet". Queue behind the same init promise every other call uses.
+  void initCrazyGames().then(() => {
+    try {
+      sdk?.game.loadingStart();
+    } catch { /* ignore */ }
+  });
 }
 
 /** SDK loadingStop — call when loading completes and gameplay is about to start. */
 export function cgLoadingStop(): void {
-  try {
-    sdk?.game.loadingStop();
-  } catch { /* ignore */ }
+  void initCrazyGames().then(() => {
+    try {
+      sdk?.game.loadingStop();
+    } catch { /* ignore */ }
+  });
 }
 
 /**
@@ -253,9 +260,11 @@ export function cgLoadingStop(): void {
  * match start, resume after pause/menu/ad, revive, next level.
  */
 export function cgGameplayStart(): void {
-  try {
-    sdk?.game.gameplayStart();
-  } catch { /* ignore */ }
+  void initCrazyGames().then(() => {
+    try {
+      sdk?.game.gameplayStart();
+    } catch { /* ignore */ }
+  });
 }
 
 /**
@@ -264,16 +273,20 @@ export function cgGameplayStart(): void {
  * merely switches browser focus or leaves the game area (platform handles that).
  */
 export function cgGameplayStop(): void {
-  try {
-    sdk?.game.gameplayStop();
-  } catch { /* ignore */ }
+  void initCrazyGames().then(() => {
+    try {
+      sdk?.game.gameplayStop();
+    } catch { /* ignore */ }
+  });
 }
 
 /** happytime() — platform celebration for special moments. Use sparingly. */
 export function cgHappytime(): void {
-  try {
-    sdk?.game.happytime();
-  } catch { /* ignore */ }
+  void initCrazyGames().then(() => {
+    try {
+      sdk?.game.happytime();
+    } catch { /* ignore */ }
+  });
 }
 
 /**
