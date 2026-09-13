@@ -216,6 +216,9 @@ const DEFAULT_CAPACITY = 8;
 const SHOT_ORIGIN_MAX_DIST = 3; // shot origin must be within this of the shooter's server eye
 const FIRE_RATE_TOLERANCE_MS = 80; // jitter slack under RAIL_COOLDOWN before a shot is dropped
 const MAX_MOVE_SPEED = MAX_HORIZONTAL_SPEED * 1.6; // reject pos deltas faster than this (m/s)
+// Minimum arrival-time window for the move-speed check (see the pos handler):
+// judging per-frame deltas flags lag bursts; ≥100ms windows are burst-proof.
+const MIN_SPEED_WINDOW_MS = 100;
 // Generous vertical cap: legit jumps/boosts/long falls peak ~45 m/s, so 80
 // never flags real play but still catches noclip/fly teleports (100s of m/s).
 const MAX_VERTICAL_SPEED = 80;
@@ -2362,13 +2365,20 @@ export function attachElyxionWs(wss: WebSocketServer) {
             // respawn/vote) so legitimate repositions aren't flagged.
             const prevPosMs = record.lastPosMs;
             record.lastPosMs = ts;
-            if (record.history.length > 0 && prevPosMs > 0) {
+            // WINDOWED speed check: only judge displacement over ≥ MIN_SPEED_WINDOW_MS
+            // of arrival time. TCP bursts after an event-loop stall or network hiccup
+            // deliver several 64Hz frames back-to-back; a per-frame dt of ~1–5ms
+            // makes legit movement read as 100+ m/s and auto-banned innocent
+            // players (seen in production). Sub-window frames are accepted without
+            // judgement — a real speedhack still exceeds the cap over the next
+            // ≥100ms window, so the guard loses nothing but lag false-positives.
+            if (record.history.length > 0 && prevPosMs > 0 && ts - prevPosMs >= MIN_SPEED_WINDOW_MS) {
               const dtSec = (ts - prevPosMs) / 1000;
               const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
               const vert = Math.abs(msg.y - record.pos.y);
               // Clamp BOTH axes — vertical was previously untrusted, letting a
               // client fly/noclip straight up (moving its hitbox + snapshot).
-              if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
+              if (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED) {
                 reportViolation(
                   record,
                   'move_speed',
