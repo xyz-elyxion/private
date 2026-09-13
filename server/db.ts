@@ -1,11 +1,18 @@
-// SQLite-backed stats store. Self-contained: no ORM, just better-sqlite3 with
-// prepared statements. The table is created on first import (CREATE TABLE IF
-// NOT EXISTS), so there are no migrations to run.
-
+// Stats store. Self-contained: no ORM, just prepared statements. The tables
+// are created on first import (CREATE TABLE IF NOT EXISTS), so there are no
+// migrations to run.
+//
+// Backend selection: default is better-sqlite3 (file-based, zero-config). When
+// DATABASE_URL / POSTGRES_URL / POSTGRESQL_URL is set to a postgres:// URL,
+// the same statements run on PostgreSQL via server/pg.ts, which implements the
+// better-sqlite3 surface (get/all/run/exec/pragma) — every call site below is
+// unchanged. All data (accounts, stats, cosmetics, challenges, ranked,
+// feedback, audit) goes to PG in that mode.
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import Database from 'better-sqlite3';
+import { resolvePgConfig, PgDatabase } from './pg';
 import { randomBytes } from 'node:crypto';
 import {
   baseMatchXp,
@@ -47,26 +54,59 @@ const dataDir = process.env.DATA_DIR
   : path.join(process.cwd(), 'data');
 fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 
-const databasePath = process.env.DATABASE_PATH
-  ? path.resolve(process.env.DATABASE_PATH)
-  : path.join(
-      dataDir,
-      // Pre-rename deployments keep their database: table names and player
-      // data are unchanged by the rebrand, so reuse the existing file.
-      fs.existsSync(path.join(dataDir, 'instagib.sqlite'))
-        ? 'instagib.sqlite'
-        : 'elyxion.sqlite',
-    );
+// ── Backend selection ───────────────────────────────────────────────────────
+// Postgres wins when a postgres:// URL is configured; otherwise the embedded
+// sqlite file is used. Shared type: both backends expose the better-sqlite3
+// surface this module uses (prepare/exec/pragma + get/all/run).
+const pgConfig = resolvePgConfig();
+const usingPg = pgConfig !== null;
 
-const sqlite = new Database(databasePath);
-sqlite.pragma('journal_mode = WAL');
-sqlite.pragma('busy_timeout = 5000');
-// WAL + NORMAL: fsync only at checkpoint instead of on every commit. Still crash-
-// safe (only an OS/power loss in the small WAL window can lose the last few
-// transactions — acceptable for game stats), and it removes a synchronous fsync
-// from the shared event loop on every write. Match-end stat writes and logins no
-// longer risk stalling the 64Hz game tick on a slow (e.g. network-backed) disk.
-sqlite.pragma('synchronous = NORMAL');
+type DbBackend = {
+  prepare(sql: string): {
+    run(...args: unknown[]): { changes: number; lastInsertRowid: number | bigint };
+    get(...args: unknown[]): unknown;
+    all(...args: unknown[]): unknown[];
+  };
+  exec(sql: string): unknown;
+  pragma(_statement: string): unknown;
+  pingSync?(): boolean;
+};
+
+const backend: DbBackend = usingPg
+  ? new PgDatabase(pgConfig)
+  : // better-sqlite3's constructor is untyped-compatible with the surface used.
+    (new Database(
+      // DATABASE_PATH overrides the data-dir default; pre-rename deployments
+      // keep their instagib.sqlite file (table names and rows are unchanged by
+      // the rebrand, so the existing database is reused as-is).
+      process.env.DATABASE_PATH
+        ? path.resolve(process.env.DATABASE_PATH)
+        : path.join(
+            dataDir,
+            fs.existsSync(path.join(dataDir, 'instagib.sqlite'))
+              ? 'instagib.sqlite'
+              : 'elyxion.sqlite',
+          ),
+    ) as unknown as DbBackend);
+const sqlite = backend;
+
+if (usingPg) {
+  console.log('[db] backend: PostgreSQL', pgConfig?.url.replace(/:\/\/[^@]*@/, '://***@'));
+} else {
+  console.log('[db] backend: sqlite', process.env.DATABASE_PATH ?? path.join(dataDir, 'elyxion.sqlite'));
+}
+
+// Standard sqlite tuning only applies to the file backend.
+if (!usingPg) {
+  sqlite.pragma('journal_mode = WAL');
+  sqlite.pragma('busy_timeout = 5000');
+  // WAL + NORMAL: fsync only at checkpoint instead of on every commit. Still crash-
+  // safe (only an OS/power loss in the small WAL window can lose the last few
+  // transactions — acceptable for game stats), and it removes a synchronous fsync
+  // from the shared event loop on every write. Match-end stat writes and logins no
+  // longer risk stalling the 64Hz game tick on a slow (e.g. network-backed) disk.
+  sqlite.pragma('synchronous = NORMAL');
+}
 
 // ── Pre-rebrand table migration ─────────────────────────────────────────────
 // Databases created before the Instagib → Elyxion rename use instagib_* table

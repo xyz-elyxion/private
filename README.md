@@ -214,8 +214,29 @@ optional:
 | `HOST`          | `0.0.0.0` (prod)   | Bind address.                                                  |
 | `DATA_DIR`      | `./data`           | Directory for runtime data (the SQLite DB).                    |
 | `DATABASE_PATH` | `./data/elyxion.sqlite` | Explicit DB file path (overrides `DATA_DIR`).           |
+| `DATABASE_URL`   | _(unset)_          | PostgreSQL connection URL (`postgres://user:pass@host/db`). When set, ALL data (accounts, stats, cosmetics, challenges, ranked, feedback, audit) is stored in PostgreSQL instead of the SQLite file. `POSTGRES_URL` / `POSTGRESQL_URL` are accepted aliases. |
 | `APP_BASE_URL`  | _(unset)_          | Production WebSocket origin allow-list. When set, only browsers loading the app from this origin may open the game socket. Unset = same-origin only. |
 | `ADMIN_USERNAMES` | _(unset)_        | Comma-separated account names auto-promoted to admin.          |
+
+### PostgreSQL backend
+
+By default the server stores everything in an embedded SQLite file (zero
+config). Setting `DATABASE_URL` switches the entire data layer to PostgreSQL —
+same schema, same prepared statements, translated at runtime by
+`server/pg.ts` (no ORM, no migrations to run). Useful for managed databases
+(Railway, Neon, Supabase, RDS…) and multi-instance deployments:
+
+```bash
+DATABASE_URL=postgres://user:pass@host:5432/elyxion npm start
+```
+
+Notes:
+- The schema is created automatically on first boot; an empty database is enough.
+- Existing SQLite data is NOT migrated automatically — copy rows across before
+  switching if you need to preserve player progress.
+- Requires the `pg` package (already a dependency).
+- Verify your setup with `npm run smoke:pg` (boots a throwaway embedded
+  PostgreSQL and runs the full data layer against it).
 
 ---
 
