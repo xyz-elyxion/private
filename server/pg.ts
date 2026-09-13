@@ -120,33 +120,50 @@ try {
 }
 
 if (Pool) {
-  let pool;
-  try {
-    pool = new Pool({
-      connectionString: workerData.url,
+  void (async () => {
+    // Resolve the DB hostname to IPv4 ONCE and connect by address. Managed PG
+    // hosts (Render, Supabase, …) advertise AAAA records, but common container
+    // hosts have no IPv6 route — every connect then dies with ENETUNREACH.
+    // Doing it here avoids relying on pg's lookup forwarding; TLS still verifies
+    // against the original hostname via the servername option (SNI).
+    let connString = workerData.url;
+    let host = null;
+    let sni = null;
+    try {
+      const u = new URL(workerData.url);
+      const hostname = u.hostname;
+      // Skip when the URL already names an IP literal (v4 or bracketed v6).
+      if (hostname && !/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) && !hostname.includes(':')) {
+        try {
+          const res = await dns.promises.lookup(hostname, { family: 4 });
+          host = res.address;
+          sni = hostname;
+        } catch {
+          // No A record: connect as written (v6-only provider); the failure
+          // message will then make the actual limitation obvious.
+        }
+      }
+    } catch {
+      // Unparseable URL — let pg surface its own error.
+    }
+    const opts = {
+      connectionString: connString,
       max: 4,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
       application_name: 'elyxion-arena',
-      // Force IPv4 when the DB host has an A record. Managed PG hosts often
-      // advertise both A + AAAA; containers frequently have no IPv6 route and
-      // every connect dies with ENETUNREACH. The custom lookup keeps the
-      // hostname (so TLS/SNI and cert verification still work) while picking
-      // the IPv4 address for the actual socket. If there is no A record the
-      // lookup falls back to the system result (IPv6), which then fails with a
-      // clearer picture: the provider only exposes v6 and the host has no v6.
-      lookup: (hostname, options, callback) => {
-        dns.lookup(hostname, { ...(options || {}), family: 4 }, (err, address, family) => {
-          if (err) dns.lookup(hostname, options || {}, callback);
-          else callback(null, address, family);
-        });
-      },
-    });
-  } catch (e) {
-    done({ ok: false, error: 'pg_pool_init: ' + ((e && e.message) || String(e)) });
-    parentPort.on('message', () => {});
-  }
-  if (pool) {
+    };
+    if (host) {
+      opts.host = host;
+      opts.servername = sni;
+    }
+    let pool;
+    try {
+      pool = new Pool(opts);
+    } catch (e) {
+      done({ ok: false, error: 'pg_pool_init: ' + ((e && e.message) || String(e)) });
+      return;
+    }
     pool.on('error', (err) => {
       // Rare idle-client failure; surface on the next query instead of crashing.
       console.error('[pg] pool error:', err && err.message);
@@ -159,7 +176,7 @@ if (Pool) {
         done({ ok: false, error: (e && e.message) || String(e) });
       }
     });
-  }
+  })();
 }
 `;
 
