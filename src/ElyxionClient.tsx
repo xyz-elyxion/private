@@ -1431,9 +1431,8 @@ function GameView({
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
         setJoinError(
-          ev.reason === 'full'
-            ? 'That lobby is full.'
-            : 'That lobby no longer exists.',
+          ev.fatal || ev.reason.startsWith('Banned') ? ev.reason :
+          ev.reason === 'full' ? 'That lobby is full.' : 'That lobby no longer exists.',
         );
       } else if (ev.type === 'ranked-result') {
         setRankedResult(ev.result);
@@ -1757,7 +1756,10 @@ function SpectatorView({
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'spectate-ended') onExit();
       else if (ev.type === 'join-failed') {
-        setError(ev.reason === 'full' ? 'That match is no longer available.' : 'That match no longer exists.');
+        setError(
+          ev.fatal || ev.reason.startsWith('Banned') ? ev.reason :
+          ev.reason === 'full' ? 'That match is no longer available.' : 'That match no longer exists.',
+        );
       }
     });
     applySettingsToGame(game, settings);

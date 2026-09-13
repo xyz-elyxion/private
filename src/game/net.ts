@@ -249,6 +249,10 @@ export type NetEvents = {
   // Ranked match resolved (frag limit or forfeit): rating deltas for the overlay.
   onRankedResult?: (r: RankedResult) => void;
   onJoinFailed?: (reason: string) => void;
+  // FATAL server error (e.g. "Banned: …"): the connection is terminated by the
+  // server and reconnecting is pointless — the UI should show the message and
+  // stop the auto-reconnect loop.
+  onFatalError?: (message: string) => void;
   // Spectating confirmed: adopt the watched room's map/mode (no spawn — read-only).
   onSpectating?: (info: { mapId: string; mode: GameMode; state: 'active' | 'voting' }) => void;
   // The watched match ended / the room was reaped → return to the lobby.
@@ -412,6 +416,7 @@ export class NetClient {
   // Resume token from the last welcome — kept across reconnects so we can reclaim
   // our in-match slot + score instead of re-joining fresh (zeroed).
   private resumeToken: string | null = null;
+  private fatal = false; // server told us to stop (ban/kick) — never auto-reconnect
 
   constructor(opts: {
     url: string;
@@ -486,7 +491,7 @@ export class NetClient {
       this.snapBuffer.length = 0;
       this.stopPing();
       this.setStatus('closed');
-      this.scheduleReconnect();
+      if (!this.fatal) this.scheduleReconnect();
     };
     this.ws.onerror = () => {
       this.setStatus('error');
@@ -1031,6 +1036,16 @@ export class NetClient {
       this.events.onJoinFailed?.(msg.reason);
       return;
     }
+    if (msg.type === 'error') {
+      // Fatal (banned / kicked): stop the reconnect loop and surface the reason.
+      this.fatal = true;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.events.onFatalError?.(msg.message);
+      return;
+    }
     if (msg.type === 'spectating') {
       this.mode = msg.mode ?? 'ffa';
       this.events.onSpectating?.({ mapId: msg.mapId, mode: this.mode, state: msg.state });
@@ -1106,7 +1121,7 @@ export class NetClient {
   }
 
   private scheduleReconnect() {
-    if (this.disposed) return;
+    if (this.disposed || this.fatal) return;
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

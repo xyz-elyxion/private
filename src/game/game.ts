@@ -153,7 +153,7 @@ export type MatchEndListener = (result: MatchResult) => void;
 // (e.g. "couldn't join — lobby is gone/full" → bounce back to the menu). Map
 // changes are shown in-game via a HUD banner, not through this channel.
 export type NetMatchEvent =
-  | { type: 'join-failed'; reason: string }
+  | { type: 'join-failed'; reason: string; fatal?: boolean }
   | { type: 'spectate-ended' } // the watched match ended / room reaped → leave to lobby
   | { type: 'ranked-result'; result: RankedResult; won: boolean }; // ranked match over → show overlay
 export type NetMatchListener = (ev: NetMatchEvent) => void;
@@ -1123,6 +1123,7 @@ export class Game {
           onKill: (ev) => this.handleNetKill(ev),
           onJoined: (info) => this.handleNetJoined(info),
           onJoinFailed: (reason) => this.onNetEvent({ type: 'join-failed', reason }),
+          onFatalError: (message) => this.onNetEvent({ type: 'join-failed', reason: message, fatal: true }),
           onSpectating: (info) => this.handleNetSpectating(info),
           onSpectateEnded: () => this.onNetEvent({ type: 'spectate-ended' }),
           onRespawn: (pos) => this.handleNetRespawn(pos),
