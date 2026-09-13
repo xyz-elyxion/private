@@ -3,7 +3,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { CrosshairMark } from './Landing';
 
 import architecture from '../../docs/ARCHITECTURE.md?raw';
-import changelog from '../../docs/CHANGELOG.md?raw';
 import deployment from '../../docs/DEPLOYMENT.md?raw';
 import metricsApi from '../../docs/ADMIN-METRICS-API.md?raw';
 import netcodeTcp from '../../docs/NETCODE-TCP-LOAD.md?raw';
@@ -23,7 +22,6 @@ type Doc = {
 
 const DOCS: Doc[] = [
   { slug: 'architecture', title: 'Architecture', description: 'Client, server, netcode, and authority boundaries.', content: architecture },
-  { slug: 'changelog', title: 'Changelog', description: 'What shipped, newest first.', content: changelog },
   { slug: 'deployment', title: 'Deployment', description: 'Run Elyxion locally, in Docker, or on a PaaS.', content: deployment },
   { slug: 'metrics-api', title: 'Admin Metrics API', description: 'Read-only metrics and traffic endpoints.', content: metricsApi },
   { slug: 'netcode-tcp-load', title: 'TCP Snapshot Load', description: 'Load-harness methodology and baselines.', content: netcodeTcp },
