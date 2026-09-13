@@ -106,9 +106,15 @@ function reportViolation(
   if (ban) {
     try {
       if (c.socket.readyState === c.socket.OPEN) {
+        // Use a close CODE (4000 + reason) as well as the error frame: a JSON
+        // message immediately followed by close() can race TCP teardown and
+        // never reach the client — the close code is delivered reliably and the
+        // client maps it to the same ban overlay.
         c.socket.send(JSON.stringify({ type: 'error', message: `Banned: ${ban.reason}` }));
+        c.socket.close(4000, `Banned: ${ban.reason}`);
+      } else {
+        c.socket.close();
       }
-      c.socket.close();
     } catch {
       // ignore
     }
@@ -624,7 +630,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       if (c.playerId !== bannedPlayerId) continue;
       try {
         sendRaw(c.socket, { type: 'error', message: reason });
-        c.socket.close();
+        c.socket.close(4000, reason);
       } catch {
         // ignore
       }
@@ -1769,7 +1775,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       if (ban) {
         try {
           socket.send(JSON.stringify({ type: 'error', message: `Banned: ${ban.reason}` }));
-          socket.close();
+          socket.close(4000, `Banned: ${ban.reason}`);
         } catch {
           // ignore
         }

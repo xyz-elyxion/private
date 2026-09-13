@@ -482,7 +482,7 @@ export class NetClient {
         // ignore malformed
       }
     };
-    this.ws.onclose = () => {
+    this.ws.onclose = (e) => {
       this.ws = null;
       this.clientId = null;
       this.remotes.clear();
@@ -491,6 +491,18 @@ export class NetClient {
       this.snapBuffer.length = 0;
       this.stopPing();
       this.setStatus('closed');
+      // Server-initiated close WITH a code (4000 = ban/kick) is deliberate: the
+      // error frame may have raced the TCP teardown and been lost, so recover
+      // the reason from the close code and stop reconnecting.
+      if (e.code === 4000 && !this.fatal) {
+        this.fatal = true;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        this.events.onFatalError?.(e.reason || 'Banned');
+        return;
+      }
       if (!this.fatal) this.scheduleReconnect();
     };
     this.ws.onerror = () => {
