@@ -5459,6 +5459,7 @@ function Lobby({
   const [presence, setPresence] = useState<PresenceState | null>(null);
   const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
   const [chatNotice, setChatNotice] = useState<string | null>(null);
+  const [banNotice, setBanNotice] = useState<string | null>(null); // fatal lobby error (ban/kick)
 
   // A custom server URL is a dev/LAN-only convenience. In production we ALWAYS
   // use the same-origin server and ignore any persisted/imported serverUrl, so
@@ -5526,6 +5527,14 @@ function Lobby({
         const next = [...log, m];
         return next.length > CHAT_LOG_MAX ? next.slice(next.length - CHAT_LOG_MAX) : next;
       });
+    // Banned/kicked account: the server closed the lobby socket with code 4000.
+    // Show the reason permanently and stop matchmaking attempts (the socket is
+    // dead and won't reconnect).
+    lobby.onFatalError = (message) => {
+      setBanNotice(message);
+      setSearching(false);
+      setRankedStatus((s) => (s?.state === 'searching' ? { state: 'idle' as const } : s));
+    };
     lobby.onChatRejected = (reason) =>
       setChatNotice(
         reason === 'rate'
@@ -5756,7 +5765,7 @@ function Lobby({
             {/* Primary CTA */}
             <button
               onClick={() => {
-                if (searching || !online || playDisabled) return; // double-fire guard
+                if (searching || !online || playDisabled || banNotice) return; // double-fire guard
                 setSearching(true);
                 // "Play Now" = mode-agnostic super-queue: join whatever's live so a
                 // small population concentrates instead of splitting 3 ways. The
@@ -5764,26 +5773,37 @@ function Lobby({
                 lobbyRef.current?.quickMatch('any');
                 window.setTimeout(() => setSearching(false), 6000);
               }}
-              disabled={!online || playDisabled || searching}
+              disabled={!online || playDisabled || searching || !!banNotice}
               aria-busy={searching}
               className='clip-deck deck-rise group bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 active:translate-y-px disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
               style={{ animationDelay: '180ms' }}
             >
               <span className='flex items-center gap-3'>
-                {searching ? 'Searching…' : 'Play Now'}
+                {banNotice ? 'Banned' : searching ? 'Searching…' : 'Play Now'}
                 <span aria-hidden className='transition-transform group-hover:translate-x-1'>→</span>
                 <span className='ml-auto font-mono text-[11px] font-semibold tracking-[0.1em] text-zinc-950/60'>
-                  {searching ? 'Looking for a live lobby' : 'Any mode · fastest'}
+                  {banNotice ? 'Account restricted' : searching ? 'Looking for a live lobby' : 'Any mode · fastest'}
                 </span>
               </span>
             </button>
 
+            {banNotice && (
+              <div
+                role='alert'
+                className='deck-rise rounded-xl border border-rose-500/40 bg-rose-500/10 px-5 py-4 font-mono text-sm text-rose-200'
+                style={{ animationDelay: '200ms' }}
+              >
+                <span className='font-bold uppercase tracking-[0.16em] text-rose-300'>Banned — </span>
+                {banNotice.startsWith('Banned') ? banNotice.replace(/^Banned:\s*/, '') : banNotice}
+              </div>
+            )}
+
             {/* Ways to play — online first, then offline practice. */}
             <div className='deck-rise grid grid-cols-2 gap-3' style={{ animationDelay: '240ms' }}>
-              <DeckButton onClick={() => setCreateOnlineOpen(true)} disabled={!online || playDisabled} accent='cyan'>
+              <DeckButton onClick={() => setCreateOnlineOpen(true)} disabled={!online || playDisabled || !!banNotice} accent='cyan'>
                 Create Match
               </DeckButton>
-              <DeckButton onClick={() => setRankedOpen(true)} disabled={!online || playDisabled} accent='fuchsia' sub='1v1 · Elo ladder'>
+              <DeckButton onClick={() => setRankedOpen(true)} disabled={!online || playDisabled || !!banNotice} accent='fuchsia' sub='1v1 · Elo ladder'>
                 Ranked Duel
               </DeckButton>
               <DeckButton

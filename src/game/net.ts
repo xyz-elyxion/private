@@ -1272,6 +1272,10 @@ export class LobbyClient {
   onChatRejected: (reason: ChatRejectReason) => void = () => {};
   onRankedStatus: (s: RankedStatus) => void = () => {};
   onRankedRooms: (rooms: RankedRoom[]) => void = () => {};
+  // FATAL server error (ban/kick): the lobby socket is being closed deliberately
+  // and reconnecting is pointless — the UI should show the reason and disable
+  // matchmaking. Fired once.
+  onFatalError: (message: string) => void = () => {};
 
   constructor(url: string, name: string) {
     this.url = url;
@@ -1393,10 +1397,28 @@ export class LobbyClient {
           this.onRankedRooms(Array.isArray(rr) ? rr : []);
           break;
         }
+        case 'error':
+          // Ban/kick delivered as an app frame (pre-close): same fatal path.
+          this.disposed = true;
+          this.stopHeartbeat();
+          this.onFatalError((msg as { message?: string }).message || 'Banned');
+          try { this.ws?.close(); } catch { /* ignore */ }
+          this.ws = null;
+          break;
       }
     };
-    this.ws.onclose = () => {
+    this.ws.onclose = (e) => {
       this.ws = null;
+      // 4000 = server-initiated ban/kick close: surface the reason and STOP the
+      // reconnect loop, otherwise the menu silently searches forever for a
+      // banned account (the error frame can race the close and never arrive).
+      if (e.code === 4000) {
+        this.disposed = true; // blocks scheduleReconnect/connect
+        this.stopHeartbeat();
+        this.setStatus('closed');
+        this.onFatalError(e.reason || 'Banned');
+        return;
+      }
       this.handleDrop();
     };
     this.ws.onerror = () => {
