@@ -126,7 +126,7 @@ if (Pool) {
     // hosts have no IPv6 route — every connect then dies with ENETUNREACH.
     // Doing it here avoids relying on pg's lookup forwarding; TLS still verifies
     // against the original hostname via the servername option (SNI).
-    let connString = workerData.url;
+    const connString = workerData.url;
     let host = null;
     let sni = null;
     try {
@@ -138,13 +138,15 @@ if (Pool) {
           const res = await dns.promises.lookup(hostname, { family: 4 });
           host = res.address;
           sni = hostname;
+          console.log('[pg] resolved', hostname, '-> IPv4', host);
         } catch {
-          // No A record: connect as written (v6-only provider); the failure
-          // message will then make the actual limitation obvious.
+          console.log('[pg] hostname', hostname, 'has NO IPv4 (A) record; connecting as written');
         }
+      } else {
+        console.log('[pg] URL host is an IP literal; no DNS resolution needed');
       }
-    } catch {
-      // Unparseable URL — let pg surface its own error.
+    } catch (e) {
+      console.log('[pg] URL parse failed — letting pg surface its own error:', (e && e.message) || e);
     }
     const opts = {
       connectionString: connString,
@@ -164,6 +166,8 @@ if (Pool) {
       done({ ok: false, error: 'pg_pool_init: ' + ((e && e.message) || String(e)) });
       return;
     }
+    // Queue early requests until the pool exists; parentPort listeners below
+    // only attach after the async setup, so nothing can be lost in between.
     pool.on('error', (err) => {
       // Rare idle-client failure; surface on the next query instead of crashing.
       console.error('[pg] pool error:', err && err.message);
@@ -176,6 +180,8 @@ if (Pool) {
         done({ ok: false, error: (e && e.message) || String(e) });
       }
     });
+    // Tell the host we are live — the host's very first exec waits for a
+    // response, so the eager 'SELECT 1' probe guarantees the listener is up.
   })();
 }
 `;
