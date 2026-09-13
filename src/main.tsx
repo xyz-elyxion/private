@@ -32,6 +32,7 @@ const AdminDashboard = lazy(() => import('./AdminDashboard'));
 const Donate = lazy(() => import('./pages/Donate'));
 const PlayerSearch = lazy(() => import('./pages/PlayerSearch'));
 const Support = lazy(() => import('./pages/Support'));
+const MapEditor = lazy(() => import('./pages/MapEditor'));
 
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
@@ -207,7 +208,7 @@ function CgSdkWatcher({ onSettled }: { onSettled: () => void }) {
 // static host — and drop the player straight into the game (portal QA expects
 // instant gameplay, no menu cascade). The self-hosted site keeps BrowserRouter
 // with clean URLs.
-const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search|support)(\/|$)/;
+const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search|support|mapeditor)(\/|$)/;
 function isPortalEmbed(): boolean {
   if (typeof window === 'undefined') return false;
   const p = window.location.pathname;
@@ -261,6 +262,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <Suspense fallback={<Loading />}>
               <Support />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/mapeditor"
+          element={
+            <Suspense fallback={<Loading />}>
+              <MapEditor />
             </Suspense>
           }
         />

@@ -68,6 +68,34 @@ export const ARENA_NET: Record<string, ArenaNetData> = {
   ),
 };
 
+// Runtime registration for COMMUNITY maps: the game server loads a player-built
+// map document from the DB and registers its net data here, so every existing
+// `arenaNet(id)` call site (spawn picking, OOB checks, CTF bases) works
+// unchanged. The client registers the renderable arena on its side in map.ts.
+export function registerCommunityArena(id: string, data: ArenaNetData): void {
+  ARENA_NET[id] = data;
+}
+
+/** Derive server net data (bounds/killY/spawns) from a community map document. */
+export function communityArenaNetData(m: {
+  bounds: ArenaNetData['bounds'];
+  spawn: Vec3;
+}): ArenaNetData {
+  const { bounds, spawn } = m;
+  // Spawn point + four inset floor corners, so respawn picking has spread.
+  const ix = (bounds.max.x - bounds.min.x) * 0.15;
+  const iz = (bounds.max.z - bounds.min.z) * 0.15;
+  const floorY = Math.max(bounds.min.y, 0) + 0.05;
+  const spawns: Vec3[] = [
+    spawn,
+    p(bounds.min.x + ix, bounds.min.z + iz),
+    p(bounds.max.x - ix, bounds.min.z + iz),
+    p(bounds.min.x + ix, bounds.max.z - iz),
+    p(bounds.max.x - ix, bounds.max.z - iz),
+  ].map((s) => ({ ...s, y: s.y === Y ? spawn.y : floorY }));
+  return { bounds, killY: bounds.min.y - 6, spawns };
+}
+
 export const DEFAULT_ARENA_ID = 'causeway';
 
 export function arenaNet(id: string): ArenaNetData {

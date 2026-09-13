@@ -6,7 +6,7 @@ import { useAuth, LoginModal, type Account , authHeaders } from './auth';
 import { FeedbackModal } from './FeedbackModal';
 import { RecoveryModal } from './RecoveryModal';
 import { CONTROLS } from './controls';
-import { MAPS, mapById } from './game/map';
+import { MAPS, mapById, communityArenaById, registerCommunityArenaMap } from './game/map';
 import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, type AnnouncerPackId } from './game/audio';
 import { ReplayViewer, type ReplayViewerState } from './game/replay-viewer';
 import { decodeReplay, type ReplayData } from './game/replay-codec';
@@ -802,6 +802,27 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setFpsLimit?.(s.fpsLimit);
 }
 
+// Fetch + register a community map before a match starts, so mapById() can
+// resolve it synchronously. Cached — repeat matches on the same map skip this.
+const communityMapCache = new Set<string>();
+async function ensureCommunityMap(mapId: string): Promise<void> {
+  if (communityArenaById(mapId) || communityMapCache.has(mapId)) return;
+  communityMapCache.add(mapId);
+  try {
+    const res = await fetch(apiUrl(`/api/community-maps/${encodeURIComponent(mapId)}`), {
+      credentials: 'include',
+    });
+    if (!res.ok) return;
+    const { map } = (await res.json()) as { map?: string };
+    if (map) {
+      const doc = JSON.parse(map) as Parameters<typeof registerCommunityArenaMap>[0];
+      registerCommunityArenaMap(doc);
+    }
+  } catch {
+    // Network/parse failure: mapById falls back to DEFAULT_MAP as before.
+  }
+}
+
 // Configures a freshly-created Game for a match before start().
 function applyMatchConfig(game: Game, config: MatchConfig) {
   game.setMap(mapById(config.mapId));
@@ -926,6 +947,23 @@ export default function ElyxionClient() {
       // Falls back to the plain ?join= URL param the game has always supported.
       const sdkRoom = cgGetInviteParam('roomId') ?? cgInviteParams()?.roomId ?? null;
       const urlRoom = new URLSearchParams(window.location.search).get('join');
+      // Map-editor test play: /mapeditor stashes the draft document in
+      // sessionStorage and navigates here with ?testmap=1. Register the map for
+      // rendering and start a solo FFA match on it via a private room join.
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('testmap')) {
+        params.delete('testmap');
+        window.history.replaceState({}, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}`);
+        try {
+          const raw = sessionStorage.getItem('elyxion-map-test');
+          if (raw) {
+            const testDoc = JSON.parse(raw) as Parameters<typeof registerCommunityArenaMap>[0];
+            registerCommunityArenaMap(testDoc);
+          }
+        } catch {
+          // Corrupt draft: fall through to the normal menu.
+        }
+      }
       const code = sdkRoom || urlRoom;
       if (code && /^[A-Z0-9]{3,10}$/i.test(code)) {
         const url = new URL(window.location.href);
@@ -5492,14 +5530,20 @@ function Lobby({
   }, []);
 
   const startOnline = useCallback(
-    (roomId: string, mapId: string) =>
-      onStart({ mode: 'multiplayer', mapId, serverUrl, roomId }),
+    async (roomId: string, mapId: string) => {
+      // Community maps must be registered before the match Game mounts, or the
+      // first render falls back to the default arena.
+      await ensureCommunityMap(mapId);
+      onStart({ mode: 'multiplayer', mapId, serverUrl, roomId });
+    },
     [onStart, serverUrl],
   );
 
   const startSpectate = useCallback(
-    (roomId: string, mapId: string) =>
-      onStart({ mode: 'spectator', mapId, serverUrl, roomId }),
+    async (roomId: string, mapId: string) => {
+      await ensureCommunityMap(mapId);
+      onStart({ mode: 'spectator', mapId, serverUrl, roomId });
+    },
     [onStart, serverUrl],
   );
 
@@ -5510,6 +5554,12 @@ function Lobby({
     lobbyRef.current = lobby;
     lobby.onRooms = setRooms;
     lobby.onStatus = setLobbyStatus;
+    // Map-editor test play: as soon as the lobby is live, create a private
+    // match on the draft map. onResolved → startOnline starts the actual game.
+    if (sessionStorage.getItem('elyxion-map-test')) {
+      const testDoc = JSON.parse(sessionStorage.getItem('elyxion-map-test')!) as { id: string };
+      lobby.createRoom({ mapId: testDoc.id, isPublic: false, capacity: 8, mode: 'ffa' });
+    }
     lobby.onResolved = (info) => {
       if (info.kind === 'matched') {
         startOnline(info.roomId, info.mapId);

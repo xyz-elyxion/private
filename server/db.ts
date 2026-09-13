@@ -667,6 +667,97 @@ export function getAuditLog(limit: number, event?: string): AuditRow[] {
   return (event ? auditByEventStmt.all(event, n) : auditAllStmt.all(n)) as AuditRow[];
 }
 
+// ── Community maps ───────────────────────────────────────────────────────────
+// Player-built maps (the /mapeditor page). The whole map document is stored as
+// validated JSON — the client and server share the validator in
+// src/game/community-map.ts, so the DB never stores an unplayable map. `id` is
+// the URL-safe map id used in match config; `author_id` gates editing/deleting.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_community_maps (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  author_id   TEXT NOT NULL DEFAULT '',
+  author_name TEXT NOT NULL DEFAULT '',
+  doc         TEXT NOT NULL,
+  plays       INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_community_maps_updated ON elyxion_community_maps(updated_at DESC);
+`);
+
+export type CommunityMapRow = {
+  id: string;
+  name: string;
+  authorId: string;
+  authorName: string;
+  doc: string;
+  plays: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+const cmInsertStmt = sqlite.prepare(`
+  INSERT INTO elyxion_community_maps (id, name, author_id, author_name, doc, plays, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name,
+    doc = excluded.doc,
+    author_id = excluded.author_id,
+    author_name = excluded.author_name,
+    updated_at = excluded.updated_at
+`);
+const cmGetStmt = sqlite.prepare('SELECT * FROM elyxion_community_maps WHERE id = ?');
+const cmListStmt = sqlite.prepare(
+  'SELECT * FROM elyxion_community_maps ORDER BY updated_at DESC LIMIT ?',
+);
+const cmDeleteStmt = sqlite.prepare('DELETE FROM elyxion_community_maps WHERE id = ? AND author_id = ?');
+const cmPlayStmt = sqlite.prepare('UPDATE elyxion_community_maps SET plays = plays + 1 WHERE id = ?');
+
+function cmRow(r: unknown): CommunityMapRow {
+  const row = r as Record<string, unknown>;
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    authorId: String(row.author_id ?? ''),
+    authorName: String(row.author_name ?? ''),
+    doc: String(row.doc),
+    plays: Number(row.plays ?? 0),
+    createdAt: Number(row.created_at ?? 0),
+    updatedAt: Number(row.updated_at ?? 0),
+  };
+}
+
+/** Insert or update a community map. Upsert on id; ownership is enforced by callers. */
+export function saveCommunityMap(m: {
+  id: string;
+  name: string;
+  authorId: string;
+  authorName: string;
+  doc: string;
+  now: number;
+}): void {
+  cmInsertStmt.run(m.id, m.name, m.authorId, m.authorName, m.doc, m.now, m.now);
+}
+
+export function getCommunityMap(id: string): CommunityMapRow | undefined {
+  const r = cmGetStmt.get(id);
+  return r ? cmRow(r) : undefined;
+}
+
+export function listCommunityMaps(limit = 100): CommunityMapRow[] {
+  return (cmListStmt.all(Math.max(1, Math.min(200, limit))) as unknown[]).map(cmRow);
+}
+
+/** Delete only by the map's author. Returns whether a row was removed. */
+export function deleteCommunityMap(id: string, authorId: string): boolean {
+  return cmDeleteStmt.run(id, authorId).changes > 0;
+}
+
+export function countCommunityMapPlay(id: string): void {
+  cmPlayStmt.run(id);
+}
+
 // ── Feedback / bug reports ───────────────────────────────────────────────────
 // Player-submitted feedback (the in-game form → POST /api/feedback). Its own
 // table — not the audit log — because it has a moderation status workflow. `ip`

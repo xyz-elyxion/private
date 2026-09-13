@@ -78,6 +78,12 @@ import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
 import { resolveCgSocketAccount } from './crazygames';
 import { autoBanIfWarranted, getActiveBan, logAnticheatViolation } from './bans';
+import { getCommunityMap, countCommunityMapPlay } from './db';
+import {
+  communityArenaNetData,
+  registerCommunityArena,
+} from '../src/game/arena-data';
+import { communityMapToArena, validateCommunityMap } from '../src/game/community-map';
 
 // ── Anticheat violation reporting ───────────────────────────────────────────
 // Guards call reportViolation() on suspicious input. Everything is logged as
@@ -704,7 +710,31 @@ export function attachElyxionWs(wss: WebSocketServer) {
   };
 
   const isKnownArena = (id: string | undefined): id is string =>
-    typeof id === 'string' && Object.prototype.hasOwnProperty.call(ARENA_NET, id);
+    typeof id === 'string' &&
+    (Object.prototype.hasOwnProperty.call(ARENA_NET, id) || ensureCommunityArena(id) != null);
+
+  // Resolve + register a player-built map on first use. Returns the map id on
+  // success, null when the id isn't a stored community map (or failed
+  // validation). Registered arenas persist for the process lifetime.
+  const communityChecked = new Set<string>();
+  const ensureCommunityArena = (id: string): string | null => {
+    if (communityChecked.has(id)) return ARENA_NET[id] ? id : null;
+    communityChecked.add(id);
+    if (Object.prototype.hasOwnProperty.call(ARENA_NET, id)) return id;
+    const row = getCommunityMap(id);
+    if (!row) return null;
+    let doc: unknown;
+    try {
+      doc = JSON.parse(row.doc);
+    } catch {
+      return null;
+    }
+    if (!validateCommunityMap(doc)) return null;
+    const map = doc as Parameters<typeof communityMapToArena>[0];
+    registerCommunityArena(id, communityArenaNetData(map));
+    countCommunityMapPlay(id);
+    return id;
+  };
 
   const createRoom = (opts: {
     name: string;
@@ -719,8 +749,14 @@ export function attachElyxionWs(wss: WebSocketServer) {
     const maxCap = modeCapacity(opts.mode);
     const capacity =
       opts.mode === 'duel' ? 2 : clampInt(opts.capacity, 2, maxCap, maxCap);
+    // Community maps (stored player-built arenas) bypass the static mode pool —
+    // a private room may play any registered map. Public/quick-match rooms keep
+    // the curated pool. `ensureCommunityArena` registers spawn/OOB data on first
+    // use; unresolvable ids fall back to the mode pool like unknown ids.
+    const isCommunityMap = opts.isPublic === false && ensureCommunityArena(opts.mapId) != null;
     const selectedMapId =
-      isKnownArena(opts.mapId) && mapPoolForMode(opts.mode).includes(opts.mapId)
+      isCommunityMap ||
+      (isKnownArena(opts.mapId) && mapPoolForMode(opts.mode).includes(opts.mapId))
         ? opts.mapId
         : mapPoolForMode(opts.mode)[0] ?? DEFAULT_ARENA_ID;
     const room: Room = {

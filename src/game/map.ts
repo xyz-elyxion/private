@@ -358,7 +358,24 @@ export const MAPS: ReadonlyArray<{ id: string; label: string; map: ArenaMap }> =
 export const DEFAULT_MAP: ArenaMap = CAUSEWAY;
 
 export function mapById(id: string): ArenaMap {
-  return MAPS.find((m) => m.id === id)?.map ?? DEFAULT_MAP;
+  return MAPS.find((m) => m.id === id)?.map ?? communityArenaById(id) ?? DEFAULT_MAP;
+}
+
+// ── Runtime community-map registry (client side) ─────────────────────────────
+// Player-built maps fetched from the API are converted to arenas and registered
+// here, so every `mapById(id)` call site (matches, replays, spectate) works
+// unchanged. Mirrors the server-side ARENA_NET registration in arena-data.ts.
+const COMMUNITY_MAPS = new Map<string, ArenaMap>();
+
+export function registerCommunityArenaMap(doc: Parameters<typeof communityMapToArena>[0]): ArenaMap {
+  const arena = communityMapToArena(doc);
+  COMMUNITY_MAPS.set(doc.id, arena);
+  return arena;
+}
+
+/** Synchronous lookup of previously-fetched community maps (undefined if absent). */
+export function communityArenaById(id: string): ArenaMap | undefined {
+  return COMMUNITY_MAPS.get(id);
 }
 
 export function buildMapMesh(map: ArenaMap): THREE.Group {
