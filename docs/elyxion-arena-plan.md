@@ -7,7 +7,7 @@
 > (not a Rapier sim). For the *current* architecture see
 > [`ARCHITECTURE.md`](ARCHITECTURE.md). Kept for design rationale and roadmap.
 
-Browser-based, server-authoritative FPS in the spirit of Quake Instagib / Ratz Instagib. Lives in the existing Bespick arcade alongside chess, 8-ball, etc., but runs against a new dedicated game-server backend on the GPU/CPU box rather than the closet Mac.
+Browser-based, server-authoritative FPS in the spirit of Quake Instagib / Ratz Instagib. Lives in the existing Bespick arcade alongside chess, 8-ball, etc., but runs against a new dedicated game-server backend on a CPU box rather than the closet Mac — GPU workloads live on separate worker machines (see §2).
 
 ---
 
@@ -58,14 +58,25 @@ The whole project hinges on three things; everything else is in service of these
 - A long-running **orchestrator** process spawns one game-server child per active match, on a port from a pool. The lobby tells the client which `(host, port, matchId)` to connect to.
 - The new server box is overprovisioned for this: 256GB RAM is irrelevant (each match server is ~100–300MB), but the CPU core count matters — pin ~1 match per core, leave headroom for the OS and the Next.js front-end.
 
-### Why the GPUs don't help (and what they could do)
-Game logic is CPU/RAM bound — GPUs sit idle for a multiplayer hitscan FPS. Possible future uses for the GPU hardware:
-- Offline **lightmap baking** for maps.
-- **ML bot opponents** trained against replays (long-tail, not v1).
-- **Server-side replay rendering** — generate MP4 highlights of frags using a headless Three.js + GPU.
-- Hosting a Stockfish-style **analysis service** for replays.
+### GPU workloads run on separate worker machines, not the game server
+Game logic is CPU/RAM bound — GPUs sit idle for a multiplayer hitscan FPS. The game
+server box is therefore provisioned CPU-only, and every GPU-bound job runs on
+**dedicated worker machines** (a small GPU pool separate from the match server).
+The match server never renders, trains, or bakes anything itself; it only enqueues
+work and consumes results, so a GPU worker being slow or down can never affect
+match tick rate or latency.
 
-Treat the GPUs as a future-features budget, not a v1 dependency.
+Worker jobs (each one scales horizontally by adding worker machines):
+- Offline **lightmap baking** for maps — `POST /jobs/bake-map` with the map pack; workers pull the queue and write baked lightmaps to object storage; the match server just serves the finished asset.
+- **ML bot opponents** trained against replays (long-tail, not v1) — replay dumps are exported to the training queue; training runs entirely on workers.
+- **Server-side replay rendering** — MP4 frag highlights via headless Three.js + GPU on a worker, uploaded and linked from the match record when done.
+- A Stockfish-style **analysis service** for replays — its own worker(s), reached over the same job queue.
+
+**Worker architecture:** a simple job-queue table (or Redis stream) is the only
+coupling point. The game server enqueues `{ kind, payload }`; GPU workers poll,
+process, and write outputs back to storage + the DB. Workers are stateless and
+disposable. Treat GPU workers as a future-features budget, not a v1 dependency —
+the game ships with zero GPU workers and degrades gracefully without them.
 
 ---
 
@@ -164,7 +175,7 @@ These are starting points — expect ~2 weeks of tuning during the prototype pha
 
 ## 7. Server infrastructure (the new box)
 
-**Layout on the GPU server:**
+**Layout on the game server (CPU-only — GPU jobs run on separate worker machines, see §2):**
 - **Nginx (or Caddy)** terminates TLS for both Next.js and the game-server WebSocket connections. Game traffic on a port range, e.g. `wss://games.bespick.us:7000-7099`.
 - **Next.js app** runs as today (PM2 cluster), behind nginx on 443.
 - **Instagib orchestrator** runs as a PM2 process. It owns a port pool (e.g. 7000–7099 = 100 concurrent matches), maintains a match registry, and spawns child Node processes per match.
