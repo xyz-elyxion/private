@@ -90,6 +90,9 @@ const backend: DbBackend = usingPg
     ) as unknown as DbBackend);
 const sqlite = backend;
 
+/** The live backend handle (better-sqlite3-compatible). Used by the donations module. */
+export const sqliteHandle = backend;
+
 if (usingPg) {
   console.log('[db] backend: PostgreSQL', pgConfig?.url.replace(/:\/\/[^@]*@/, '://***@'));
 } else {

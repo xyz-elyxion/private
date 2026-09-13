@@ -23,6 +23,7 @@ import { feedbackRouter } from './feedback';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { crazyGamesRouter } from './crazygames';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
+import { donateRouter } from './donations';
 import { syncAdminsFromEnv } from './db';
 import { attachElyxionWs } from './elyxion-game';
 
@@ -233,6 +234,7 @@ app.use('/api', challengeRouter);
 app.use('/api', seasonRouter);
 app.use('/api', feedbackRouter);
 app.use('/api', crazyGamesRouter); // CrazyGames account linking (POST /api/auth/crazygames)
+app.use('/api/donate', donateRouter); // in-game credits donation pot
 app.use('/api/admin', adminRouter);
 
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;
