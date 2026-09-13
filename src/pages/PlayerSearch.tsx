@@ -52,9 +52,21 @@ export default function PlayerSearch() {
   const [searching, setSearching] = useState(false);
   const [friends, setFriends] = useState<Set<string>>(new Set());
   const [loggedIn, setLoggedIn] = useState(true);
+  const [myName, setMyName] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Who am I? Used to hide the Add button on the caller's own card (no
+  // self-friending) and to keep the server-side guard as pure backstop.
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch(apiUrl('/api/auth/me'), { credentials: 'include', headers: authHeaders() });
+      if (!res.ok) return;
+      const d = (await res.json().catch(() => ({}))) as { user?: { username?: string } | null };
+      setMyName(d.user?.username ?? '');
+    })();
+  }, []);
 
   // Load the caller's friends list once so result cards show the right action.
   useEffect(() => {
@@ -120,6 +132,14 @@ export default function PlayerSearch() {
         } else if (data.error === 'no_account') {
           setLoggedIn(false);
           setError('Log in to manage friends.');
+        } else if (data.error === 'self_friend') {
+          setError('You cannot add yourself as a friend.');
+        } else if (data.error === 'bad_username') {
+          setError('Pick a player first.');
+        } else if (data.error === 'not_found') {
+          setError('That account no longer exists.');
+        } else if (data.error === 'already_friends') {
+          setError('You are already friends with this player.');
         } else {
           setError('Something went wrong. Try again.');
         }
@@ -232,7 +252,7 @@ export default function PlayerSearch() {
                           <span className="tabular-nums">{fmt(hit.totalXp)}</span> XP
                         </p>
                       </div>
-                      {loggedIn && (
+                      {loggedIn && hit.username.toLowerCase() !== myName.toLowerCase() && (
                         <button
                           onClick={() => void toggleFriend(hit)}
                           disabled={busyId === hit.id}
