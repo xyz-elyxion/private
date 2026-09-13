@@ -30,9 +30,59 @@ const PodiumLab = lazy(() => import('./PodiumLab'));
 const LockerLab = lazy(() => import('./LockerLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
 const Donate = lazy(() => import('./pages/Donate'));
+const PlayerSearch = lazy(() => import('./pages/PlayerSearch'));
 
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
+// Swirling loader — an SVG circle with an animated dash that both rotates and
+// morphs its dash length, giving a fluid "swirling" motion. Pure inline SVG +
+// CSS keyframes: no extra dependency, no extra network request.
+const Swirling = (props: React.ComponentProps<'svg'>) => (
+  <>
+    <style>{`
+      @keyframes loading-ui-swirling-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes loading-ui-swirling-dash {
+        0% {
+          stroke-dasharray: 1, 800;
+          stroke-dashoffset: 0;
+        }
+        50% {
+          stroke-dasharray: 400, 400;
+          stroke-dashoffset: -200px;
+        }
+        100% {
+          stroke-dasharray: 800, 1;
+          stroke-dashoffset: -800px;
+        }
+      }
+
+      .loading-ui-swirling-circle {
+        transform-origin: center;
+        animation:
+          loading-ui-swirling-dash var(--duration, 1.5s) ease-in-out infinite alternate,
+          loading-ui-swirling-spin calc(var(--duration, 1.5s) * 1.333333) linear infinite;
+      }
+    `}</style>
+    <svg viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <circle
+        className="loading-ui-swirling-circle"
+        cx="400"
+        cy="400"
+        r="200"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="50"
+      />
+    </svg>
+  </>
+);
+
 const Loading = () => (
   <div
     style={{
@@ -42,11 +92,13 @@ const Loading = () => (
       alignItems: 'center',
       justifyContent: 'center',
       background: '#0a0a0b',
-      color: '#6b7280',
-      fontFamily: 'system-ui, sans-serif',
     }}
   >
-    Loading…
+    <Swirling
+      style={{ width: 64, height: 64, color: '#6b7280' }}
+      aria-label="Loading"
+      role="status"
+    />
   </div>
 );
 
@@ -154,7 +206,7 @@ function CgSdkWatcher({ onSettled }: { onSettled: () => void }) {
 // static host — and drop the player straight into the game (portal QA expects
 // instant gameplay, no menu cascade). The self-hosted site keeps BrowserRouter
 // with clean URLs.
-const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate)(\/|$)/;
+const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search)(\/|$)/;
 function isPortalEmbed(): boolean {
   if (typeof window === 'undefined') return false;
   const p = window.location.pathname;
@@ -200,6 +252,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <Suspense fallback={<Loading />}>
               <Donate />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/search"
+          element={
+            <Suspense fallback={<Loading />}>
+              <PlayerSearch />
             </Suspense>
           }
         />
