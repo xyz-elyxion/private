@@ -501,6 +501,52 @@ export function areFriends(a: string, b: string): boolean {
 }
 
 // A player's friends list (who they follow). Includes basic public stats.
+// Roblox-style account search: prefix/substring match on username, most
+// active first (games played, then XP). Returns public info only.
+const accountSearchStmt = sqlite.prepare(`
+  SELECT u.id, u.username, u.is_verified,
+         COALESCE(s.total_games, 0) AS total_games,
+         COALESCE(s.total_xp, 0)    AS total_xp,
+         COALESCE(s.level, 1)       AS level
+    FROM elyxion_users u
+    LEFT JOIN elyxion_stats s ON s.player_id = u.id
+   WHERE u.username_lower LIKE ?
+   ORDER BY
+     CASE WHEN u.username_lower = ? THEN 0
+          WHEN u.username_lower LIKE ? THEN 1
+          ELSE 2 END,
+     total_games DESC, total_xp DESC
+   LIMIT ?`);
+
+export type AccountSearchHit = {
+  id: string;
+  username: string;
+  isVerified: boolean;
+  level: number;
+  totalXp: number;
+  totalGames: number;
+};
+
+/** Search accounts by (partial) username. Exact match first, then prefix, then substring. */
+export function searchAccounts(query: string, limit = 20): AccountSearchHit[] {
+  const q = query.trim().toLowerCase().slice(0, 32);
+  if (q.length < 2) return [];
+  const rows = accountSearchStmt.all(
+    `%${q.replace(/[%_\\]/g, '\\$&')}%`,
+    q,
+    `${q}%`,
+    Math.max(1, Math.min(50, Math.floor(limit))),
+  ) as { id: string; username: string; is_verified: number; total_games: number; total_xp: number; level: number }[];
+  return rows.map((r) => ({
+    id: r.id,
+    username: r.username,
+    isVerified: !!r.is_verified,
+    level: r.level ?? 1,
+    totalXp: r.total_xp ?? 0,
+    totalGames: r.total_games ?? 0,
+  }));
+}
+
 export function getFriendsList(playerId: string, limit = 100): FriendInfo[] {
   if (!playerId) return [];
   const rows = friendListByPlayerStmt.all(playerId, limit) as

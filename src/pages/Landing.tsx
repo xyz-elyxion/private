@@ -110,6 +110,9 @@ export default function Landing() {
               </a>
             )}
             {/* The codebase is open source (AGPL); keep it one click away. */}
+            <Link to="/search" className="transition hover:text-white/90">
+              Players
+            </Link>
             <Link to="/donate" className="transition hover:text-white/90">
               Donate
             </Link>

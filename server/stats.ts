@@ -9,6 +9,7 @@ import { Router, type Request } from 'express';
 import {
   addFriend,
   buyCosmetic,
+  searchAccounts,
   claimChallenge,
   findAccountByName,
   findUserById,
@@ -329,6 +330,17 @@ statsRouter.post('/recovery/redeem', (req, res) => {
     ip: req.ip,
   });
   res.json({ ok: true });
+});
+
+// Account search (Roblox-style): partial username → public account cards.
+// No auth required, but rate-limited via the existing POST limiter cadence.
+statsRouter.get('/players', (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q : '';
+  if (q.trim().length < 2) {
+    res.json({ results: [] });
+    return;
+  }
+  res.json({ results: searchAccounts(q, 20) });
 });
 
 // Public profile: look up a player by username (no auth required).
