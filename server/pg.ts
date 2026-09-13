@@ -86,6 +86,11 @@ const WORKER_SRC = /* js */ `
 const { parentPort, workerData } = require('node:worker_threads');
 const { createRequire } = require('node:module');
 const path = require('node:path');
+const dns = require('node:dns');
+// Many managed PG providers (Render, Supabase, …) expose IPv6 addresses, but
+// common container hosts have no IPv6 route — connections fail with
+// ENETUNREACH. Prefer IPv4 results when resolving the DB host.
+dns.setDefaultResultOrder('ipv4first');
 const sab = workerData.sab;
 const flag = new Int32Array(sab, 0, 1);
 const byteLen = new Int32Array(sab, 4, 1);

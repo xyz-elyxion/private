@@ -127,8 +127,30 @@ file.
 | `HOST`          | `0.0.0.0` (prod)           | Bind address.                                                                                     |
 | `DATA_DIR`      | `./data`                   | Directory for runtime data (the SQLite DB). Point this at your mounted volume if not `/app/data`.|
 | `DATABASE_PATH` | `./data/elyxion.sqlite`   | Explicit DB file path (overrides `DATA_DIR`).                                                     |
+| `DATABASE_URL`   | _(unset)_                  | PostgreSQL connection URL. When set, ALL data goes to PostgreSQL instead of the SQLite file. `POSTGRES_URL` / `POSTGRESQL_URL` are aliases. |
 | `APP_BASE_URL`  | _(unset)_                  | Production WebSocket origin allow-list — your public HTTPS origin. Unset = same-origin only.     |
 | `ADMIN_USERNAMES` | _(unset)_                | Comma/space-separated admin usernames (case-insensitive). Promoted on boot + at registration.   |
 
 > `DATA_DIR` / `DATABASE_PATH` must resolve to your persistent volume. With the
 > Docker image's default `/app/data` volume, the defaults already do.
+
+### PostgreSQL backend
+
+Set `DATABASE_URL` to switch the entire data layer to PostgreSQL — useful for
+managed databases (Render, Railway, Neon, Supabase, RDS…) and multi-instance
+deployments:
+
+```
+DATABASE_URL=postgres://user:password@host:5432/elyxion
+```
+
+- The schema is created automatically on first boot; an empty database suffices.
+- Set the URL in your platform's **Environment** settings (Render → web service
+  → Environment), never in the repo — it contains the password.
+- Prefer the provider's **internal** database URL (same region) — faster and no
+  egress cost. On Render, external hostnames are IPv6; the server already
+  prefers IPv4 resolution, but the internal URL avoids the issue entirely.
+- Existing SQLite data is **not** migrated automatically; copy rows across
+  before switching if you need to preserve player progress.
+- Verify with `npm run smoke:pg` (boots a throwaway embedded PostgreSQL and
+  exercises the full data layer).
