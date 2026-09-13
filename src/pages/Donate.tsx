@@ -50,6 +50,9 @@ function DeckHeader() {
         <Link to="/search" className="transition hover:text-white/90">
           Players
         </Link>
+        <Link to="/support" className="transition hover:text-white/90">
+          Support
+        </Link>
         <Link to="/" className="transition hover:text-white/90">
           Home
         </Link>

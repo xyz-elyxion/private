@@ -119,6 +119,9 @@ export default function Landing() {
             <Link to="/docs" className="transition hover:text-white/90">
               Docs
             </Link>
+            <Link to="/support" className="transition hover:text-white/90">
+              Support
+            </Link>
             <button type="button" onClick={() => setShowFeedback(true)} className="uppercase tracking-[0.18em] transition hover:text-white/90">
               Feedback
             </button>

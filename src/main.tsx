@@ -31,6 +31,7 @@ const LockerLab = lazy(() => import('./LockerLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
 const Donate = lazy(() => import('./pages/Donate'));
 const PlayerSearch = lazy(() => import('./pages/PlayerSearch'));
+const Support = lazy(() => import('./pages/Support'));
 
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
@@ -206,7 +207,7 @@ function CgSdkWatcher({ onSettled }: { onSettled: () => void }) {
 // static host — and drop the player straight into the game (portal QA expects
 // instant gameplay, no menu cascade). The self-hosted site keeps BrowserRouter
 // with clean URLs.
-const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search)(\/|$)/;
+const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search|support)(\/|$)/;
 function isPortalEmbed(): boolean {
   if (typeof window === 'undefined') return false;
   const p = window.location.pathname;
@@ -252,6 +253,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <Suspense fallback={<Loading />}>
               <Donate />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/support"
+          element={
+            <Suspense fallback={<Loading />}>
+              <Support />
             </Suspense>
           }
         />
