@@ -1099,6 +1099,106 @@ const equipUpdateStmt = sqlite.prepare(
   `UPDATE elyxion_stats SET equipped = @equipped WHERE player_id = @playerId`,
 );
 
+// ── Admin progression management ─────────────────────────────────────────
+// Direct reads/writes for the admin dashboard's player-management tools. Level
+// is DERIVED from total_xp on write (levelForXp) — never stored raw — so XP
+// edits and grants stay consistent with the level curve.
+
+export type AdminProgressionPatch = {
+  totalXp?: number;
+  credits?: number;
+  totalKills?: number;
+  totalDeaths?: number;
+  totalGames?: number;
+};
+
+export type AdminProgressionState = {
+  totalXp: number;
+  level: number;
+  credits: number;
+  totalKills: number;
+  totalDeaths: number;
+  totalGames: number;
+  headshots: number;
+  bestKillStreak: number;
+};
+
+const adminProgReadStmt = sqlite.prepare(`
+  SELECT total_xp, credits, total_kills, total_deaths, total_games,
+         headshots, best_kill_streak
+    FROM elyxion_stats WHERE player_id = ?`);
+
+const adminProgWriteStmt = sqlite.prepare(`
+  UPDATE elyxion_stats
+     SET total_xp = @totalXp, level = @level, credits = @credits,
+         total_kills = @totalKills, total_deaths = @totalDeaths,
+         total_games = @totalGames, updated_at = @now
+   WHERE player_id = @playerId`);
+
+function readAdminProgression(playerId: string): AdminProgressionState | null {
+  if (!playerId) return null;
+  const r = adminProgReadStmt.get(playerId) as
+    | { total_xp: number; credits: number; total_kills: number; total_deaths: number; total_games: number; headshots: number; best_kill_streak: number }
+    | undefined;
+  if (!r) return null;
+  return {
+    totalXp: r.total_xp,
+    level: levelForXp(r.total_xp),
+    credits: r.credits,
+    totalKills: r.total_kills,
+    totalDeaths: r.total_deaths,
+    totalGames: r.total_games,
+    headshots: r.headshots,
+    bestKillStreak: r.best_kill_streak,
+  };
+}
+
+export function getAdminPlayerProgression(playerId: string): AdminProgressionState | null {
+  return readAdminProgression(playerId);
+}
+
+/** Apply an absolute patch (whitelisted fields only); level recomputed from XP. */
+export function applyAdminProgressionPatch(
+  playerId: string,
+  patch: AdminProgressionPatch,
+): { before: AdminProgressionState; after: AdminProgressionState } | null {
+  const before = readAdminProgression(playerId);
+  if (!before) return null;
+  const next: AdminProgressionState = {
+    ...before,
+    totalXp: patch.totalXp ?? before.totalXp,
+    credits: patch.credits ?? before.credits,
+    totalKills: patch.totalKills ?? before.totalKills,
+    totalDeaths: patch.totalDeaths ?? before.totalDeaths,
+    totalGames: patch.totalGames ?? before.totalGames,
+  };
+  next.level = levelForXp(next.totalXp);
+  adminProgWriteStmt.run({
+    playerId,
+    totalXp: next.totalXp,
+    level: next.level,
+    credits: next.credits,
+    totalKills: next.totalKills,
+    totalDeaths: next.totalDeaths,
+    totalGames: next.totalGames,
+    now: Date.now(),
+  });
+  return { before, after: next };
+}
+
+/** Apply signed deltas to XP/credits, floored at zero; level recomputed. */
+export function applyAdminProgressionDelta(
+  playerId: string,
+  delta: { xp: number; credits: number },
+): { before: AdminProgressionState; after: AdminProgressionState } | null {
+  const before = readAdminProgression(playerId);
+  if (!before) return null;
+  return applyAdminProgressionPatch(playerId, {
+    totalXp: Math.max(0, before.totalXp + delta.xp),
+    credits: Math.max(0, before.credits + delta.credits),
+  });
+}
+
 const buyUpdateStmt = sqlite.prepare(
   `UPDATE elyxion_stats SET credits = @credits, unlocked = @unlocked WHERE player_id = @playerId`,
 );

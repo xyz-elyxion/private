@@ -707,6 +707,7 @@ function PlayersTab() {
   const [sort, setSort] = useState('recent');
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
+  const [editing, setEditing] = useState<PlayerRow | null>(null);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q), 250);
     return () => clearTimeout(t);
@@ -756,6 +757,7 @@ function PlayersTab() {
             <thead>
               <tr className="text-[10px] uppercase tracking-[0.16em] text-white/40">
                 <th className="py-1.5 pr-3 font-medium">Player</th>
+                <th className="py-1.5 pr-3 font-medium">Manage</th>
                 <th className="py-1.5 pr-3 font-medium">Lvl</th>
                 <th className="py-1.5 pr-3 font-medium">Games</th>
                 <th className="py-1.5 pr-3 font-medium">Kills</th>
@@ -776,6 +778,14 @@ function PlayersTab() {
                       {p.verified && <span className="text-cyan-300">✓</span>}
                     </span>
                   </td>
+                  <td className="py-2 pr-3">
+                    <button
+                      onClick={() => setEditing(p)}
+                      className="rounded-md border border-white/15 bg-white/[0.04] px-2 py-0.5 text-[10px] uppercase tracking-wide text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200"
+                    >
+                      Manage
+                    </button>
+                  </td>
                   <td className="py-2 pr-3 tabular-nums">{p.level}</td>
                   <td className="py-2 pr-3 tabular-nums">{fmt(p.totalGames)}</td>
                   <td className="py-2 pr-3 tabular-nums">{fmt(p.totalKills)}</td>
@@ -790,7 +800,209 @@ function PlayersTab() {
           </table>
         </div>
       )}
+      {editing && <PlayerEditor player={editing} onClose={() => setEditing(null)} />}
     </Panel>
+  );
+}
+
+// ── Player account editor ──────────────────────────────────────────────────
+// Modal for direct progression edits (XP/credits as absolute set OR delta) and
+// career stat corrections. XP edits recompute the level server-side; every
+// change is audit-logged with before-values. Supports the same username
+// lookup the players table uses, so it works after a re-sort too.
+type ProgState = {
+  username: string;
+  totalXp: number;
+  level: number;
+  credits: number;
+  totalKills: number;
+  totalDeaths: number;
+  totalGames: number;
+};
+
+function PlayerEditor({ player, onClose }: { player: PlayerRow; onClose: () => void }) {
+  const [prog, setProg] = useState<ProgState | null>(null);
+  const [loadErr, setLoadErr] = useState('');
+  const [fields, setFields] = useState({ totalXp: '', credits: '', totalKills: '', totalDeaths: '', totalGames: '' });
+  const [grant, setGrant] = useState({ xp: '', credits: '' });
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void getJSON<ProgState>(`/api/admin/player/${encodeURIComponent(player.userName)}`).then((d) => {
+      if (!d) {
+        setLoadErr('No progression row for this account yet (they have never played).');
+        return;
+      }
+      setProg(d);
+      setFields({
+        totalXp: String(d.totalXp),
+        credits: String(d.credits),
+        totalKills: String(d.totalKills),
+        totalDeaths: String(d.totalDeaths),
+        totalGames: String(d.totalGames),
+      });
+    });
+  }, [player.userName]);
+
+  const post = async (url: string, body: Record<string, unknown>) => {
+    setBusy(true);
+    setMsg('');
+    setErr('');
+    try {
+      const r = await fetch(apiUrl(url), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      const data = (await r.json().catch(() => ({}))) as ProgState & { ok?: boolean; error?: string };
+      if (!r.ok || data.error) {
+        setErr(data.error === 'bad_value' ? 'Invalid value for a field.' : 'Update failed.');
+        return;
+      }
+      setProg(data);
+      setFields({
+        totalXp: String(data.totalXp),
+        credits: String(data.credits),
+        totalKills: String(data.totalKills),
+        totalDeaths: String(data.totalDeaths),
+        totalGames: String(data.totalGames),
+      });
+      setGrant({ xp: '', credits: '' });
+      setMsg('Saved.');
+    } catch {
+      setErr('Network error.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field = (label: string, key: keyof typeof fields) => (
+    <label className="block">
+      <span className="mb-1 block text-[10px] uppercase tracking-[0.16em] text-white/45">{label}</span>
+      <input
+        inputMode="numeric"
+        value={fields[key]}
+        onChange={(e) => setFields((f) => ({ ...f, [key]: e.target.value.replace(/[^0-9]/g, '') }))}
+        className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[13px] tabular-nums text-white outline-none focus:border-cyan-400/60"
+      />
+    </label>
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-white/12 bg-zinc-950 p-6">
+        <div className="mb-4 flex items-start justify-between">
+          <div>
+            <h3 className="flex items-center gap-2 text-base font-bold uppercase tracking-wide text-white">
+              {player.userName}
+              {player.verified && <span className="text-cyan-300">✓</span>}
+            </h3>
+            <p className="mt-0.5 text-[11px] text-white/45">Account management</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md border border-white/15 px-2.5 py-1 text-[11px] text-white/60 transition hover:text-white"
+          >
+            Close
+          </button>
+        </div>
+
+        {loadErr ? (
+          <p className="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">{loadErr}</p>
+        ) : !prog ? (
+          <Loading />
+        ) : (
+          <>
+            <div className="mb-5 grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-center">
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.16em] text-white/40">Level</div>
+                <div className="font-mono text-lg tabular-nums text-cyan-200">{prog.level}</div>
+              </div>
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.16em] text-white/40">XP</div>
+                <div className="font-mono text-lg tabular-nums text-amber-200">{fmt(prog.totalXp)}</div>
+              </div>
+              <div>
+                <div className="text-[9px] uppercase tracking-[0.16em] text-white/40">Credits</div>
+                <div className="font-mono text-lg tabular-nums text-emerald-200">{fmt(prog.credits)}</div>
+              </div>
+            </div>
+
+            {/* Grant deltas */}
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">Grant / remove (delta)</p>
+            <div className="mb-5 flex flex-wrap items-end gap-2">
+              <label className="block flex-1 min-w-[110px]">
+                <span className="mb-1 block text-[10px] uppercase tracking-[0.16em] text-white/45">XP ±</span>
+                <input
+                  inputMode="numeric"
+                  value={grant.xp}
+                  onChange={(e) => setGrant((g) => ({ ...g, xp: e.target.value.replace(/[^0-9-]/g, '') }))}
+                  placeholder="e.g. 500 or -200"
+                  className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[13px] text-white outline-none focus:border-cyan-400/60"
+                />
+              </label>
+              <label className="block flex-1 min-w-[110px]">
+                <span className="mb-1 block text-[10px] uppercase tracking-[0.16em] text-white/45">Credits ±</span>
+                <input
+                  inputMode="numeric"
+                  value={grant.credits}
+                  onChange={(e) => setGrant((g) => ({ ...g, credits: e.target.value.replace(/[^0-9-]/g, '') }))}
+                  placeholder="e.g. 1000"
+                  className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 font-mono text-[13px] text-white outline-none focus:border-cyan-400/60"
+                />
+              </label>
+              <button
+                onClick={() => void post(`/api/admin/player/${encodeURIComponent(player.userName)}/grant`, grant)}
+                disabled={busy || (!grant.xp && !grant.credits)}
+                className="rounded-md bg-cyan-300 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-zinc-950 transition hover:bg-cyan-200 disabled:opacity-40"
+              >
+                Apply
+              </button>
+            </div>
+
+            {/* Absolute set */}
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">Set exact values</p>
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {field('Total XP', 'totalXp')}
+              {field('Credits', 'credits')}
+              {field('Kills', 'totalKills')}
+              {field('Deaths', 'totalDeaths')}
+              {field('Games', 'totalGames')}
+            </div>
+            <button
+              onClick={() =>
+                void post(`/api/admin/player/${encodeURIComponent(player.userName)}`, {
+                  totalXp: fields.totalXp === '' ? undefined : Number(fields.totalXp),
+                  credits: fields.credits === '' ? undefined : Number(fields.credits),
+                  totalKills: fields.totalKills === '' ? undefined : Number(fields.totalKills),
+                  totalDeaths: fields.totalDeaths === '' ? undefined : Number(fields.totalDeaths),
+                  totalGames: fields.totalGames === '' ? undefined : Number(fields.totalGames),
+                })
+              }
+              disabled={busy}
+              className="w-full rounded-md border border-white/15 bg-white/[0.06] px-4 py-2.5 text-[11px] font-bold uppercase tracking-wide text-white/85 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-40"
+            >
+              Save exact values
+            </button>
+
+            {msg && <p className="mt-3 text-[12px] text-emerald-300">{msg}</p>}
+            {err && <p className="mt-3 text-[12px] text-rose-300">{err}</p>}
+            <p className="mt-4 border-t border-white/8 pt-3 text-[10px] leading-relaxed text-white/35">
+              Level is derived from XP automatically. Every change is audit-logged with
+              the previous values.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

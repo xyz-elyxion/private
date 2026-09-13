@@ -24,6 +24,10 @@ import {
   getMetricsTimeseries,
   getPlayersTable,
   getRecentMatches,
+  applyAdminProgressionDelta,
+  applyAdminProgressionPatch,
+  getAdminPlayerProgression,
+  type AdminProgressionPatch,
   getRetention,
   getWeeklyChallengeStats,
   listFeedback,
@@ -178,6 +182,148 @@ adminRouter.get('/lookup', (req, res) => {
     return;
   }
   res.json({ username: target.username, admin: target.isAdmin, verified: target.isVerified });
+});
+
+// ── Player account management ────────────────────────────────────────────────
+// Direct edits to a player's progression: XP/level/credits and career stat
+// counters. Session-only (denyToken) and every mutation is audit-logged with
+// the before/after values so mistakes are traceable and reversible by hand.
+
+adminRouter.get('/player/:username', (req, res) => {
+  const target = findAccountByName(cleanUsername(req.params.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const prog = getAdminPlayerProgression(target.id);
+  if (!prog) {
+    res.status(404).json({ error: 'no_progression' });
+    return;
+  }
+  res.json({
+    id: target.id,
+    username: target.username,
+    isAdmin: target.isAdmin,
+    isVerified: target.isVerified,
+    ...prog,
+  });
+});
+
+// Apply a partial patch to a player's progression. Only whitelisted fields are
+// accepted; values are clamped to sane ranges; XP changes recompute the level
+// server-side (level is derived, never stored raw). Audit-logged.
+adminRouter.post('/player/:username', (req, res) => {
+  if (denyToken(req, res)) return;
+  const target = findAccountByName(cleanUsername(req.params.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const patch: AdminProgressionPatch = {};
+
+  const num = (v: unknown): number | null => {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+
+  if ('totalXp' in body) {
+    const v = num(body.totalXp);
+    if (v === null || v > 1_000_000_000) {
+      res.status(400).json({ error: 'bad_value', field: 'totalXp' });
+      return;
+    }
+    patch.totalXp = v;
+  }
+  if ('credits' in body) {
+    const v = num(body.credits);
+    if (v === null || v > 100_000_000) {
+      res.status(400).json({ error: 'bad_value', field: 'credits' });
+      return;
+    }
+    patch.credits = v;
+  }
+  if ('totalKills' in body) {
+    const v = num(body.totalKills);
+    if (v === null || v > 10_000_000) {
+      res.status(400).json({ error: 'bad_value', field: 'totalKills' });
+      return;
+    }
+    patch.totalKills = v;
+  }
+  if ('totalDeaths' in body) {
+    const v = num(body.totalDeaths);
+    if (v === null || v > 10_000_000) {
+      res.status(400).json({ error: 'bad_value', field: 'totalDeaths' });
+      return;
+    }
+    patch.totalDeaths = v;
+  }
+  if ('totalGames' in body) {
+    const v = num(body.totalGames);
+    if (v === null || v > 1_000_000) {
+      res.status(400).json({ error: 'bad_value', field: 'totalGames' });
+      return;
+    }
+    patch.totalGames = v;
+  }
+  if (Object.keys(patch).length === 0) {
+    res.status(400).json({ error: 'no_fields' });
+    return;
+  }
+
+  const result = applyAdminProgressionPatch(target.id, patch);
+  if (!result) {
+    res.status(404).json({ error: 'no_progression' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: 'admin.player_edit',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { target: target.username, patch, before: result.before },
+    ip: req.ip,
+  });
+  res.json({ ok: true, username: target.username, ...result.after });
+});
+
+// Grant (or revoke) credits/XP as a DELTA rather than an absolute set — the
+// friendlier action for rewards/compensation. Audit-logged with the delta.
+adminRouter.post('/player/:username/grant', (req, res) => {
+  if (denyToken(req, res)) return;
+  const target = findAccountByName(cleanUsername(req.params.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const xp = Math.floor(Number(body.xp));
+  const credits = Math.floor(Number(body.credits));
+  if (!Number.isFinite(xp) && !Number.isFinite(credits)) {
+    res.status(400).json({ error: 'no_fields' });
+    return;
+  }
+  const clampDelta = (n: number, max: number) => Math.max(-max, Math.min(max, Math.floor(n)));
+  const result = applyAdminProgressionDelta(target.id, {
+    xp: Number.isFinite(xp) ? clampDelta(xp, 1_000_000_000) : 0,
+    credits: Number.isFinite(credits) ? clampDelta(credits, 100_000_000) : 0,
+  });
+  if (!result) {
+    res.status(404).json({ error: 'no_progression' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: 'admin.player_grant',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { target: target.username, xp, credits },
+    ip: req.ip,
+  });
+  res.json({ ok: true, username: target.username, ...result.after });
 });
 
 // Update a player feedback row's moderation status (open → ack → resolved /
