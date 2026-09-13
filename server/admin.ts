@@ -40,6 +40,18 @@ import {
 } from './db';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 import { sendPortalZip } from './portal-zip';
+import {
+  getActiveBan,
+  issueBan,
+  liftBan,
+  listActiveBans,
+  listBanHistory,
+  listPlayerViolations,
+  listRecentViolations,
+  getBanEvidence,
+  attachBanEvidence,
+} from './bans';
+import { getWeeklyReplayGz } from './db';
 
 // App version for the portal README metadata (overridable via env for CI).
 const APP_VERSION = (process.env.APP_VERSION ?? '').trim() || '1.0.0';
@@ -68,6 +80,17 @@ let liveSource: () => LiveCounts = () => ({
 });
 export function setLiveCountsSource(fn: () => LiveCounts): void {
   liveSource = fn;
+}
+
+// Socket-drop hook for freshly banned players. index.ts injects the game
+// server's closer after the WS layer attaches; null until then (and absent
+// in contexts without the game socket).
+let dropSockets: ((playerId: string, reason: string) => void) | null = null;
+export function setBanSocketDropper(fn: (playerId: string, reason: string) => void): void {
+  dropSockets = fn;
+}
+function dropPlayerSockets(playerId: string, reason: string): void {
+  dropSockets?.(playerId, reason);
 }
 
 const API_TOKEN = process.env.ADMIN_API_TOKEN || '';
@@ -568,4 +591,153 @@ adminRouter.get('/portal-zip', async (req, res) => {
   // Keep the request alive until the archive has fully flushed to the socket
   // (the download response only completes when the zip is fully written).
   await result.done;
+});
+
+
+// ── Anticheat & bans ──────────────────────────────────────────────────────
+// Read: recent violation feed + ban list/history (token or session).
+// Mutate: ban / unban / auto-metrics (session-only, audit-logged).
+
+adminRouter.get('/anticheat/violations', (req, res) => {
+  const limit = intParam(req.query.limit, 100);
+  res.json({ violations: listRecentViolations(limit) });
+});
+
+adminRouter.get('/anticheat/violations/:username', (req, res) => {
+  const target = findAccountByName(cleanUsername(req.params.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.json({ playerId: target.id, username: target.username, violations: listPlayerViolations(target.id) });
+});
+
+adminRouter.get('/bans', (_req, res) => {
+  res.json({ active: listActiveBans(200), history: listBanHistory(200) });
+});
+
+// Issue a ban. Body: { username, reason, duration } where duration is one of
+// '1h' | '6h' | '1d' | '7d' | '30d' | 'permanent' (default 'permanent').
+adminRouter.post('/bans', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const target = findAccountByName(cleanUsername(body.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const DURATIONS: Record<string, number | null> = {
+    '1h': 60 * 60_000,
+    '6h': 6 * 60 * 60_000,
+    '1d': 24 * 60 * 60_000,
+    '7d': 7 * 24 * 60 * 60_000,
+    '30d': 30 * 24 * 60 * 60_000,
+    permanent: null,
+  };
+  const durKey = typeof body.duration === 'string' && body.duration in DURATIONS ? body.duration : 'permanent';
+  const reason = typeof body.reason === 'string' ? body.reason.slice(0, 500) : '';
+  const admin = (req as unknown as AdminRequest).admin;
+  const ban = issueBan({
+    playerId: target.id,
+    playerName: target.username,
+    reason: reason || `Banned by ${admin.username}`,
+    durationMs: DURATIONS[durKey],
+    source: 'admin',
+    issuedBy: admin.id,
+  });
+  logEvent({
+    event: 'admin.ban',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { target: target.username, duration: durKey, reason, banId: ban.id },
+    ip: req.ip,
+  });
+  // If the banned player is connected right now, drop their socket(s) immediately.
+  dropPlayerSockets?.(target.id, `Banned: ${ban.reason}`);
+  res.json({ ok: true, ban });
+});
+
+adminRouter.post('/bans/:id/lift', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  const lifted = liftBan(id, admin.id);
+  if (!lifted) {
+    res.status(404).json({ error: 'not_found_or_already_lifted' });
+    return;
+  }
+  logEvent({
+    event: 'admin.unban',
+    actorId: admin.id,
+    actorName: admin.username,
+    detail: { banId: id },
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+// Check a player's ban status (used by the dashboard player editor).
+adminRouter.get('/bans/status/:username', (req, res) => {
+  const target = findAccountByName(cleanUsername(req.params.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.json({ ban: getActiveBan(target.id) });
+});
+
+// Attach a replay "clip" to a ban: the dashboard records which replay belongs
+// to the evidence trail. Body: { note? }. The replay locator is the player's
+// stored weekly replay (the rewatchable run nearest the ban).
+adminRouter.post('/bans/:id/evidence', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const note = typeof body.note === 'string' ? body.note.slice(0, 300) : '';
+  // Resolve the banned player from the ban id via the history list.
+  const ban = listBanHistory(500).find((b) => b.id === id);
+  if (!ban) {
+    res.status(404).json({ error: 'ban_not_found' });
+    return;
+  }
+  attachBanEvidence(id, `weekly:${ban.playerId}`, note || `Replay attached by admin`);
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: 'admin.ban_evidence',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: ban.playerId,
+    detail: { banId: id, note },
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+// Fetch the evidence clips for a ban (locator + availability check).
+adminRouter.get('/bans/:id/evidence', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  const ban = listBanHistory(500).find((b) => b.id === id);
+  if (!ban) {
+    res.status(404).json({ error: 'ban_not_found' });
+    return;
+  }
+  const evidence = getBanEvidence(id).map((e) => {
+    const m = /^weekly:(.+)$/.exec(e.replayKey);
+    const available = m ? !!getWeeklyReplayGz(m[1]) : false;
+    return { ...e, playerId: m?.[1] ?? '', available };
+  });
+  res.json({ evidence });
 });

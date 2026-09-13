@@ -22,7 +22,7 @@ import { seasonRouter } from './season';
 import { feedbackRouter } from './feedback';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { crazyGamesRouter } from './crazygames';
-import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
+import { adminApiTokenEnabled, adminRouter, setBanSocketDropper, setLiveCountsSource } from './admin';
 import { donateRouter } from './donations';
 import { syncAdminsFromEnv } from './db';
 import { attachElyxionWs } from './elyxion-game';
@@ -212,6 +212,7 @@ app.get('/api/health', (_req, res) => {
 });
 // Live concurrency for the lobby/landing "N playing now" readout (set after the
 // game WS is attached below).
+let closeAccountSockets: (playerId: string, reason: string) => void = () => {};
 let liveCounts: () => {
   online: number;
   inMatch: number;
@@ -342,9 +343,11 @@ const instagibWss = new WebSocketServer({
   maxPayload: 16 * 1024,
   perMessageDeflate: false,
 });
-({ liveCounts } = attachElyxionWs(instagibWss));
+({ liveCounts, closeAccountSockets } = attachElyxionWs(instagibWss));
 // Let the token-gated metrics API report live concurrency too (one-call /report).
 setLiveCountsSource(liveCounts);
+// Banning a connected player drops their live socket(s) immediately.
+setBanSocketDropper(closeAccountSockets);
 instagibWss.on('error', (err) => console.error('[ws] server error', err));
 
 // Connection caps so a flood can't exhaust slots/memory on a public alpha.

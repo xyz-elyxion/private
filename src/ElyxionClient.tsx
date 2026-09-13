@@ -5133,7 +5133,7 @@ function WeeklyChallengeModal({
 // the runner's eyes) with play/pause/scrub/speed controls.
 const REPLAY_SPEEDS = [0.5, 1, 2] as const;
 
-function ReplayViewerOverlay({
+export function ReplayViewerOverlay({
   playerId,
   playerName,
   settings,
@@ -5329,15 +5329,34 @@ function ReplayViewerOverlay({
             <span className='w-12 shrink-0 text-right text-[11px] tabular-nums text-white/70'>
               {fmtChallengeTime(t * 1000)}
             </span>
-            <input
-              type='range'
-              min={0}
-              max={Math.max(0.1, duration)}
-              step={0.05}
-              value={Math.min(t, duration)}
-              onChange={(ev) => viewerRef.current?.seek(parseFloat(ev.target.value))}
-              className='h-1.5 flex-1 cursor-pointer accent-cyan-400'
-            />
+            <div className='relative flex-1'>
+              <input
+                type='range'
+                min={0}
+                max={Math.max(0.1, duration)}
+                step={0.05}
+                value={Math.min(t, duration)}
+                onChange={(ev) => viewerRef.current?.seek(parseFloat(ev.target.value))}
+                aria-label='Replay timeline'
+                className='h-1.5 w-full cursor-pointer accent-cyan-400'
+              />
+              {/* Kill markers: click one to jump the replay to that moment. */}
+              {(state?.kills ?? []).map((k, i) => (
+                <button
+                  key={`${k.t}-${i}`}
+                  title={`${k.killerName} killed ${k.victimName}${k.headshot ? ' (headshot)' : ''}`}
+                  onClick={() => viewerRef.current?.seek(k.t)}
+                  style={{ left: `${Math.min(100, (k.t / Math.max(0.1, duration)) * 100)}%` }}
+                  className={`absolute top-1/2 z-10 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border transition hover:scale-125 ${
+                    k.killerId === playerId
+                      ? 'border-cyan-200 bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]'
+                      : k.headshot
+                        ? 'border-rose-200 bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.7)]'
+                        : 'border-white/60 bg-white/80'
+                  }`}
+                />
+              ))}
+            </div>
             <span className='w-12 shrink-0 text-[11px] tabular-nums text-white/40'>
               {fmtChallengeTime(duration * 1000)}
             </span>

@@ -77,6 +77,43 @@ import type { IncomingMessage } from 'node:http';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
 import { resolveCgSocketAccount } from './crazygames';
+import { autoBanIfWarranted, getActiveBan, logAnticheatViolation } from './bans';
+
+// ── Anticheat violation reporting ───────────────────────────────────────────
+// Guards call reportViolation() on suspicious input. Everything is logged as
+// evidence; when a player's violations in the window cross the threshold they
+// are auto-banned for BAN_DURATION_MS and their live socket is closed.
+const AC_WINDOW_MS = 10 * 60_000; // violation lookback window
+const AC_THRESHOLD = 12; // violations within the window before an auto-ban
+const AC_BAN_DURATION_MS = 24 * 60 * 60_000; // 24h auto-ban
+
+function reportViolation(
+  c: ClientRecord,
+  guard: string,
+  detail: string,
+  roomId?: RoomId,
+): void {
+  if (!c.playerId) return; // guests: evidence is per-account only
+  logAnticheatViolation({ playerId: c.playerId, playerName: c.name, guard, detail, roomId });
+  const ban = autoBanIfWarranted({
+    playerId: c.playerId,
+    playerName: c.name,
+    guard,
+    windowMs: AC_WINDOW_MS,
+    threshold: AC_THRESHOLD,
+    durationMs: AC_BAN_DURATION_MS,
+  });
+  if (ban) {
+    try {
+      if (c.socket.readyState === c.socket.OPEN) {
+        c.socket.send(JSON.stringify({ type: 'error', message: `Banned: ${ban.reason}` }));
+      }
+      c.socket.close();
+    } catch {
+      // ignore
+    }
+  }
+}
 
 // Snapshot rate, paired with the client's 64Hz sim + 64Hz position upload so
 // the whole pipeline runs on one cadence. The lean-snapshot split (static
@@ -577,6 +614,25 @@ export function attachElyxionWs(wss: WebSocketServer) {
 
   const sendRaw = (socket: WebSocket, msg: unknown) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
+  };
+
+  // Close every socket belonging to an account (ban enforcement). Called by the
+  // admin ban endpoint via the injected hook — the banned player is dropped
+  // mid-session, not just on next connect.
+  const closeAccountSockets = (bannedPlayerId: string, reason: string) => {
+    for (const c of [...clients.values()]) {
+      if (c.playerId !== bannedPlayerId) continue;
+      try {
+        sendRaw(c.socket, { type: 'error', message: reason });
+        c.socket.close();
+      } catch {
+        // ignore
+      }
+      if (c.roomId) leaveRoom(c);
+      if (c.spectating) leaveSpectate(c);
+      listers.delete(c.id);
+      clients.delete(c.id);
+    }
   };
   const broadcastRoom = (room: Room, msg: unknown, exceptId?: ClientId) => {
     const data = JSON.stringify(msg);
@@ -1461,7 +1517,10 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // Fire-rate gate (#2): RAIL_COOLDOWN is only client-enforced, so a modified
     // client could stream shots. Drop anything faster than the cooldown (minus
     // a small jitter tolerance) and stamp the accepted shot time.
-    if (now - shooter.lastShotMs < RAIL_COOLDOWN * 1000 - FIRE_RATE_TOLERANCE_MS) return;
+    if (now - shooter.lastShotMs < RAIL_COOLDOWN * 1000 - FIRE_RATE_TOLERANCE_MS) {
+      reportViolation(shooter, 'fire_rate', `shot ${Math.round(now - shooter.lastShotMs)}ms after previous`, room.id);
+      return;
+    }
 
     let { dx, dy, dz } = msg;
     const dl = Math.hypot(dx, dy, dz);
@@ -1479,7 +1538,15 @@ export function attachElyxionWs(wss: WebSocketServer) {
     const ex = shooter.pos.x;
     const ey = shooter.pos.y + EYE_HEIGHT;
     const ez = shooter.pos.z;
-    if (Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez) > SHOT_ORIGIN_MAX_DIST) return;
+    if (Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez) > SHOT_ORIGIN_MAX_DIST) {
+      reportViolation(
+        shooter,
+        'shot_origin',
+        `origin ${Math.round(Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez) * 10) / 10}m from server eye`,
+        room.id,
+      );
+      return;
+    }
     shooter.lastShotMs = now;
     shooter.lastActiveMs = now; // firing counts as activity (AFK timer)
     // Firing ends your own spawn invuln — you can't shoot from behind protection.
@@ -1652,6 +1719,17 @@ export function attachElyxionWs(wss: WebSocketServer) {
     acct: { id: string; username: string; isAdmin: boolean; isVerified: boolean },
   ) {
     if (record.playerId === acct.id) return;
+    // Account bind mid-socket (CrazyGames token flow): check bans too.
+    const activeBan = getActiveBan(acct.id);
+    if (activeBan) {
+      try {
+        sendRaw(record.socket, { type: 'error', message: `Banned: ${activeBan.reason}` });
+        record.socket.close();
+      } catch {
+        // ignore
+      }
+      return;
+    }
     record.playerId = acct.id;
     record.name = acct.username;
     record.admin = acct.isAdmin;
@@ -1685,6 +1763,19 @@ export function attachElyxionWs(wss: WebSocketServer) {
     // cookie path would have worked anyway).
     const playerId =
       accountIdFromCookieHeader(req?.headers?.cookie) || (sessParam ? userIdFromSession(sessParam) : '');
+    // BAN ENFORCEMENT: a banned account is dropped at the door.
+    if (playerId) {
+      const ban = getActiveBan(playerId);
+      if (ban) {
+        try {
+          socket.send(JSON.stringify({ type: 'error', message: `Banned: ${ban.reason}` }));
+          socket.close();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+    }
     // The display name is SERVER-AUTHORITATIVE — never taken from the client.
     // A logged-in player gets their account username (moderated at registration,
     // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a
@@ -2236,6 +2327,12 @@ export function attachElyxionWs(wss: WebSocketServer) {
               // Clamp BOTH axes — vertical was previously untrusted, letting a
               // client fly/noclip straight up (moving its hitbox + snapshot).
               if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
+                reportViolation(
+                  record,
+                  'move_speed',
+                  `${Math.round(horiz / dtSec)} m/s horiz, ${Math.round(vert / dtSec)} m/s vert`,
+                  record.roomId ?? undefined,
+                );
                 break; // drop, keep last good pos
               }
             }
@@ -2592,5 +2689,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
         loopLagMaxMs: Math.round(loopLagMaxMs), // peak lag, rolling ≤30s window
       };
     },
+    closeAccountSockets,
+
   };
 }

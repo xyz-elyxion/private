@@ -28,6 +28,15 @@ export type ReplayViewerState = {
   atEnd: boolean;
   speed: number;
   ready: boolean;
+  /** Kill events (with names) for timeline markers / jump-to-kill. */
+  kills: ReplayViewerKill[];
+};
+export type ReplayViewerKill = {
+  t: number;
+  killerId: string;
+  killerName: string;
+  victimName: string;
+  headshot: boolean;
 };
 
 // Mirror the player's own graphics settings so the replay looks like the game.
@@ -61,6 +70,7 @@ export class ReplayViewer {
   private ready = false;
   private lastEmit = -1;
   private resizeHandler: () => void;
+  private killList: ReplayViewerKill[] = [];
   private up = new THREE.Vector3(0, 1, 0);
 
   constructor(
@@ -102,6 +112,14 @@ export class ReplayViewer {
 
     const frames = this.data.frames;
     this.endT = frames.length ? frames[frames.length - 1].t : this.data.durationMs / 1000;
+    // Timeline markers: kill events carry resolved names for the scrubber UI.
+    this.killList = this.data.kills.map((k) => ({
+      t: k.t,
+      killerId: k.killerId,
+      killerName: k.killerName,
+      victimName: k.victimName,
+      headshot: k.headshot,
+    }));
 
     const source: ReplaySource = {
       profiles: new Map(this.data.profiles.map((p) => [p.id, p])),
@@ -204,6 +222,7 @@ export class ReplayViewer {
       atEnd: p ? p.reachedEnd : false,
       speed: p ? p.speed : 1,
       ready: this.ready,
+      kills: this.killList,
     });
   }
 
