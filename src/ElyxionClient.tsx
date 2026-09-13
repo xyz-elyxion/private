@@ -5790,11 +5790,16 @@ function Lobby({
             {banNotice && (
               <div
                 role='alert'
-                className='deck-rise rounded-xl border border-rose-500/40 bg-rose-500/10 px-5 py-4 font-mono text-sm text-rose-200'
+                className='clip-deck deck-rise flex items-center gap-3 border border-rose-400/30 bg-black/60 px-5 py-3.5 backdrop-blur-sm'
                 style={{ animationDelay: '200ms' }}
               >
-                <span className='font-bold uppercase tracking-[0.16em] text-rose-300'>Banned — </span>
-                {banNotice.startsWith('Banned') ? banNotice.replace(/^Banned:\s*/, '') : banNotice}
+                <span className='inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.9)]' />
+                <span className='font-display text-[11px] font-bold uppercase tracking-[0.22em] text-rose-300'>
+                  Banned
+                </span>
+                <span className='font-mono text-xs text-white/70'>
+                  {banNotice.startsWith('Banned') ? banNotice.replace(/^Banned:\s*/, '') : banNotice}
+                </span>
               </div>
             )}
 
