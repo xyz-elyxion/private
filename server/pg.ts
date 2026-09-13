@@ -128,6 +128,19 @@ if (Pool) {
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
       application_name: 'elyxion-arena',
+      // Force IPv4 when the DB host has an A record. Managed PG hosts often
+      // advertise both A + AAAA; containers frequently have no IPv6 route and
+      // every connect dies with ENETUNREACH. The custom lookup keeps the
+      // hostname (so TLS/SNI and cert verification still work) while picking
+      // the IPv4 address for the actual socket. If there is no A record the
+      // lookup falls back to the system result (IPv6), which then fails with a
+      // clearer picture: the provider only exposes v6 and the host has no v6.
+      lookup: (hostname, options, callback) => {
+        dns.lookup(hostname, { ...(options || {}), family: 4 }, (err, address, family) => {
+          if (err) dns.lookup(hostname, options || {}, callback);
+          else callback(null, address, family);
+        });
+      },
     });
   } catch (e) {
     done({ ok: false, error: 'pg_pool_init: ' + ((e && e.message) || String(e)) });
