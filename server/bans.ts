@@ -140,7 +140,7 @@ export function issueBan(b: {
   playerName: string;
   reason: string;
   durationMs: number | null;
-  source: 'admin' | 'anticheat';
+  source: 'admin' | 'anticheat' | 'moderation';
   issuedBy: string;
 }): BanInfo {
   const now = Date.now();

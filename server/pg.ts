@@ -613,8 +613,11 @@ export class PgDatabase {
   prepare(sql: string): PgStatement {
     let stmt = this.stmtCache.get(sql);
     if (!stmt) {
+      // Detect INSERT OR IGNORE on the RAW sql: translateSql rewrites the verb
+      // to a plain INSERT, so the marker is gone from the translated text and
+      // checking it there would never fire (regression: equip/profile 500s).
+      const conflictNoop = isInsertOrIgnore(sql);
       const translated = translateSql(sql);
-      const conflictNoop = isInsertOrIgnore(translated);
       const names = extractNamedParams(translated);
       const numbered = names
         ? replaceNamedParams(numberPlaceholdersSafe(translated), names)
@@ -631,12 +634,15 @@ export class PgDatabase {
   exec(sql: string): unknown {
     // DDL / multi-statement path (schema bootstrap + migrations). PG's simple
     // query protocol accepts multi-statement strings with no binds.
-    const translated = translateSql(sql);
-    const statements = splitStatements(translated);
+    // Split the RAW sql so INSERT OR IGNORE is still detectable per statement,
+    // then translate each statement individually (translation strips the verb,
+    // which would hide the marker if we split after translating).
+    const statements = splitStatements(sql);
     for (const s of statements) {
       if (s.trim().length === 0) continue;
       const conflictNoop = isInsertOrIgnore(s);
-      this.worker.exec(conflictNoop ? appendConflictDoNothing(s) : s, []);
+      const translated = translateSql(s);
+      this.worker.exec(conflictNoop ? appendConflictDoNothing(translated) : translated, []);
     }
     return undefined;
   }
