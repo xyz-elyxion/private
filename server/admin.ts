@@ -618,12 +618,12 @@ adminRouter.get('/portal-zip', async (req, res) => {
 // Read: recent violation feed + ban list/history (token or session).
 // Mutate: ban / unban / auto-metrics (session-only, audit-logged).
 
-adminRouter.get('/anticheat/violations', (req, res) => {
+adminRouter.get('/anticheat/violations', requireRole('mod'), (req, res) => {
   const limit = intParam(req.query.limit, 100);
   res.json({ violations: listRecentViolations(limit) });
 });
 
-adminRouter.get('/anticheat/violations/:username', (req, res) => {
+adminRouter.get('/anticheat/violations/:username', requireRole('mod'), (req, res) => {
   const target = findAccountByName(cleanUsername(req.params.username).toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
@@ -632,13 +632,13 @@ adminRouter.get('/anticheat/violations/:username', (req, res) => {
   res.json({ playerId: target.id, username: target.username, violations: listPlayerViolations(target.id) });
 });
 
-adminRouter.get('/bans', (_req, res) => {
+adminRouter.get('/bans', requireRole('mod'), (_req, res) => {
   res.json({ active: listActiveBans(200), history: listBanHistory(200) });
 });
 
 // Issue a ban. Body: { username, reason, duration } where duration is one of
 // '1h' | '6h' | '1d' | '7d' | '30d' | 'permanent' (default 'permanent').
-adminRouter.post('/bans', (req, res) => {
+adminRouter.post('/bans', requireRole('mod'), (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const target = findAccountByName(cleanUsername(body.username).toLowerCase());
@@ -678,7 +678,7 @@ adminRouter.post('/bans', (req, res) => {
   res.json({ ok: true, ban });
 });
 
-adminRouter.post('/bans/:id/lift', (req, res) => {
+adminRouter.post('/bans/:id/lift', requireRole('mod'), (req, res) => {
   if (denyToken(req, res)) return;
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
@@ -702,7 +702,7 @@ adminRouter.post('/bans/:id/lift', (req, res) => {
 });
 
 // Check a player's ban status (used by the dashboard player editor).
-adminRouter.get('/bans/status/:username', (req, res) => {
+adminRouter.get('/bans/status/:username', requireRole('mod'), (req, res) => {
   const target = findAccountByName(cleanUsername(req.params.username).toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
@@ -714,7 +714,7 @@ adminRouter.get('/bans/status/:username', (req, res) => {
 // Attach a replay "clip" to a ban: the dashboard records which replay belongs
 // to the evidence trail. Body: { note? }. The replay locator is the player's
 // stored weekly replay (the rewatchable run nearest the ban).
-adminRouter.post('/bans/:id/evidence', (req, res) => {
+adminRouter.post('/bans/:id/evidence', requireRole('mod'), (req, res) => {
   if (denyToken(req, res)) return;
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
@@ -743,7 +743,7 @@ adminRouter.post('/bans/:id/evidence', (req, res) => {
 });
 
 // Fetch the evidence clips for a ban (locator + availability check).
-adminRouter.get('/bans/:id/evidence', (req, res) => {
+adminRouter.get('/bans/:id/evidence', requireRole('mod'), (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     res.status(400).json({ error: 'bad_id' });

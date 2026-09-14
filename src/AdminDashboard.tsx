@@ -1375,6 +1375,14 @@ export default function AdminDashboard() {
           {/* Bottom: back to arena (portal zip lives in the top bar) */}
           <div className="mt-auto flex flex-col gap-0.5 border-t border-white/10 pt-3">
             <a
+              href="/moderation"
+              className="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-amber-200/60 transition hover:bg-white/5 hover:text-amber-200"
+              title="Standalone moderation panel - reports, bans, staff roles"
+            >
+              <Gavel className="h-4 w-4 text-amber-300/50 transition-colors group-hover:text-amber-300" strokeWidth={1.5} />
+              <span className="text-[13px] tracking-wide">Moderation panel</span>
+            </a>
+            <a
               href="/play"
               className="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-white/50 transition hover:bg-white/5 hover:text-white/90"
             >
