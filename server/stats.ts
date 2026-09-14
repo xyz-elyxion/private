@@ -99,8 +99,16 @@ rateSweep.unref?.();
 export const statsRouter = Router();
 
 statsRouter.get('/stats', (req, res) => {
-  const id = playerId(req);
-  res.json({ stats: getStats(id) });
+  try {
+    const id = playerId(req);
+    res.json({ stats: getStats(id) });
+  } catch (e) {
+    // A DB hiccup (PG worker timeout / pool error) must not surface as a bare
+    // 500 — log the cause and degrade to zeroed stats so the client keeps a
+    // usable HUD instead of an error path.
+    console.error('[stats] GET /stats failed:', (e as Error)?.message);
+    res.json({ stats: getStats('') });
+  }
 });
 
 statsRouter.post('/stats', (req, res) => {
