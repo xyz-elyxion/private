@@ -14,7 +14,13 @@ import { hasAcceptedLegal, LegalAgreeCheckbox, LegalDocModal } from './legal';
 // self-hosted site no token is ever stored or sent: the cookie path is used
 // exclusively.
 
-export type Account = { username: string; isAdmin: boolean; isVerified: boolean } | null;
+export type StaffRole = 'admin' | 'mod' | 'jrmod' | 'player';
+export type Account = {
+  username: string;
+  isAdmin: boolean;
+  isVerified: boolean;
+  role?: StaffRole;
+} | null;
 
 export type AuthApi = {
   account: Account;
@@ -27,7 +33,7 @@ export type AuthApi = {
 
 type AuthResponse = {
   token?: string;
-  user?: { username: string; isAdmin?: boolean; isVerified?: boolean };
+  user?: { username: string; isAdmin?: boolean; isVerified?: boolean; role?: StaffRole };
 };
 
 const TOKEN_KEY = 'elyxion-session-token';
@@ -131,7 +137,7 @@ export function useAuth(): AuthApi {
     if (r.ok) {
       const u = r.data?.user;
       saveToken(r.data?.token ?? null); // portal fallback store (no-op same-origin)
-      setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified });
+      setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified, role: u?.role });
       return null;
     }
     return r.error ?? 'invalid';
@@ -142,7 +148,7 @@ export function useAuth(): AuthApi {
     if (r.ok) {
       const u = r.data?.user;
       saveToken(r.data?.token ?? null); // portal fallback store (no-op same-origin)
-      setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified });
+      setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified, role: u?.role });
       return null;
     }
     return r.error ?? 'failed';

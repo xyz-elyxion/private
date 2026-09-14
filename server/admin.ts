@@ -31,12 +31,20 @@ import {
   getRetention,
   getWeeklyChallengeStats,
   listFeedback,
+  listPlayerReports,
+  listStaff,
   logEvent,
+  playerReportCounts,
   setAdmin,
   setFeedbackStatus,
+  setPlayerReportStatus,
+  setRole,
   setVerified,
+  roleRank,
   type AccountInfo,
   type FeedbackStatus,
+  type ReportStatus,
+  type StaffRole,
 } from './db';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 import { sendPortalZip } from './portal-zip';
@@ -111,7 +119,7 @@ function tokenOk(req: Request): boolean {
 
 // Synthetic identity for a token caller (never used to mutate — denyToken blocks
 // that — so it never lands in an audit row).
-const TOKEN_ADMIN: AccountInfo = { id: 'api-token', username: 'api-token', isAdmin: true, isVerified: false };
+const TOKEN_ADMIN: AccountInfo = { id: 'api-token', username: 'api-token', isAdmin: true, isVerified: false, role: 'admin' };
 
 // The current request's admin account, or null if the caller isn't an admin.
 function currentAdmin(req: Request): AccountInfo | null {
@@ -138,6 +146,18 @@ const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
   res.status(403).json({ error: 'forbidden' });
 };
 adminRouter.use(requireAdmin);
+
+// Role tiers: 'admin' = full dashboard; 'mod' = moderation panel (bans,
+// reports, anticheat feed); 'jrmod' = reports queue + watch only. The base
+// requireAdmin above still admits any staff tier plus the API token.
+function callerRole(req: Request): StaffRole {
+  const admin = (req as unknown as AdminRequest).admin;
+  return admin && admin.id !== 'api-token' ? admin.role : 'admin';
+}
+const requireRole = (min: StaffRole) => (req: Request, res: Response, next: NextFunction) => {
+  if (roleRank(callerRole(req)) >= roleRank(min)) return next();
+  res.status(403).json({ error: 'insufficient_role' });
+};
 
 // Guard for state-changing routes: a read-only API token may not mutate — only a
 // real logged-in admin session can. Returns true (and responds 403) when blocked.
@@ -740,4 +760,163 @@ adminRouter.get('/bans/:id/evidence', (req, res) => {
     return { ...e, playerId: m?.[1] ?? '', available };
   });
   res.json({ evidence });
+});
+
+// ── Moderation panel (role-scoped) ───────────────────────────────────────────
+// Separate from anticheat: player reports from the in-game report action,
+// role management, and the quick player-action toolkit. Anticheat/bans stay on
+// their own tab; these routes serve the "Moderation" tab.
+//   jrmod → view reports + resolve/dismiss; mod → + bans & verified flag;
+//   admin → + role management.
+
+// Staff roster with roles (admin only — only admins may change roles).
+adminRouter.get('/moderation/staff', requireRole('admin'), (_req, res) => {
+  res.json({ staff: listStaff() });
+});
+
+// Promote/demote a staff member's role. Body: { username, role }. An admin
+// cannot demote themselves (avoids locking out the last admin).
+adminRouter.post('/moderation/staff/role', requireRole('admin'), (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const target = findAccountByName(cleanUsername(body.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const role = body.role as StaffRole;
+  if (role !== 'admin' && role !== 'mod' && role !== 'jrmod' && role !== 'player') {
+    res.status(400).json({ error: 'bad_role' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  if (target.id === admin.id && role !== 'admin') {
+    res.status(400).json({ error: 'cannot_demote_self' });
+    return;
+  }
+  setRole(target.id, role);
+  logEvent({
+    event: 'admin.set_role',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { username: target.username, role },
+    ip: req.ip,
+  });
+  res.json({ ok: true, username: target.username, role });
+});
+
+// Player reports queue. Query: ?status=open|resolved|dismissed|all &target= &limit= &before=
+adminRouter.get('/moderation/reports', requireRole('jrmod'), (req, res) => {
+  const before = intParam(req.query.before, 0);
+  const status = typeof req.query.status === 'string' ? req.query.status : 'open';
+  const target = typeof req.query.target === 'string' ? req.query.target.toLowerCase() : '';
+  res.json({
+    reports: listPlayerReports({
+      limit: intParam(req.query.limit, 50),
+      beforeId: before > 0 ? before : undefined,
+      status,
+      targetLower: target || undefined,
+    }),
+    counts: playerReportCounts(),
+  });
+});
+
+// Resolve or dismiss a report. Body: { status: 'resolved' | 'dismissed' }.
+adminRouter.post('/moderation/reports/:id/status', requireRole('jrmod'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const status = body.status as ReportStatus;
+  if (status !== 'resolved' && status !== 'dismissed') {
+    res.status(400).json({ error: 'bad_status' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  const ok = setPlayerReportStatus(id, status, admin.username);
+  if (!ok) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  logEvent({
+    event: 'mod.report_' + status,
+    actorId: admin.id,
+    actorName: admin.username,
+    detail: { reportId: id, status },
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+// Quick player action: issue a ban straight from the reports queue (mod+).
+// Thin wrapper over the existing ban logic — same durations, same audit trail.
+adminRouter.post('/moderation/ban', requireRole('mod'), (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const target = findAccountByName(cleanUsername(body.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const DURATIONS: Record<string, number | null> = {
+    '1h': 60 * 60_000,
+    '6h': 6 * 60 * 60_000,
+    '1d': 24 * 60 * 60_000,
+    '7d': 7 * 24 * 60 * 60_000,
+    '30d': 30 * 24 * 60 * 60_000,
+    permanent: null,
+  };
+  const durKey = typeof body.duration === 'string' && body.duration in DURATIONS ? body.duration : '1d';
+  const reason = typeof body.reason === 'string' ? body.reason.slice(0, 500) : '';
+  const admin = (req as unknown as AdminRequest).admin;
+  // jrmods can't be banned by other staff; admins can't be banned except by admins.
+  const targetStaff = roleRank(target.role);
+  if (targetStaff >= roleRank(callerRole(req)) && callerRole(req) !== 'admin') {
+    res.status(403).json({ error: 'insufficient_role' });
+    return;
+  }
+  const ban = issueBan({
+    playerId: target.id,
+    playerName: target.username,
+    reason: reason || `Banned by ${admin.username} (moderation)`,
+    durationMs: DURATIONS[durKey],
+    source: 'moderation',
+    issuedBy: admin.id,
+  });
+  logEvent({
+    event: 'mod.ban',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { target: target.username, duration: durKey, reason, banId: ban.id },
+    ip: req.ip,
+  });
+  dropPlayerSockets?.(target.id, `Banned: ${ban.reason}`);
+  res.json({ ok: true, ban });
+});
+
+// Toggle the verified blue-check from the moderation panel (mod+).
+adminRouter.post('/moderation/verify', requireRole('mod'), (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const target = findAccountByName(cleanUsername(body.username).toLowerCase());
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const value = body.verified !== false;
+  setVerified(target.id, value);
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: value ? 'admin.verify' : 'admin.unverify',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: target.id,
+    detail: { username: target.username },
+    ip: req.ip,
+  });
+  res.json({ ok: true, username: target.username, verified: value });
 });

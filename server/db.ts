@@ -301,7 +301,9 @@ export function getPlayerRecentMatches(
 
 // Additive account-moderation columns on elyxion_users (same no-migration
 // pattern): is_admin gates the /api/admin actions + grants all cosmetics;
-// is_verified drives the blue "verified player" check. Both default off.
+// is_verified drives the blue "verified player" check; role is the staff tier
+// ('admin' | 'mod' | 'jrmod' | 'player') used by the moderation panel.
+// is_admin is kept in sync with role='admin' for backwards compatibility.
 function ensureUserColumns() {
   const cols = new Set(
     (sqlite.prepare(`PRAGMA table_info(elyxion_users)`).all() as { name: string }[]).map(
@@ -312,6 +314,10 @@ function ensureUserColumns() {
     sqlite.exec(`ALTER TABLE elyxion_users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
   if (!cols.has('is_verified'))
     sqlite.exec(`ALTER TABLE elyxion_users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0`);
+  if (!cols.has('role'))
+    sqlite.exec(`ALTER TABLE elyxion_users ADD COLUMN role TEXT NOT NULL DEFAULT 'player'`);
+  // Backfill: anyone with is_admin=1 who never got a role set becomes 'admin'.
+  sqlite.exec(`UPDATE elyxion_users SET role = 'admin' WHERE is_admin = 1 AND role = 'player'`);
 }
 ensureUserColumns();
 
@@ -756,6 +762,153 @@ export function deleteCommunityMap(id: string, authorId: string): boolean {
 
 export function countCommunityMapPlay(id: string): void {
   cmPlayStmt.run(id);
+}
+
+// ── Player reports (moderation queue) ─────────────────────────────────────
+// In-game "report player" submissions: who was reported, by whom, and why.
+// Own table (not feedback) because it has a distinct moderation workflow and
+// links to bans. Surfaced in the /admin "Moderation" tab for mods and admins.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_player_reports (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts             INTEGER NOT NULL,
+  reporter_id    TEXT NOT NULL DEFAULT '',
+  reporter_name  TEXT NOT NULL DEFAULT '',
+  target_id      TEXT NOT NULL DEFAULT '',
+  target_name    TEXT NOT NULL DEFAULT '',
+  reason         TEXT NOT NULL DEFAULT 'other',
+  detail         TEXT NOT NULL DEFAULT '',
+  room_id        TEXT NOT NULL DEFAULT '',
+  status         TEXT NOT NULL DEFAULT 'open',
+  handled_by     TEXT NOT NULL DEFAULT '',
+  handled_at     INTEGER NOT NULL DEFAULT 0,
+  updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_player_reports_status ON elyxion_player_reports(status, id);
+CREATE INDEX IF NOT EXISTS idx_player_reports_ts ON elyxion_player_reports(ts);
+`);
+
+export type ReportReason = 'cheating' | 'toxicity' | 'griefing' | 'name' | 'other';
+export type ReportStatus = 'open' | 'resolved' | 'dismissed';
+export const REPORT_REASONS: readonly ReportReason[] = ['cheating', 'toxicity', 'griefing', 'name', 'other'];
+
+export type PlayerReportInput = {
+  reporterId?: string;
+  reporterName?: string;
+  targetId?: string;
+  targetName: string;
+  reason: ReportReason;
+  detail?: string;
+  roomId?: string;
+  now?: number;
+};
+
+const insertReportStmt = sqlite.prepare(`
+  INSERT INTO elyxion_player_reports
+    (ts, reporter_id, reporter_name, target_id, target_name, reason, detail, room_id, status, updated_at)
+  VALUES (@ts, @reporterId, @reporterName, @targetId, @targetName, @reason, @detail, @roomId, 'open', @ts)`);
+
+// Store a player report. Returns the row id (0 on failure — never throws).
+export function submitPlayerReport(r: PlayerReportInput): number {
+  try {
+    const now = r.now ?? Date.now();
+    const row = insertReportStmt.run({
+      ts: now,
+      reporterId: (r.reporterId ?? '').slice(0, 64),
+      reporterName: (r.reporterName ?? '').slice(0, 32) || 'Guest',
+      targetId: (r.targetId ?? '').slice(0, 64),
+      targetName: (r.targetName ?? '').slice(0, 32) || 'unknown',
+      reason: REPORT_REASONS.includes(r.reason) ? r.reason : 'other',
+      detail: (r.detail ?? '').slice(0, 1000),
+      roomId: (r.roomId ?? '').slice(0, 16),
+    });
+    return Number(row.lastInsertRowid) || 0;
+  } catch (err) {
+    console.error('[reports] submit failed', err);
+    return 0;
+  }
+}
+
+export type PlayerReportRow = {
+  id: number;
+  ts: number;
+  reporterId: string;
+  reporterName: string;
+  targetId: string;
+  targetName: string;
+  reason: ReportReason;
+  detail: string;
+  roomId: string;
+  status: ReportStatus;
+  handledBy: string;
+  handledAt: number;
+};
+
+type ReportDbRow = {
+  id: number; ts: number; reporter_id: string; reporter_name: string;
+  target_id: string; target_name: string; reason: string; detail: string;
+  room_id: string; status: string; handled_by: string; handled_at: number;
+};
+
+function mapReportRow(r: ReportDbRow): PlayerReportRow {
+  return {
+    id: r.id,
+    ts: r.ts,
+    reporterId: r.reporter_id,
+    reporterName: r.reporter_name || 'Guest',
+    targetId: r.target_id,
+    targetName: r.target_name || 'unknown',
+    reason: (REPORT_REASONS as readonly string[]).includes(r.reason) ? (r.reason as ReportReason) : 'other',
+    detail: r.detail,
+    roomId: r.room_id,
+    status: r.status as ReportStatus,
+    handledBy: r.handled_by,
+    handledAt: r.handled_at,
+  };
+}
+
+// List reports, newest first; optional status filter and keyset pagination.
+export function listPlayerReports(opts: {
+  limit?: number;
+  beforeId?: number;
+  status?: string;
+  targetLower?: string;
+}): PlayerReportRow[] {
+  const n = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+  const where: string[] = [];
+  const params: Record<string, unknown> = { limit: n };
+  if (opts.status && opts.status !== 'all') {
+    where.push('status = @status');
+    params.status = opts.status;
+  }
+  if (opts.targetLower) {
+    where.push('target_name LIKE @target');
+    params.target = `%${opts.targetLower}%`;
+  }
+  if (opts.beforeId && opts.beforeId > 0) {
+    where.push('id < @before');
+    params.before = opts.beforeId;
+  }
+  const stmt = sqlite.prepare(
+    `SELECT * FROM elyxion_player_reports${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT @limit`,
+  );
+  return (stmt.all(params) as unknown[] as ReportDbRow[]).map(mapReportRow);
+}
+
+export function playerReportCounts(): Record<string, number> {
+  const rows = sqlite.prepare(`SELECT status, COUNT(*) AS n FROM elyxion_player_reports GROUP BY status`).all() as { status: string; n: number }[];
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.status] = r.n;
+  return out;
+}
+
+const reportSetStatusStmt = sqlite.prepare(`
+  UPDATE elyxion_player_reports SET status = @status, handled_by = @by, handled_at = @now, updated_at = @now
+  WHERE id = @id`);
+// Mark a report handled ('resolved' | 'dismissed'). Returns true if changed.
+export function setPlayerReportStatus(id: number, status: ReportStatus, handledBy: string, now?: number): boolean {
+  if (status === 'open') return false;
+  return reportSetStatusStmt.run({ id, status, by: handledBy, now: now ?? Date.now() }).changes > 0;
 }
 
 // ── Feedback / bug reports ───────────────────────────────────────────────────
@@ -2106,10 +2259,10 @@ const userByLowerStmt = sqlite.prepare(
   `SELECT id, username, pw_hash, pw_salt FROM elyxion_users WHERE username_lower = ?`,
 );
 const userByIdStmt = sqlite.prepare(
-  `SELECT id, username, is_admin, is_verified FROM elyxion_users WHERE id = ?`,
+  `SELECT id, username, is_admin, is_verified, role FROM elyxion_users WHERE id = ?`,
 );
 const accountByLowerStmt = sqlite.prepare(
-  `SELECT id, username, is_admin, is_verified FROM elyxion_users WHERE username_lower = ?`,
+  `SELECT id, username, is_admin, is_verified, role FROM elyxion_users WHERE username_lower = ?`,
 );
 const insertSessionStmt = sqlite.prepare(
   `INSERT INTO elyxion_sessions (token, user_id, created_at) VALUES (?, ?, ?)`,
@@ -2120,11 +2273,30 @@ const setVerifiedStmt = sqlite.prepare(`UPDATE elyxion_users SET is_verified = @
 const setAdminStmt = sqlite.prepare(`UPDATE elyxion_users SET is_admin = @v WHERE id = @id`);
 
 export type UserRow = { id: string; username: string; pw_hash: string; pw_salt: string };
+
+// Staff roles. Rank: player(0) < jrmod(1) < mod(2) < admin(3).
+export type StaffRole = 'admin' | 'mod' | 'jrmod' | 'player';
+export const STAFF_ROLES: readonly StaffRole[] = ['admin', 'mod', 'jrmod', 'player'];
+export function roleRank(role: string): number {
+  return role === 'admin' ? 3 : role === 'mod' ? 2 : role === 'jrmod' ? 1 : 0;
+}
+
 // Public account info (no secrets) — id, name, and moderation flags.
-export type AccountInfo = { id: string; username: string; isAdmin: boolean; isVerified: boolean };
-type FlagsRow = { id: string; username: string; is_admin: number; is_verified: number };
-const toAccountInfo = (r: FlagsRow | undefined): AccountInfo | undefined =>
-  r ? { id: r.id, username: r.username, isAdmin: !!r.is_admin, isVerified: !!r.is_verified } : undefined;
+export type AccountInfo = {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  isVerified: boolean;
+  role: StaffRole;
+};
+type FlagsRow = { id: string; username: string; is_admin: number; is_verified: number; role?: string };
+const toAccountInfo = (r: FlagsRow | undefined): AccountInfo | undefined => {
+  if (!r) return undefined;
+  const stored = (STAFF_ROLES as readonly string[]).includes(r.role ?? '') ? (r.role as StaffRole) : 'player';
+  // is_admin stays authoritative for role='admin' (legacy rows / env sync).
+  const isAdmin = !!r.is_admin || stored === 'admin';
+  return { id: r.id, username: r.username, isAdmin, isVerified: !!r.is_verified, role: isAdmin ? 'admin' : stored };
+};
 
 export function createUser(u: {
   id: string;
@@ -2153,6 +2325,25 @@ export function setVerified(id: string, value: boolean): boolean {
 }
 export function setAdmin(id: string, value: boolean): boolean {
   return setAdminStmt.run({ id, v: value ? 1 : 0 }).changes > 0;
+}
+const setRoleStmt = sqlite.prepare(`UPDATE elyxion_users SET role = @role WHERE id = @id`);
+// Set a staff role. 'admin' also flips the legacy is_admin flag (env-sync paths
+// keep working); any other role clears it. Returns true if a row changed.
+export function setRole(id: string, role: StaffRole): boolean {
+  if (!STAFF_ROLES.includes(role)) return false;
+  const changed = setRoleStmt.run({ id, role }).changes > 0;
+  if (!changed) return false;
+  setAdminStmt.run({ id, v: role === 'admin' ? 1 : 0 });
+  return true;
+}
+// Staff roster for the moderation panel (role != player, or legacy is_admin).
+const staffListStmt = sqlite.prepare(
+  `SELECT id, username, is_admin, is_verified, role FROM elyxion_users WHERE role IN ('admin','mod','jrmod') OR is_admin = 1 ORDER BY created_at ASC`,
+);
+export function listStaff(): AccountInfo[] {
+  return (staffListStmt.all() as unknown[] as FlagsRow[])
+    .map(toAccountInfo)
+    .filter((a): a is AccountInfo => !!a);
 }
 // Promote the configured ADMIN_USERNAMES to admin on boot (idempotent). Lets you
 // designate your account on Railway via an env var — register first, set the var,

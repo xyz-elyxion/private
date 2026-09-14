@@ -151,7 +151,7 @@ authRouter.get('/auth/me', (req, res) => {
   res.json({
     token,
     user: user
-      ? { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified }
+      ? { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified, role: user.role }
       : null,
   });
 });
@@ -211,7 +211,8 @@ authRouter.post('/auth/register', (req, res) => {
   // `token` powers the X-Session-Token header fallback for cookie-blocked
   // cross-origin portal embeds (see accountId). Same value as the cookie;
   // it is NOT a password substitute and dies with the session.
-  res.json({ token, user: { username, isAdmin, isVerified: false } });
+  const role = isAdmin ? 'admin' : 'player';
+  res.json({ token, user: { username, isAdmin, isVerified: false, role } });
 });
 
 authRouter.post('/auth/login', (req, res) => {
@@ -239,7 +240,12 @@ authRouter.post('/auth/login', (req, res) => {
   logEvent({ event: 'login', actorId: user!.id, actorName: user!.username, ip: req.ip });
   res.json({
     token, // header-fallback for cookie-blocked cross-origin embeds
-    user: { username: user!.username, isAdmin: !!acct?.isAdmin, isVerified: !!acct?.isVerified },
+    user: {
+      username: user!.username,
+      isAdmin: !!acct?.isAdmin,
+      isVerified: !!acct?.isVerified,
+      role: acct?.role ?? 'player',
+    },
   });
 });
 

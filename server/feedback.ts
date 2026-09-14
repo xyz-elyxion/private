@@ -116,3 +116,83 @@ feedbackRouter.post('/feedback', (req, res) => {
 
   res.json({ ok: true, id: newId });
 });
+
+// ── Player reports (moderation queue) ───────────────────────────────────────
+// In-game "report player" action → POST /api/report. Same guard rails as
+// feedback: length caps + a tight per-identity rate limit. Read back by mods
+// in the /admin Moderation tab.
+import {
+  REPORT_REASONS,
+  findAccountByName,
+  submitPlayerReport,
+  type ReportReason,
+} from './db';
+
+const REPORT_WINDOW_MS = 10 * 60_000;
+const REPORT_MAX = 8; // per identity per window — genuine grievances, spam-blunt
+const reportHits = new Map<string, number[]>();
+function allowReport(identity: string, now: number): boolean {
+  const cutoff = now - REPORT_WINDOW_MS;
+  const recent = (reportHits.get(identity) ?? []).filter((ts) => ts > cutoff);
+  if (recent.length >= REPORT_MAX) {
+    reportHits.set(identity, recent);
+    return false;
+  }
+  recent.push(now);
+  reportHits.set(identity, recent);
+  return true;
+}
+const reportSweep = setInterval(() => {
+  const cutoff = Date.now() - REPORT_WINDOW_MS;
+  for (const [id, hits] of reportHits) {
+    if (hits.length === 0 || hits[hits.length - 1] <= cutoff) reportHits.delete(id);
+  }
+}, REPORT_WINDOW_MS);
+reportSweep.unref?.();
+
+feedbackRouter.post('/report', (req, res) => {
+  const now = Date.now();
+  const reporterId = accountId(req);
+  if (!allowReport(reporterId || req.ip || 'unknown', now)) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const targetName = typeof body.targetName === 'string' ? body.targetName.trim().slice(0, 32) : '';
+  if (!targetName) {
+    res.status(400).json({ error: 'bad_target' });
+    return;
+  }
+  const reason = (REPORT_REASONS as readonly string[]).includes(String(body.reason))
+    ? (body.reason as ReportReason)
+    : 'other';
+  const detail = typeof body.detail === 'string' ? body.detail.trim().slice(0, 1000) : '';
+  const roomId = typeof body.roomId === 'string' ? body.roomId.trim().slice(0, 16) : '';
+  // Resolve the target's account id when the name matches a registered account,
+  // so mods can ban directly from the report without re-searching.
+  const target = findAccountByName(targetName.toLowerCase());
+  const reporter = reporterId ? findAccountByName(reporterId) : undefined;
+  const id = submitPlayerReport({
+    reporterId,
+    reporterName: reporter?.username ?? 'Guest',
+    targetId: target?.id ?? '',
+    targetName,
+    reason,
+    detail,
+    roomId,
+    now,
+  });
+  if (id === 0) {
+    res.status(500).json({ error: 'failed' });
+    return;
+  }
+  logEvent({
+    event: 'report.submit',
+    actorId: reporterId,
+    actorName: reporter?.username,
+    targetId: target?.id,
+    detail: { reportId: id, target: targetName, reason },
+    ip: req.ip,
+  });
+  res.json({ ok: true, id });
+});

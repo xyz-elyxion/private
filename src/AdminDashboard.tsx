@@ -9,6 +9,7 @@ import {
   Activity,
   Crosshair,
   Gamepad2,
+  Gavel,
   Inbox,
   LayoutDashboard,
   Package,
@@ -17,7 +18,7 @@ import {
   ShieldAlert,
   Users,
 } from 'lucide-react';
-import { useAuth , authHeaders } from './auth';
+import { useAuth , authHeaders, type StaffRole } from './auth';
 import { apiUrl } from './game/urls';
 
 // ── API shapes (mirror server/db.ts) ─────────────────────────────────────────
@@ -275,7 +276,7 @@ const COLORS = {
 // per-item badges (live counts), shortcut hints, and a top bar with breadcrumb.
 // Same six panels as before — just re-homed. lucide icons at 1.5 stroke match
 // the deck's thin technical line style.
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'anticheat';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback' | 'moderation' | 'anticheat';
 const TAB_TITLES: Record<Tab, string> = {
   overview: 'Overview',
   activity: 'Activity',
@@ -283,6 +284,7 @@ const TAB_TITLES: Record<Tab, string> = {
   matches: 'Matches',
   players: 'Players',
   feedback: 'Feedback',
+  moderation: 'Moderation',
   anticheat: 'Anticheat & Bans',
 };
 
@@ -332,10 +334,12 @@ function SidebarNav({
   tab,
   onTab,
   badges,
+  role,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
   badges: Partial<Record<Tab, number | string>>;
+  role: StaffRole;
 }) {
   const groups: { heading?: string; items: { id: Tab; title: string; icon: React.ElementType; badge?: number | string }[] }[] = [
     {
@@ -356,7 +360,12 @@ function SidebarNav({
     },
     {
       heading: 'Moderation',
-      items: [{ id: 'anticheat', title: 'Anticheat & Bans', icon: ShieldAlert }],
+      items: [
+        ...(role === 'mod' || role === 'jrmod' || role === 'admin'
+          ? [{ id: 'moderation' as Tab, title: 'Moderation', icon: Gavel, badge: badges.moderation }]
+          : []),
+        ...(role === 'mod' || role === 'admin' ? [{ id: 'anticheat' as Tab, title: 'Anticheat & Bans', icon: ShieldAlert }] : []),
+      ],
     },
   ];
   return (
@@ -1283,6 +1292,9 @@ export default function AdminDashboard() {
   const [searchOpen, setSearchOpen] = useState(false);
 
   const isAdmin = !!auth.account?.isAdmin;
+  const staffRole: StaffRole =
+    auth.account?.role ?? (isAdmin ? 'admin' : 'player');
+  const isStaff = staffRole === 'admin' || staffRole === 'mod' || staffRole === 'jrmod';
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -1318,12 +1330,12 @@ export default function AdminDashboard() {
       </Centered>
     );
   }
-  if (!isAdmin) {
+  if (!isStaff) {
     return (
       <Centered>
         <div className="text-center">
           <p className="font-display text-2xl text-rose-300">403</p>
-          <p className="mt-2 text-white/60">This dashboard is admin-only.</p>
+          <p className="mt-2 text-white/60">This dashboard is staff-only.</p>
           <a href="/play" className="mt-3 inline-block text-cyan-300 hover:text-cyan-200">
             ← Back to the arena
           </a>
@@ -1358,7 +1370,7 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          <SidebarNav tab={tab} onTab={setTab} badges={{ overview: live?.online }} />
+          <SidebarNav tab={tab} onTab={setTab} badges={{ overview: live?.online }} role={staffRole} />
 
           {/* Bottom: back to arena (portal zip lives in the top bar) */}
           <div className="mt-auto flex flex-col gap-0.5 border-t border-white/10 pt-3">
@@ -1413,10 +1425,323 @@ export default function AdminDashboard() {
             {tab === 'matches' && <MatchesTab />}
             {tab === 'players' && <PlayersTab />}
             {tab === 'feedback' && <FeedbackTab />}
+            {tab === 'moderation' && <ModerationTab role={staffRole} />}
             {tab === 'anticheat' && <AnticheatTab />}
           </div>
         </main>
       </div>
+    </div>
+  );
+}
+
+
+// ── Tab: Moderation ──────────────────────────────────────────────────────────
+// Separate from the anticheat tab: player reports queue, quick player actions,
+// and (admin only) staff role management. jrmod can only view + resolve reports.
+type ModReport = {
+  id: number;
+  ts: number;
+  reporterName: string;
+  targetName: string;
+  reason: string;
+  detail: string;
+  roomId: string;
+  status: string;
+  handledBy: string;
+  handledAt: number;
+};
+type StaffRow = { id: string; username: string; role: StaffRole };
+
+const ROLE_COLORS: Record<string, string> = {
+  admin: 'text-rose-300 bg-rose-400/10 ring-rose-400/30',
+  mod: 'text-amber-300 bg-amber-400/10 ring-amber-400/30',
+  jrmod: 'text-cyan-300 bg-cyan-400/10 ring-cyan-400/30',
+  player: 'text-white/50 bg-white/5 ring-white/15',
+};
+
+function RoleChip({ role }: { role: string }) {
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-[10px] font-medium tracking-[0.12em] uppercase ring-1 ${
+        ROLE_COLORS[role] ?? ROLE_COLORS.player
+      }`}
+    >
+      {role}
+    </span>
+  );
+}
+
+function ModerationTab({ role }: { role: StaffRole }) {
+  const isAdmin = role === 'admin';
+  const isMod = role === 'admin' || role === 'mod';
+
+  const [reports, setReports] = useState<ModReport[] | null>(null);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [status, setStatus] = useState<'open' | 'resolved' | 'dismissed' | 'all'>('open');
+  const [staff, setStaff] = useState<StaffRow[] | null>(null);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [banTarget, setBanTarget] = useState('');
+  const [banReason, setBanReason] = useState('');
+  const [banDur, setBanDur] = useState('1d');
+  const [verifyTarget, setVerifyTarget] = useState('');
+  const [newRole, setNewRole] = useState<{ username: string; role: StaffRole }>({ username: '', role: 'jrmod' });
+
+  const refresh = useCallback(() => {
+    void getJSON<{ reports: ModReport[]; counts: Record<string, number> }>(
+      `/api/admin/moderation/reports?status=${status}&limit=100`,
+    ).then((d) => {
+      if (d) {
+        setReports(d.reports ?? []);
+        setCounts(d.counts ?? {});
+      }
+    });
+    if (isAdmin) void getJSON<{ staff: StaffRow[] }>('/api/admin/moderation/staff').then((d) => setStaff(d?.staff ?? []));
+  }, [status, isAdmin]);
+  useEffect(refresh, [refresh]);
+
+  const post = async (url: string, body: Record<string, unknown>, okMsg: string) => {
+    setBusy(true); setMsg(''); setErr('');
+    try {
+      const r = await fetch(apiUrl(url), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      const data = (await r.json().catch(() => ({}))) as { error?: string };
+      if (!r.ok) {
+        setErr(data.error === 'insufficient_role' ? 'Your role does not allow this.' : 'Action failed.');
+        return false;
+      }
+      setMsg(okMsg);
+      refresh();
+      return true;
+    } catch {
+      setErr('Network error.');
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setReportStatus = (id: number, s: 'resolved' | 'dismissed') =>
+    post(`/api/admin/moderation/reports/${id}/status`, { status: s }, `Report #${id} ${s}.`);
+
+  const quickBan = (username: string) => {
+    if (!username) return;
+    void post('/api/admin/moderation/ban', { username, reason: banReason, duration: banDur }, `Banned ${username}.`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <RoleChip role={role} />
+        <span className="text-[12px] text-white/40">
+          {role === 'jrmod' ? 'Reports queue only — resolve/dismiss.' : isMod ? 'Reports, bans, verified flags.' : 'Full moderation suite + staff roles.'}
+        </span>
+      </div>
+      {(msg || err) && (
+        <p className={`text-[12px] font-mono ${err ? 'text-rose-300' : 'text-emerald-300'}`}>{err || msg}</p>
+      )}
+
+      {/* Player reports */}
+      <Panel
+        title="Player reports"
+        right={
+          <div className="flex gap-1">
+            {(['open', 'resolved', 'dismissed', 'all'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatus(s)}
+                className={`rounded-full px-2.5 py-1 text-[11px] tracking-wide transition ${
+                  status === s ? 'bg-cyan-400/15 text-cyan-200' : 'text-white/45 hover:bg-white/5 hover:text-white/80'
+                }`}
+              >
+                {s}
+                {s === 'open' && counts.open ? ` (${counts.open})` : ''}
+              </button>
+            ))}
+          </div>
+        }
+      >
+        {!reports ? (
+          <Loading />
+        ) : reports.length === 0 ? (
+          <p className="text-[12px] text-white/40">No reports.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-[12px] font-mono">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-[0.16em] text-white/40">
+                  <th className="py-1.5 pr-4 font-medium">When</th>
+                  <th className="py-1.5 pr-4 font-medium">Reporter</th>
+                  <th className="py-1.5 pr-4 font-medium">Target</th>
+                  <th className="py-1.5 pr-4 font-medium">Reason</th>
+                  <th className="py-1.5 pr-4 font-medium">Detail</th>
+                  <th className="py-1.5 pr-4 font-medium" />
+                </tr>
+              </thead>
+              <tbody className="text-white/75">
+                {reports.map((r) => (
+                  <tr key={r.id} className="border-t border-white/8 align-top">
+                    <td className="py-2 pr-4 whitespace-nowrap text-white/45">{new Date(r.ts).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{r.reporterName}</td>
+                    <td className="py-2 pr-4 text-cyan-200">{r.targetName}</td>
+                    <td className="py-2 pr-4">
+                      <span className="rounded bg-white/8 px-1.5 py-0.5 text-[11px] uppercase tracking-wide">{r.reason}</span>
+                    </td>
+                    <td className="max-w-[280px] py-2 pr-4 break-words text-white/55">{r.detail}</td>
+                    <td className="py-2">
+                      {r.status === 'open' ? (
+                        <div className="flex gap-1.5">
+                          <button
+                            disabled={busy}
+                            onClick={() => setReportStatus(r.id, 'resolved')}
+                            className="rounded bg-emerald-400/10 px-2 py-1 text-[11px] text-emerald-300 ring-1 ring-emerald-400/25 transition hover:bg-emerald-400/20"
+                          >
+                            Resolve
+                          </button>
+                          <button
+                            disabled={busy}
+                            onClick={() => setReportStatus(r.id, 'dismissed')}
+                            className="rounded bg-white/5 px-2 py-1 text-[11px] text-white/55 ring-1 ring-white/15 transition hover:bg-white/10"
+                          >
+                            Dismiss
+                          </button>
+                          {isMod && (
+                            <button
+                              disabled={busy}
+                              onClick={() => quickBan(r.targetName)}
+                              className="rounded bg-rose-400/10 px-2 py-1 text-[11px] text-rose-300 ring-1 ring-rose-400/25 transition hover:bg-rose-400/20"
+                              title={`Ban ${r.targetName} (${banDur})`}
+                            >
+                              Ban
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-white/35">
+                          {r.status} · {r.handledBy}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {/* Quick actions */}
+      {isMod && (
+        <div className="grid gap-4 md:grid-cols-2">
+          <Panel title="Quick ban">
+            <div className="flex flex-wrap items-end gap-2">
+              <input
+                value={banTarget}
+                onChange={(e) => setBanTarget(e.target.value)}
+                placeholder="username"
+                className="w-36 rounded-md bg-white/5 px-2.5 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10 placeholder:text-white/30 focus:ring-cyan-400/40"
+              />
+              <select
+                value={banDur}
+                onChange={(e) => setBanDur(e.target.value)}
+                className="rounded-md bg-white/5 px-2 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10"
+              >
+                {BAN_DURATIONS.map((d) => (
+                  <option key={d.id} value={d.id}>{d.label}</option>
+                ))}
+              </select>
+              <input
+                value={banReason}
+                onChange={(e) => setBanReason(e.target.value)}
+                placeholder="reason (optional)"
+                className="min-w-[140px] flex-1 rounded-md bg-white/5 px-2.5 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10 placeholder:text-white/30 focus:ring-cyan-400/40"
+              />
+              <button
+                disabled={busy || !banTarget.trim()}
+                onClick={() => quickBan(banTarget.trim())}
+                className="rounded-md bg-rose-400/10 px-3 py-1.5 text-[12px] text-rose-300 ring-1 ring-rose-400/30 transition hover:bg-rose-400/20 disabled:opacity-40"
+              >
+                Ban
+              </button>
+            </div>
+          </Panel>
+          <Panel title="Verified badge">
+            <div className="flex items-end gap-2">
+              <input
+                value={verifyTarget}
+                onChange={(e) => setVerifyTarget(e.target.value)}
+                placeholder="username"
+                className="w-36 rounded-md bg-white/5 px-2.5 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10 placeholder:text-white/30 focus:ring-cyan-400/40"
+              />
+              <button
+                disabled={busy || !verifyTarget.trim()}
+                onClick={() => post('/api/admin/moderation/verify', { username: verifyTarget.trim(), verified: true }, `Verified ${verifyTarget.trim()}.`)}
+                className="rounded-md bg-cyan-400/10 px-3 py-1.5 text-[12px] text-cyan-300 ring-1 ring-cyan-400/30 transition hover:bg-cyan-400/20 disabled:opacity-40"
+              >
+                Verify
+              </button>
+              <button
+                disabled={busy || !verifyTarget.trim()}
+                onClick={() => post('/api/admin/moderation/verify', { username: verifyTarget.trim(), verified: false }, `Unverified ${verifyTarget.trim()}.`)}
+                className="rounded-md bg-white/5 px-3 py-1.5 text-[12px] text-white/60 ring-1 ring-white/15 transition hover:bg-white/10 disabled:opacity-40"
+              >
+                Unverify
+              </button>
+            </div>
+          </Panel>
+        </div>
+      )}
+
+      {/* Staff roles (admin only) */}
+      {isAdmin && (
+        <Panel title="Staff roles">
+          <div className="mb-3 flex flex-wrap items-end gap-2">
+            <input
+              value={newRole.username}
+              onChange={(e) => setNewRole({ ...newRole, username: e.target.value })}
+              placeholder="username"
+              className="w-36 rounded-md bg-white/5 px-2.5 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10 placeholder:text-white/30 focus:ring-cyan-400/40"
+            />
+            <select
+              value={newRole.role}
+              onChange={(e) => setNewRole({ ...newRole, role: e.target.value as StaffRole })}
+              className="rounded-md bg-white/5 px-2 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10"
+            >
+              <option value="admin">admin</option>
+              <option value="mod">mod</option>
+              <option value="jrmod">jrmod</option>
+              <option value="player">player</option>
+            </select>
+            <button
+              disabled={busy || !newRole.username.trim()}
+              onClick={() => post('/api/admin/moderation/staff/role', newRole, `${newRole.username} → ${newRole.role}.`)}
+              className="rounded-md bg-cyan-400/10 px-3 py-1.5 text-[12px] text-cyan-300 ring-1 ring-cyan-400/30 transition hover:bg-cyan-400/20 disabled:opacity-40"
+            >
+              Set role
+            </button>
+          </div>
+          {!staff ? (
+            <Loading />
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {staff.map((m) => (
+                <div
+                  key={m.id}
+                  className="flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 ring-1 ring-white/10"
+                >
+                  <span className="font-mono text-[12px] text-white/80">{m.username}</span>
+                  <RoleChip role={m.role} />
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      )}
     </div>
   );
 }
