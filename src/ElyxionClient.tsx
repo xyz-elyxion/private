@@ -876,6 +876,8 @@ const INITIAL_HUD: HudState = {
   mode: 'ffa',
   localTeam: null,
   teamScores: null,
+  ctfStatus: null,
+  carryingFlag: false,
   training: null,
   pom: null,
   chat: { open: false, lines: [] },
@@ -3330,6 +3332,9 @@ function HudOverlay({
       {(hud.mode === 'tdm' || hud.mode === 'ctf') && hud.teamScores && (
         <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} mode={hud.mode} />
       )}
+      {hud.mode === 'ctf' && hud.ctfStatus && (
+        <FlagStatusStrip status={hud.ctfStatus} carrying={hud.carryingFlag} />
+      )}
       {hud.netDebug && <NetDebugOverlay s={hud.netDebug} />}
       {hud.training && <TrainingPanel t={hud.training} />}
       <BannerOverlay banner={hud.banner} />
@@ -3499,6 +3504,40 @@ function NetStatusPill({
 }
 
 /* ───────────────────────── TDM team score bar (top-center) ───────────────────────── */
+
+// CTF flag status strip: YOUR flag vs THEIR flag, so the objective is always
+// readable at a glance — "our flag is stolen, theirs is home → go return it".
+const FLAG_STATUS_TEXT: Record<string, { label: string; cls: string }> = {
+  home: { label: 'at base', cls: 'text-emerald-300' },
+  dropped: { label: 'DROPPED', cls: 'text-amber-300' },
+  stolen: { label: 'STOLEN', cls: 'text-rose-300' },
+  'carried-by-you': { label: 'YOU CARRY IT', cls: 'text-amber-200' },
+};
+function FlagStatusStrip({ status, carrying }: { status: [string, string]; carrying: boolean }) {
+  const st = (v: string) => FLAG_STATUS_TEXT[v] ?? FLAG_STATUS_TEXT.home;
+  const own = st(status[0]);
+  const enemy = st(status[1]);
+  return (
+    <div className='pointer-events-none absolute left-1/2 top-[86px] z-10 -translate-x-1/2'>
+      <div
+        className={`flex items-center gap-3 rounded-md border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em] backdrop-blur-sm ${
+          carrying ? 'border-amber-400/60 bg-amber-400/10' : 'border-white/12 bg-black/55'
+        }`}
+      >
+        <span className='text-white/45'>Your flag:</span>
+        <span className={`font-bold ${own.cls}`}>{own.label}</span>
+        <span className='text-white/20'>|</span>
+        <span className='text-white/45'>Enemy flag:</span>
+        <span className={`font-bold ${enemy.cls}`}>{enemy.label}</span>
+      </div>
+      {carrying && (
+        <p className='mt-1 text-center font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300'>
+          Take it to your base!
+        </p>
+      )}
+    </div>
+  );
+}
 
 // Compact Red vs Blue score readout — team frags in TDM, captures in CTF.
 // Your team gets a "YOU" tag + a glowing outline so it's obvious which side you're on.

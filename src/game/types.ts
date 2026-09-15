@@ -254,6 +254,10 @@ export type HudState = {
   localTeam: number | null; // your team index in TDM; null otherwise
   // TDM team frag totals [red, blue]; null outside TDM.
   teamScores: [number, number] | null;
+  // CTF flag status per team: null outside CTF; otherwise [ownFlag, enemyFlag]
+  // from YOUR perspective — 'home' | 'stolen' | 'carried-by-you' | 'dropped'.
+  ctfStatus: [string, string] | null;
+  carryingFlag: boolean; // you hold the enemy flag
   // Training-range live stats; null outside the training range.
   training: TrainingHud | null;
   // Play of the Match cinematic; non-null → replay playing, results deferred.

@@ -1132,6 +1132,9 @@ export class Game {
       if (!f) continue;
       f.pos.set(s.x, s.y, s.z);
       f.carrier = s.carrier;
+      // The server's base is authoritative — adopt it so flags sit on the real
+      // arena net spawns (the client's local approximation may be inside walls).
+      if (s.atBase) f.base.set(s.x, s.y, s.z);
     }
     this.ctfCaptures = [msg.captures[0] ?? 0, msg.captures[1] ?? 0];
   }
@@ -1622,6 +1625,9 @@ export class Game {
     this.resetMatchDrama();
     const desired = mapById(r.mapId);
     if (desired !== this.map) this.setMap(desired);
+    // CTF: fresh round → rebuild flags (resetCtf on the server zeroes state; the
+    // next ctf-state broadcast will refine positions).
+    if (this.netMode === 'ctf') this.buildCtfFlags();
     // Use the server-assigned spawn (distributed per player) so everyone doesn't
     // land on the same default spot. Fall back to a local pick only if the server
     // didn't send one (e.g. an older server).
@@ -2088,7 +2094,23 @@ export class Game {
       for (const b of this.bots.bots) {
         if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam() });
       }
-      const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
+      const intents = this.bots.step(dt, this.map, enemies, this.inCountdown, (bot) => {
+        // CTF: bots work the objective when they're not in a firefight. Teams
+        // without their own flag home (or already carrying) push the enemy flag;
+        // otherwise they drift home (defending / ready to receive a capture).
+        if (this.botMode !== 'ctf' || this.ctfFlags.length < 2) return null;
+        const botTeam = bot.getTeam();
+        if (botTeam == null) return null;
+        // Carrying the enemy flag? Run it home.
+        const carried = this.ctfFlags.find((f) => f.carrier === bot.state.id);
+        if (carried) return { kind: 'return' as const, pos: this.ctfFlags[botTeam].base };
+        const own = this.ctfFlags[botTeam];
+        const enemy = this.ctfFlags[botTeam === 0 ? 1 : 0];
+        // Own flag home → go steal; own flag stolen → chase our flag (return it).
+        const ownHome = !own.carrier && own.pos.distanceTo(own.base) < 0.5;
+        if (ownHome) return { kind: 'steal' as const, pos: enemy.pos };
+        return { kind: 'return' as const, pos: own.pos };
+      });
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
       // Spawn-in effect when a bot materializes (dead→alive), so solo play shows
@@ -3243,6 +3265,19 @@ export class Game {
       mode: this.netMode,
       localTeam: this.localTeam,
       teamScores,
+      ctfStatus: (() => {
+        if (!(this.netMode === 'ctf' || this.botMode === 'ctf') || this.ctfFlags.length < 2) return null;
+        const desc = (f: (typeof this.ctfFlags)[number]) => {
+          if (f.carrier === 'player' || f.carrier === this.net?.clientId) return 'carried-by-you';
+          if (f.carrier) return 'stolen';
+          return f.pos.distanceTo(f.base) > 0.5 ? 'dropped' : 'home';
+        };
+        if (this.localTeam == null) return [desc(this.ctfFlags[0]), desc(this.ctfFlags[1])] as [string, string];
+        const own = desc(this.ctfFlags[this.localTeam]);
+        const enemy = desc(this.ctfFlags[this.localTeam === 0 ? 1 : 0]);
+        return [own, enemy] as [string, string];
+      })(),
+      carryingFlag: this.ctfFlags.some((f) => f.carrier === 'player' || f.carrier === this.net?.clientId),
       training: this.trainingRange ? { ...this.trainingRange.stats() } : null,
       pom: this.pom ? { ...this.pom } : null,
       chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },

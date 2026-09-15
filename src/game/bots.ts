@@ -81,6 +81,9 @@ const BOT_MOVE: Record<BotDifficulty, BotMove> = {
 
 // An enemy a bot can target (the local player or another bot).
 export type BotTarget = { id: string; pos: Vec3; team?: number | null };
+// CTF objective hint fed to bots each tick: where to go for the mode.
+// 'steal' → walk to the enemy flag; 'return' → walk home to capture/reset.
+export type BotObjective = { kind: 'steal' | 'return'; pos: Vec3 } | null;
 // A bot's decision to fire this tick — resolved by Game against the world.
 export type BotFireIntent = { botId: string; botName: string; origin: Vec3; dir: Vec3; team: number | null };
 const MODEL_SCALE = 1.0;
@@ -335,6 +338,7 @@ export class Bot {
   // Combat state
   private diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
   private engagedId: string | null = null; // current target id, null = roaming
+  private objective: BotObjective = null; // CTF goal this tick (null = roam freely)
   private seenForSec = 0; // how long the current target has been visible (reaction gate)
   private shootCooldown = 0;
   private strafeSign = Math.random() < 0.5 ? -1 : 1;
@@ -386,8 +390,9 @@ export class Bot {
   // Returns a fire intent when the bot decides to shoot this tick, else null.
   // `enemies` is every targetable entity (player + other bots); the bot filters
   // itself out by id.
-  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
+  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false, objective: BotObjective = null): BotFireIntent | null {
     if (this.mixer) this.mixer.update(dt);
+    this.objective = objective;
     // Pin the gun-carry pose over the animated arms while alive; let the death
     // clip flail freely when dead.
     if (this.state.alive) this.hold?.apply();
@@ -499,13 +504,18 @@ export class Bot {
       return null;
     }
 
-    // ── No target: roam toward a wander point ──
+    // ── No target: roam toward a wander point (or the CTF objective) ──
     this.engagedId = null;
     this.seenForSec = 0;
     this.aimSeeded = false; // re-acquire aim from scratch on the next target
     this.lastTargetId = null;
     const px = this.state.pos.x;
     const pz = this.state.pos.z;
+    if (this.objective) {
+      // Objective-driven movement: walk to the flag/home base. Re-pick nothing —
+      // the destination is fixed; the stuck-recovery in roam handles wedges.
+      this.target = { x: this.objective.pos.x, y: this.objective.pos.y, z: this.objective.pos.z };
+    }
     this.roam(dt, map);
     this.updateLoco(px, pz, dt);
     return null;
@@ -903,7 +913,7 @@ export class Bot {
         this.roamStuckTimer = 0;
         this.target = pickFreeSpot(map, this.state.pos);
         if (this.onGround) this.doJump(); // pop over whatever's blocking us
-      } else if (blocked && this.onGround) {
+      } else if (blocked && this.onGround && !this.objective) {
         this.target = pickFreeSpot(map, this.state.pos);
       }
     } else {
@@ -913,7 +923,7 @@ export class Bot {
       this.integrate(dt, map, { x: 0, z: 0 });
       this.roamStuckTimer = 0;
       this.state.moveTimer -= dt;
-      if (this.state.moveTimer <= 0) {
+      if (this.state.moveTimer <= 0 && !this.objective) {
         this.target = pickFreeSpot(map, this.state.pos);
         this.state.moveTimer = rand(BOT_MOVE_INTERVAL_MIN, BOT_MOVE_INTERVAL_MAX);
       }
@@ -1150,10 +1160,10 @@ export class BotManager {
   // Steps every bot and returns the fire intents they produced this tick.
   // `enemies` should include the local player and all bots (each bot skips
   // itself); Game resolves the returned shots against the world.
-  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent[] {
+  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false, objectiveFor?: (bot: Bot) => BotObjective): BotFireIntent[] {
     const intents: BotFireIntent[] = [];
     for (const b of this.bots) {
-      const intent = b.step(dt, map, enemies, frozen);
+      const intent = b.step(dt, map, enemies, frozen, objectiveFor ? objectiveFor(b) : null);
       if (intent) intents.push(intent);
       b.updateHat(dt);
     }
