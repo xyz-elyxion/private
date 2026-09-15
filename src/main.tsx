@@ -29,7 +29,6 @@ const ElyxionClient = lazy(() => import('./ElyxionClient'));
 const PodiumLab = lazy(() => import('./PodiumLab'));
 const LockerLab = lazy(() => import('./LockerLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
-const ModerationPanel = lazy(() => import('./ModerationPanel'));
 const Donate = lazy(() => import('./pages/Donate'));
 const PlayerSearch = lazy(() => import('./pages/PlayerSearch'));
 const Support = lazy(() => import('./pages/Support'));
@@ -209,7 +208,7 @@ function CgSdkWatcher({ onSettled }: { onSettled: () => void }) {
 // static host — and drop the player straight into the game (portal QA expects
 // instant gameplay, no menu cascade). The self-hosted site keeps BrowserRouter
 // with clean URLs.
-const ROUTE_PATHS = /^\/(play|docs|admin|moderation|podiumlab|lockerlab|legal|donate|search|support|mapeditor)(\/|$)/;
+const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search|support|mapeditor)(\/|$)/;
 function isPortalEmbed(): boolean {
   if (typeof window === 'undefined') return false;
   const p = window.location.pathname;
@@ -312,14 +311,6 @@ createRoot(document.getElementById('root')!).render(
           element={
             <Suspense fallback={<Loading />}>
               <AdminDashboard />
-            </Suspense>
-          }
-        />
-        <Route
-          path="/moderation"
-          element={
-            <Suspense fallback={<Loading />}>
-              <ModerationPanel />
             </Suspense>
           }
         />

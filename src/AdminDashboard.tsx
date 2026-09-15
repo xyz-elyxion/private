@@ -285,7 +285,7 @@ const TAB_TITLES: Record<Tab, string> = {
   players: 'Players',
   feedback: 'Feedback',
   moderation: 'Moderation',
-  anticheat: 'Anticheat & Bans',
+  anticheat: 'Anticheat',
 };
 
 function NavItem({
@@ -364,7 +364,7 @@ function SidebarNav({
         ...(role === 'mod' || role === 'jrmod' || role === 'admin'
           ? [{ id: 'moderation' as Tab, title: 'Moderation', icon: Gavel, badge: badges.moderation }]
           : []),
-        ...(role === 'mod' || role === 'admin' ? [{ id: 'anticheat' as Tab, title: 'Anticheat & Bans', icon: ShieldAlert }] : []),
+        ...(role === 'mod' || role === 'admin' ? [{ id: 'anticheat' as Tab, title: 'Anticheat', icon: ShieldAlert }] : []),
       ],
     },
   ];
@@ -1375,14 +1375,6 @@ export default function AdminDashboard() {
           {/* Bottom: back to arena (portal zip lives in the top bar) */}
           <div className="mt-auto flex flex-col gap-0.5 border-t border-white/10 pt-3">
             <a
-              href="/moderation"
-              className="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-amber-200/60 transition hover:bg-white/5 hover:text-amber-200"
-              title="Standalone moderation panel - reports, bans, staff roles"
-            >
-              <Gavel className="h-4 w-4 text-amber-300/50 transition-colors group-hover:text-amber-300" strokeWidth={1.5} />
-              <span className="text-[13px] tracking-wide">Moderation panel</span>
-            </a>
-            <a
               href="/play"
               className="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-white/50 transition hover:bg-white/5 hover:text-white/90"
             >
@@ -1444,6 +1436,15 @@ export default function AdminDashboard() {
 
 
 // ── Tab: Moderation ──────────────────────────────────────────────────────────
+const BAN_DURATIONS = [
+  { id: '1h', label: '1 hour' },
+  { id: '6h', label: '6 hours' },
+  { id: '1d', label: '1 day' },
+  { id: '7d', label: '7 days' },
+  { id: '30d', label: '30 days' },
+  { id: 'permanent', label: 'Permanent' },
+];
+
 // Separate from the anticheat tab: player reports queue, quick player actions,
 // and (admin only) staff role management. jrmod can only view + resolve reports.
 type ModReport = {
@@ -1762,7 +1763,9 @@ function Centered({ children }: { children: React.ReactNode }) {
   );
 }
 
-// ── Tab: Anticheat & Bans ────────────────────────────────────────────────────
+// ── Tab: Anticheat ───────────────────────────────────────────────────────────
+// Violation feed only — issuing, listing, and lifting bans lives in the
+// Moderation tab (and the server's /api/admin/moderation/* endpoints).
 type Violation = {
   id: number;
   ts: number;
@@ -1772,277 +1775,23 @@ type Violation = {
   detail: string;
   roomId: string;
 };
-type BanRowUi = {
-  id: number;
-  playerId: string;
-  playerName: string;
-  reason: string;
-  source: string;
-  issuedBy: string;
-  issuedAt: number;
-  expiresAt: number | null;
-  lifted: boolean;
-};
-const BAN_DURATIONS = [
-  { id: '1h', label: '1 hour' },
-  { id: '6h', label: '6 hours' },
-  { id: '1d', label: '1 day' },
-  { id: '7d', label: '7 days' },
-  { id: '30d', label: '30 days' },
-  { id: 'permanent', label: 'Permanent' },
-];
-
-
-// Evidence replay viewer — lazily pulls the in-game ReplayViewerOverlay from the
-// game client chunk (it's heavy: drags Three.js in). Renders full-screen on top
-// of the dashboard; Esc/Close returns to the anticheat tab.
-function ReplayEvidenceViewer({ playerId, playerName, onClose }: { playerId: string; playerName: string; onClose: () => void }) {
-  const [Overlay, setOverlay] = useState<React.ComponentType<{
-    playerId: string;
-    playerName: string;
-    settings: Record<string, unknown>;
-    onClose: () => void;
-  }> | null>(null);
-  const [err, setErr] = useState('');
-  useEffect(() => {
-    let active = true;
-    void import('./ElyxionClient').then((m) => {
-      // The overlay is module-private; fall back to a direct fetch + message
-      // if it isn't exported. Kept simple: we re-fetch the replay gz and hand it
-      // to the overlay via the player locator it already supports.
-      type OverlayType = React.ComponentType<{
-        playerId: string; playerName: string; settings: Record<string, unknown>; onClose: () => void;
-      }>;
-      const candidate = (m as unknown as { ReplayViewerOverlay?: OverlayType }).ReplayViewerOverlay;
-      if (active) {
-        if (candidate) setOverlay(() => candidate);
-        else setErr('Viewer unavailable.');
-      }
-    }).catch(() => active && setErr('Viewer unavailable.'));
-    return () => { active = false; };
-  }, []);
-  if (err) {
-    return (
-      <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 font-mono text-sm text-rose-300">
-        <div className="text-center">
-          <p>{err}</p>
-          <button onClick={onClose} className="mt-3 rounded-md border border-white/20 px-4 py-1.5 text-[11px] uppercase tracking-wide text-white/70 hover:text-white">
-            Close
-          </button>
-        </div>
-      </div>
-    );
-  }
-  if (!Overlay) {
-    return <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black font-mono text-[12px] uppercase tracking-[0.2em] text-white/55">Loading replay…</div>;
-  }
-  return <Overlay playerId={playerId} playerName={playerName} settings={{ fov: 103, resolutionScale: 1, lowSpec: false }} onClose={onClose} />;
-}
 
 function AnticheatTab() {
-  const [watching, setWatching] = useState<{ playerId: string; name: string } | null>(null);
   const [violations, setViolations] = useState<Violation[] | null>(null);
-  const [bans, setBans] = useState<{ active: BanRowUi[]; history: BanRowUi[] } | null>(null);
-  const [banUser, setBanUser] = useState('');
-  const [banReason, setBanReason] = useState('');
-  const [banDur, setBanDur] = useState('permanent');
-  const [banMsg, setBanMsg] = useState('');
-  const [banErr, setBanErr] = useState('');
-  const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(() => {
     void getJSON<{ violations: Violation[] }>('/api/admin/anticheat/violations?limit=150').then((d) =>
       setViolations(d?.violations ?? []),
     );
-    void getJSON<{ active: BanRowUi[]; history: BanRowUi[] }>('/api/admin/bans').then((d) =>
-      setBans(d ? { active: d.active ?? [], history: d.history ?? [] } : null),
-    );
   }, []);
   useEffect(refresh, [refresh]);
 
-  const post = async (url: string, body: Record<string, unknown>) => {
-    setBusy(true);
-    setBanMsg('');
-    setBanErr('');
-    try {
-      const r = await fetch(apiUrl(url), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      });
-      const data = (await r.json().catch(() => ({}))) as { error?: string };
-      if (!r.ok) {
-        setBanErr(data.error === 'not_found' ? 'No such account.' : 'Action failed.');
-        return false;
-      }
-      setBanMsg('Done.');
-      refresh();
-      return true;
-    } catch {
-      setBanErr('Network error.');
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Attach the player's stored weekly replay as ban evidence.
-  const attachEvidence = async (banId: number) => {
-    setBusy(true);
-    setBanMsg('');
-    setBanErr('');
-    try {
-      const r = await fetch(apiUrl(`/api/admin/bans/${banId}/evidence`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        credentials: 'include',
-        body: JSON.stringify({}),
-      });
-      if (r.ok) {
-        setBanMsg('Replay attached as evidence.');
-      } else {
-        setBanErr('Could not attach replay (none stored for this player this week?).');
-      }
-    } catch {
-      setBanErr('Network error.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Open the attached replay in the in-game replay viewer.
-  const openEvidence = async (banId: number, playerId: string) => {
-    const r = await fetch(apiUrl(`/api/admin/bans/${banId}/evidence`), { ...authHeaders(), credentials: 'include' });
-    if (!r.ok) {
-      setBanErr('No evidence record for this ban — attach one first.');
-      return;
-    }
-    const d = (await r.json().catch(() => ({}))) as { evidence?: { available: boolean }[] };
-    if (!d.evidence?.some((e) => e.available)) {
-      setBanErr('No replay stored for that player this week.');
-      return;
-    }
-    setWatching({ playerId, name: 'Evidence replay' });
-  };
-
   return (
     <div className="space-y-4">
-      {/* Issue a ban */}
-      <Panel title="Issue ban">
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="block">
-            <span className="mb-1 block text-[10px] uppercase tracking-[0.16em] text-white/45">Username</span>
-            <input
-              value={banUser}
-              onChange={(e) => setBanUser(e.target.value)}
-              placeholder="player name"
-              className="w-44 rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60"
-            />
-          </label>
-          <label className="block flex-1 min-w-[180px]">
-            <span className="mb-1 block text-[10px] uppercase tracking-[0.16em] text-white/45">Reason</span>
-            <input
-              value={banReason}
-              onChange={(e) => setBanReason(e.target.value)}
-              placeholder="shown to the player"
-              className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-[10px] uppercase tracking-[0.16em] text-white/45">Duration</span>
-            <select
-              value={banDur}
-              onChange={(e) => setBanDur(e.target.value)}
-              className="rounded-md border border-white/15 bg-black/40 px-2 py-1.5 font-mono text-[12px] text-white/80 outline-none focus:border-cyan-400/60"
-            >
-              {BAN_DURATIONS.map((d) => (
-                <option key={d.id} value={d.id} className="bg-zinc-900">
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            onClick={() => void post('/api/admin/bans', { username: banUser, reason: banReason, duration: banDur })}
-            disabled={busy || !banUser.trim()}
-            className="rounded-md bg-rose-400 px-4 py-1.5 text-[11px] font-bold uppercase tracking-wide text-zinc-950 transition hover:bg-rose-300 disabled:opacity-40"
-          >
-            Ban
-          </button>
-        </div>
-        {banMsg && <p className="mt-2 text-[12px] text-emerald-300">{banMsg}</p>}
-        {banErr && <p className="mt-2 text-[12px] text-rose-300">{banErr}</p>}
-        <p className="mt-2 text-[10px] text-white/35">
-          Banned players are disconnected immediately and blocked from the game socket and login until the ban expires.
-        </p>
-      </Panel>
-
-      {/* Active bans */}
-      <Panel title={`Active bans (${bans?.active.length ?? 0})`}>
-        {!bans ? (
-          <Loading />
-        ) : bans.active.length === 0 ? (
-          <Empty label="No active bans." />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-[12px] font-mono">
-              <thead>
-                <tr className="text-[10px] uppercase tracking-[0.16em] text-white/40">
-                  <th className="py-1.5 pr-3 font-medium">Player</th>
-                  <th className="py-1.5 pr-3 font-medium">Reason</th>
-                  <th className="py-1.5 pr-3 font-medium">Source</th>
-                  <th className="py-1.5 pr-3 font-medium">Issued</th>
-                  <th className="py-1.5 pr-3 font-medium">Expires</th>
-                  <th className="py-1.5 pr-3 font-medium">Action</th>
-                </tr>
-              </thead>
-              <tbody className="text-white/75">
-                {bans.active.map((b) => (
-                  <tr key={b.id} className="border-t border-white/8">
-                    <td className="py-2 pr-3 text-white/85">{b.playerName}</td>
-                    <td className="py-2 pr-3 max-w-[280px] truncate">{b.reason}</td>
-                    <td className={`py-2 pr-3 ${b.source === 'anticheat' ? 'text-amber-300' : 'text-white/50'}`}>{b.source}</td>
-                    <td className="py-2 pr-3 text-white/45">{ago(b.issuedAt)}</td>
-                    <td className="py-2 pr-3 text-white/45">
-                      {b.expiresAt ? new Date(b.expiresAt).toLocaleString() : 'Never'}
-                    </td>
-                    <td className="py-2 pr-3">
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => void post(`/api/admin/bans/${b.id}/lift`, {})}
-                          disabled={busy}
-                          className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-white/60 transition hover:border-emerald-400/50 hover:text-emerald-300 disabled:opacity-40"
-                        >
-                          Unban
-                        </button>
-                        <button
-                          onClick={() => void attachEvidence(b.id)}
-                          disabled={busy}
-                          title="Attach the player's stored replay as evidence"
-                          className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-300 disabled:opacity-40"
-                        >
-                          Clip
-                        </button>
-                        <button
-                          onClick={() => void openEvidence(b.id, b.playerId)}
-                          title="Watch the attached replay"
-                          className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-300"
-                        >
-                          Watch
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-
-      {/* Violation feed */}
       <Panel title={`Anticheat violations (recent ${violations?.length ?? 0})`}>
+        <p className="mb-3 text-[11px] text-white/40">
+          Bans are managed in the <span className="text-amber-200">Moderation</span> tab.
+        </p>
         {!violations ? (
           <Loading />
         ) : violations.length === 0 ? (
@@ -2056,7 +1805,7 @@ function AnticheatTab() {
                   <th className="py-1.5 pr-3 font-medium">Player</th>
                   <th className="py-1.5 pr-3 font-medium">Guard</th>
                   <th className="py-1.5 pr-3 font-medium">Detail</th>
-                  <th className="py-1.5 pr-3 font-medium">Action</th>
+                  <th className="py-1.5 pr-3 font-medium">Room</th>
                 </tr>
               </thead>
               <tbody className="text-white/75">
@@ -2070,18 +1819,7 @@ function AnticheatTab() {
                       </span>
                     </td>
                     <td className="py-2 pr-3 max-w-[320px] truncate text-white/55">{v.detail}</td>
-                    <td className="py-2 pr-3">
-                      <button
-                        onClick={() => {
-                          setBanUser(v.playerName);
-                          setBanReason(`Anticheat: ${v.guard} — ${v.detail}`);
-                          setBanDur('1d');
-                        }}
-                        className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-white/60 transition hover:border-rose-400/50 hover:text-rose-300"
-                      >
-                        Ban
-                      </button>
-                    </td>
+                    <td className="py-2 pr-3 max-w-[160px] truncate text-white/35">{v.roomId}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2089,48 +1827,6 @@ function AnticheatTab() {
           </div>
         )}
       </Panel>
-
-      {/* Ban history */}
-      <Panel title="Ban history">
-        {!bans ? (
-          <Loading />
-        ) : bans.history.length === 0 ? (
-          <Empty label="No bans ever issued." />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-[12px] font-mono">
-              <thead>
-                <tr className="text-[10px] uppercase tracking-[0.16em] text-white/40">
-                  <th className="py-1.5 pr-3 font-medium">Player</th>
-                  <th className="py-1.5 pr-3 font-medium">Reason</th>
-                  <th className="py-1.5 pr-3 font-medium">Status</th>
-                  <th className="py-1.5 pr-3 font-medium">Issued</th>
-                </tr>
-              </thead>
-              <tbody className="text-white/75">
-                {bans.history.map((b) => (
-                  <tr key={b.id} className="border-t border-white/8">
-                    <td className="py-2 pr-3 text-white/85">{b.playerName}</td>
-                    <td className="py-2 pr-3 max-w-[280px] truncate">{b.reason}</td>
-                    <td className={`py-2 pr-3 ${b.lifted ? 'text-emerald-300' : b.expiresAt && b.expiresAt < Date.now() ? 'text-white/40' : 'text-rose-300'}`}>
-                      {b.lifted ? 'lifted' : b.expiresAt && b.expiresAt < Date.now() ? 'expired' : 'active'}
-                    </td>
-                    <td className="py-2 pr-3 text-white/45">{ago(b.issuedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-
-      {watching && (
-        <ReplayEvidenceViewer
-          playerId={watching.playerId}
-          playerName={watching.name}
-          onClose={() => setWatching(null)}
-        />
-      )}
     </div>
   );
 }
