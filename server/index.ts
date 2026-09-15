@@ -20,6 +20,7 @@ import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
 import { seasonRouter } from './season';
 import { feedbackRouter } from './feedback';
+import { appealRouter } from './appeals';
 import { communityMapsRouter } from './community-maps';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { crazyGamesRouter } from './crazygames';
@@ -235,6 +236,7 @@ app.use('/api', rankedRouter);
 app.use('/api', challengeRouter);
 app.use('/api', seasonRouter);
 app.use('/api', feedbackRouter);
+app.use('/api', appealRouter); // ban appeals (POST /api/appeal — ban must be selected)
 app.use('/api', communityMapsRouter); // player-built maps (the /mapeditor page)
 app.use('/api', crazyGamesRouter); // CrazyGames account linking (POST /api/auth/crazygames)
 app.use('/api/donate', donateRouter); // in-game credits donation pot

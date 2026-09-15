@@ -37,6 +37,9 @@ function DeckHeader() {
         aria-label="Site links"
         className="flex items-center gap-4 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-white/45"
       >
+        <Link to="/appeal" className="text-amber-300/80 transition hover:text-amber-200">
+          Appeal a ban
+        </Link>
         <Link to="/search" className="transition hover:text-white/90">
           Players
         </Link>
@@ -62,7 +65,11 @@ const FAQS: Faq[] = [
         detects impossible gameplay (fire-rate, movement, shot-origin, or message-flood
         violations). The ban reason is shown when you try to play. Bans expire on their
         own — most anticheat bans last <span className="text-white/85">24 hours</span>.
-        If you believe it was a mistake, send a ticket below with your username.
+        If you believe it was a mistake, use the{' '}
+        <Link to="/appeal" className="text-amber-300 underline-offset-2 hover:underline">
+          dedicated appeal page
+        </Link>{' '}
+        — you'll pick the exact ban you're appealing and write your case there.
       </>
     ),
   },
@@ -150,7 +157,7 @@ function FaqItem({ q, a }: Faq) {
 
 const CATEGORIES: { id: FeedbackType; label: string; icon: typeof Gamepad2 }[] = [
   { id: 'bug', label: 'Bug / broken thing', icon: ShieldAlert },
-  { id: 'general', label: 'Ban appeal / account', icon: UserCog },
+  { id: 'general', label: 'Account / other', icon: UserCog },
   { id: 'feature', label: 'Suggestion', icon: Gamepad2 },
 ];
 

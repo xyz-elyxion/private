@@ -164,6 +164,12 @@ export function liftBan(banId: number, liftedBy: string): boolean {
   return r.changes > 0;
 }
 
+/** A single ban by id (appeal flow + dashboard). */
+export function getBanById(banId: number): BanInfo | null {
+  const row = banByIdStmt.get(banId) as BanRow | undefined;
+  return row ? toBanInfo(row) : null;
+}
+
 /** Currently-active bans for the admin dashboard. */
 export function listActiveBans(limit = 100): BanInfo[] {
   return (bansListStmt.all({ now: Date.now(), limit: Math.max(1, Math.min(500, limit)) }) as BanRow[]).map(toBanInfo);
@@ -308,4 +314,221 @@ export function getBanEvidence(banId: number): { replayKey: string; note: string
   return (
     evidenceForBanStmt.all(banId) as { replay_key: string; note: string; created_at: number }[]
   ).map((r) => ({ replayKey: r.replay_key, note: r.note, createdAt: r.created_at }));
+}
+
+// ── Ban appeals ───────────────────────────────────────────────────────────────
+// A player may appeal ONLY a specific ban (the UI makes them pick one from
+// their ban history; the server refuses appeals without a valid banId owned by
+// the caller). One open appeal per ban; decided appeals are terminal.
+
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS elyxion_ban_appeals (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ban_id      INTEGER NOT NULL,
+  player_id   TEXT NOT NULL,
+  player_name TEXT NOT NULL DEFAULT '',
+  message     TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'upheld' | 'overturned'
+  handled_by  TEXT NOT NULL DEFAULT '',      -- staff account id
+  handled_at  INTEGER,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_appeals_ban ON elyxion_ban_appeals(ban_id);
+CREATE INDEX IF NOT EXISTS idx_appeals_status ON elyxion_ban_appeals(status, created_at);
+`);
+
+export type AppealStatus = 'open' | 'upheld' | 'overturned';
+export type AppealInfo = {
+  id: number;
+  banId: number;
+  playerId: string;
+  playerName: string;
+  message: string;
+  status: AppealStatus;
+  handledBy: string;
+  handledAt: number | null;
+  createdAt: number;
+  // Joined ban context (for the staff queue).
+  banReason: string;
+  banSource: string;
+  banIssuedAt: number;
+  banExpiresAt: number | null;
+  banLifted: boolean;
+};
+
+type AppealRow = {
+  id: number;
+  ban_id: number;
+  player_id: string;
+  player_name: string;
+  message: string;
+  status: string;
+  handled_by: string;
+  handled_at: number | null;
+  created_at: number;
+  ban_reason: string;
+  ban_source: string;
+  ban_issued_at: number;
+  ban_expires_at: number | null;
+  ban_lifted_at: number | null;
+};
+
+const appealInsertStmt = sqlite.prepare(`
+  INSERT INTO elyxion_ban_appeals (ban_id, player_id, player_name, message, created_at)
+  VALUES (@banId, @playerId, @playerName, @message, @now)`);
+
+const openAppealForBanStmt = sqlite.prepare(`
+  SELECT id FROM elyxion_ban_appeals WHERE ban_id = ? AND status = 'open' LIMIT 1`);
+
+const anyAppealForBanStmt = sqlite.prepare(`
+  SELECT id FROM elyxion_ban_appeals WHERE ban_id = ? LIMIT 1`);
+
+const appealsByIdStmt = sqlite.prepare(`SELECT * FROM elyxion_ban_appeals WHERE id = ?`);
+
+const appealsForPlayerStmt = sqlite.prepare(`
+  SELECT * FROM elyxion_ban_appeals WHERE player_id = ? ORDER BY created_at DESC LIMIT 50`);
+
+const openAppealsStmt = sqlite.prepare(`
+  SELECT * FROM elyxion_ban_appeals WHERE status = 'open' ORDER BY created_at ASC LIMIT ?`);
+
+const allAppealsStmt = sqlite.prepare(`
+  SELECT * FROM elyxion_ban_appeals ORDER BY created_at DESC LIMIT ?`);
+
+// Joined read: appeals + their ban's context so the queue shows everything at once.
+const appealJoinStmt = sqlite.prepare(`
+  SELECT a.*, b.reason AS ban_reason, b.source AS ban_source, b.issued_at AS ban_issued_at,
+         b.expires_at AS ban_expires_at, b.lifted_at AS ban_lifted_at
+    FROM elyxion_ban_appeals a
+    LEFT JOIN elyxion_bans b ON b.id = a.ban_id
+   WHERE a.player_id = ? ORDER BY a.created_at DESC LIMIT 50`);
+
+const appealDecideStmt = sqlite.prepare(`
+  UPDATE elyxion_ban_appeals
+     SET status = @status, handled_by = @handledBy, handled_at = @now
+   WHERE id = @id AND status = 'open'`);
+
+const toAppealInfo = (r: AppealRow): AppealInfo => ({
+  id: r.id,
+  banId: r.ban_id,
+  playerId: r.player_id,
+  playerName: r.player_name,
+  message: r.message,
+  status: (r.status as AppealStatus) ?? 'open',
+  handledBy: r.handled_by ?? '',
+  handledAt: r.handled_at ?? null,
+  createdAt: r.created_at,
+  banReason: r.ban_reason ?? '(ban not found)',
+  banSource: r.ban_source ?? '',
+  banIssuedAt: r.ban_issued_at ?? 0,
+  banExpiresAt: r.ban_expires_at ?? null,
+  banLifted: r.ban_lifted_at != null,
+});
+
+/** Does this ban already have an appeal (any status)? One appeal per ban. */
+export function banHasAppeal(banId: number): boolean {
+  return anyAppealForBanStmt.get(banId) != null;
+}
+
+/** Submit an appeal against a specific ban. Returns the appeal id, or a failure reason. */
+export function submitAppeal(p: {
+  banId: number;
+  playerId: string;
+  playerName: string;
+  message: string;
+}): { ok: true; id: number } | { ok: false; reason: 'ban_not_found' | 'not_your_ban' | 'already_appealed' } {
+  const ban = getBanById(p.banId);
+  if (!ban) return { ok: false, reason: 'ban_not_found' };
+  if (ban.playerId !== p.playerId) return { ok: false, reason: 'not_your_ban' };
+  if (openAppealForBanStmt.get(p.banId)) return { ok: false, reason: 'already_appealed' };
+  const info = appealInsertStmt.run({
+    banId: p.banId,
+    playerId: p.playerId,
+    playerName: (p.playerName || '').slice(0, 32),
+    message: (p.message || '').slice(0, 4000),
+    now: Date.now(),
+  });
+  return { ok: true, id: Number(info.lastInsertRowid) };
+}
+
+export function getAppealById(id: number): AppealInfo | null {
+  const r = appealsByIdStmt.get(id) as Omit<AppealRow, 'ban_reason' | 'ban_source' | 'ban_issued_at' | 'ban_expires_at' | 'ban_lifted_at'> | undefined;
+  return r
+    ? toAppealInfo({
+        ...r,
+        ban_reason: '(ban not found)',
+        ban_source: '',
+        ban_issued_at: 0,
+        ban_expires_at: null,
+        ban_lifted_at: null,
+      })
+    : null;
+}
+
+/** A player's own appeals (with joined ban context). */
+export function listAppealsForPlayer(playerId: string): AppealInfo[] {
+  return (appealJoinStmt.all(playerId) as AppealRow[]).map(toAppealInfo);
+}
+
+/** Open appeals for the staff queue (oldest first so nothing starves). */
+export function listOpenAppeals(limit = 100): AppealInfo[] {
+  return (
+    (openAppealsStmt.all(Math.max(1, Math.min(500, limit))) as {
+      id: number; ban_id: number; player_id: string; player_name: string; message: string;
+      status: string; handled_by: string; handled_at: number | null; created_at: number;
+    }[]).map((r) => {
+      const ban = getBanById(r.ban_id);
+      return toAppealInfo({
+        ...r,
+        ban_reason: ban?.reason ?? '(ban not found)',
+        ban_source: ban?.source ?? '',
+        ban_issued_at: ban?.issuedAt ?? 0,
+        ban_expires_at: ban?.expiresAt ?? null,
+        ban_lifted_at: ban?.lifted ? 1 : null,
+      });
+    })
+  );
+}
+
+/** Full appeal history for staff. */
+export function listAllAppeals(limit = 100): AppealInfo[] {
+  return (
+    (allAppealsStmt.all(Math.max(1, Math.min(500, limit))) as {
+      id: number; ban_id: number; player_id: string; player_name: string; message: string;
+      status: string; handled_by: string; handled_at: number | null; created_at: number;
+    }[]).map((r) => {
+      const ban = getBanById(r.ban_id);
+      return toAppealInfo({
+        ...r,
+        ban_reason: ban?.reason ?? '(ban not found)',
+        ban_source: ban?.source ?? '',
+        ban_issued_at: ban?.issuedAt ?? 0,
+        ban_expires_at: ban?.expiresAt ?? null,
+        ban_lifted_at: ban?.lifted ? 1 : null,
+      });
+    })
+  );
+}
+
+/**
+ * Staff decision: 'overturned' lifts the ban, 'upheld' keeps it. Terminal —
+ * a decided appeal can't be reopened (submit a new ban if overturned was wrong).
+ */
+export function decideAppeal(p: {
+  appealId: number;
+  decision: 'upheld' | 'overturned';
+  handledBy: string;
+}): { ok: boolean; lifted?: boolean } {
+  const r = appealDecideStmt.run({
+    id: p.appealId,
+    status: p.decision,
+    handledBy: p.handledBy || '',
+    now: Date.now(),
+  });
+  if (r.changes === 0) return { ok: false };
+  let lifted = false;
+  if (p.decision === 'overturned') {
+    const appeal = getAppealById(p.appealId);
+    if (appeal) lifted = liftBan(appeal.banId, `appeal:${p.handledBy || 'staff'}`);
+  }
+  return { ok: true, lifted };
 }

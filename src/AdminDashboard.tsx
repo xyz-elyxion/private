@@ -1460,6 +1460,22 @@ type ModReport = {
   handledAt: number;
 };
 type StaffRow = { id: string; username: string; role: StaffRole };
+type AppealRowUi = {
+  id: number;
+  banId: number;
+  playerId: string;
+  playerName: string;
+  message: string;
+  status: 'open' | 'upheld' | 'overturned';
+  handledBy: string;
+  handledAt: number | null;
+  createdAt: number;
+  banReason: string;
+  banSource: string;
+  banIssuedAt: number;
+  banExpiresAt: number | null;
+  banLifted: boolean;
+};
 
 const ROLE_COLORS: Record<string, string> = {
   admin: 'text-rose-300 bg-rose-400/10 ring-rose-400/30',
@@ -1496,6 +1512,8 @@ function ModerationTab({ role }: { role: StaffRole }) {
   const [banDur, setBanDur] = useState('1d');
   const [verifyTarget, setVerifyTarget] = useState('');
   const [newRole, setNewRole] = useState<{ username: string; role: StaffRole }>({ username: '', role: 'jrmod' });
+  const [appeals, setAppeals] = useState<AppealRowUi[] | null>(null);
+  const [appealsView, setAppealsView] = useState<'open' | 'all'>('open');
 
   const refresh = useCallback(() => {
     void getJSON<{ reports: ModReport[]; counts: Record<string, number> }>(
@@ -1507,7 +1525,8 @@ function ModerationTab({ role }: { role: StaffRole }) {
       }
     });
     if (isAdmin) void getJSON<{ staff: StaffRow[] }>('/api/admin/moderation/staff').then((d) => setStaff(d?.staff ?? []));
-  }, [status, isAdmin]);
+    if (isMod) void getJSON<{ appeals: AppealRowUi[] }>(`/api/admin/appeals?status=${appealsView}`).then((d) => setAppeals(d?.appeals ?? []));
+  }, [status, isAdmin, isMod, appealsView]);
   useEffect(refresh, [refresh]);
 
   const post = async (url: string, body: Record<string, unknown>, okMsg: string) => {
@@ -1542,6 +1561,9 @@ function ModerationTab({ role }: { role: StaffRole }) {
     if (!username) return;
     void post('/api/admin/moderation/ban', { username, reason: banReason, duration: banDur }, `Banned ${username}.`);
   };
+
+  const decideAppeal = (id: number, decision: 'upheld' | 'overturned') =>
+    post(`/api/admin/appeals/${id}/decide`, { decision }, `Appeal #${id} ${decision}${decision === 'overturned' ? ' — ban lifted.' : '.'}`);
 
   return (
     <div className="space-y-4">
@@ -1643,6 +1665,77 @@ function ModerationTab({ role }: { role: StaffRole }) {
           </div>
         )}
       </Panel>
+
+      {/* Ban appeals queue */}
+      {isMod && (
+        <Panel
+          title={`Ban appeals (${appeals?.length ?? 0})`}
+          right={
+            <div className="flex gap-1">
+              {(['open', 'all'] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setAppealsView(v)}
+                  className={`rounded px-2 py-0.5 text-[10px] uppercase tracking-wide transition ${
+                    appealsView === v ? 'bg-cyan-400/20 text-cyan-200' : 'text-white/45 hover:text-white/80'
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          {!appeals ? (
+            <Loading />
+          ) : appeals.length === 0 ? (
+            <Empty label={appealsView === 'open' ? 'No open appeals.' : 'No appeals yet.'} />
+          ) : (
+            <div className="space-y-2">
+              {appeals.map((a) => (
+                <div key={a.id} className="rounded-md bg-white/[0.03] p-3 ring-1 ring-white/10">
+                  <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+                    <span className="font-bold uppercase tracking-wide text-white/85">{a.playerName}</span>
+                    <span className="text-white/35">· ban #{a.banId}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ring-1 ${
+                      a.status === 'open' ? 'text-amber-300 ring-amber-400/30'
+                        : a.status === 'overturned' ? 'text-emerald-300 ring-emerald-400/30'
+                          : 'text-rose-300 ring-rose-400/30'
+                    }`}>
+                      {a.status === 'open' ? 'under review' : a.status}
+                    </span>
+                    <span className="ml-auto text-white/30">{ago(a.createdAt)}</span>
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] text-white/45">
+                    Ban: {a.banReason || '(no reason)'} · {a.banSource === 'anticheat' ? 'anticheat' : 'moderator'}
+                  </p>
+                  <p className="mt-2 border-l-2 border-white/10 pl-3 text-[12px] leading-relaxed text-white/70">
+                    {a.message}
+                  </p>
+                  {a.status === 'open' && (
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={() => decideAppeal(a.id, 'overturned')}
+                        disabled={busy}
+                        className="rounded-md bg-emerald-400/10 px-3 py-1 text-[11px] text-emerald-300 ring-1 ring-emerald-400/30 transition hover:bg-emerald-400/20 disabled:opacity-40"
+                      >
+                        Overturn (lift ban)
+                      </button>
+                      <button
+                        onClick={() => decideAppeal(a.id, 'upheld')}
+                        disabled={busy}
+                        className="rounded-md bg-rose-400/10 px-3 py-1 text-[11px] text-rose-300 ring-1 ring-rose-400/30 transition hover:bg-rose-400/20 disabled:opacity-40"
+                      >
+                        Uphold (keep ban)
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      )}
 
       {/* Quick actions */}
       {isMod && (

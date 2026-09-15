@@ -58,6 +58,10 @@ import {
   listRecentViolations,
   getBanEvidence,
   attachBanEvidence,
+  decideAppeal,
+  getAppealById,
+  listAllAppeals,
+  listOpenAppeals,
 } from './bans';
 import { getWeeklyReplayGz } from './db';
 
@@ -634,6 +638,42 @@ adminRouter.get('/anticheat/violations/:username', requireRole('mod'), (req, res
 
 adminRouter.get('/bans', requireRole('mod'), (_req, res) => {
   res.json({ active: listActiveBans(200), history: listBanHistory(200) });
+});
+
+// ── Ban appeals (staff queue) ─────────────────────────────────────────────
+// Overturning an appeal lifts the underlying ban; upholding keeps it. Decisions
+// are terminal (one appeal per ban) and audit-logged.
+
+adminRouter.get('/appeals', requireRole('mod'), (req, res) => {
+  const status = String((req.query.status ?? 'open'));
+  res.json({ appeals: status === 'all' ? listAllAppeals(200) : listOpenAppeals(200) });
+});
+
+adminRouter.post('/appeals/:id/decide', requireRole('mod'), (req, res) => {
+  const id = Number(req.params.id);
+  const decision = String((req.body as Record<string, unknown>)?.decision);
+  if (!Number.isFinite(id) || (decision !== 'upheld' && decision !== 'overturned')) {
+    res.status(400).json({ error: 'bad_request' });
+    return;
+  }
+  const appeal = getAppealById(id);
+  if (!appeal || appeal.status !== 'open') {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const staffId = accountId(req) ?? 'staff';
+  const result = decideAppeal({ appealId: id, decision, handledBy: staffId });
+  if (!result.ok) {
+    res.status(409).json({ error: 'already_decided' });
+    return;
+  }
+  logEvent({
+    event: 'appeal.decided',
+    actorId: staffId,
+    targetId: String(id),
+    detail: { appealId: id, decision, banId: appeal.banId, lifted: result.lifted ?? false },
+  });
+  res.json({ ok: true, lifted: result.lifted ?? false });
 });
 
 // Issue a ban. Body: { username, reason, duration } where duration is one of
