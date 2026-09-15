@@ -27,6 +27,7 @@ import {
   KILLCAM_DURATION_SEC,
   TDM_FRAG_LIMIT,
   CTF_CAPTURE_LIMIT,
+  CTF_BROADCAST_MS,
   GUN_GAME_LEVELS,
   LMS_FRAG_LIMIT,
   TEAM_COUNT,
@@ -334,6 +335,7 @@ type Room = {
     flags: { team: number; base: Vec; pos: Vec; carrier: ClientId | null }[];
     captures: [number, number];
   } | null;
+  ctfNextBroadcast: number; // next tick the ctf-state broadcast may go out
 };
 
 type ClientMessage =
@@ -785,6 +787,7 @@ export function attachElyxionWs(wss: WebSocketServer) {
       createdAt: Date.now(),
       recentSpawns: [],
       ctf: null,
+      ctfNextBroadcast: 0,
     };
     if (opts.mode === 'ctf') {
       const spawns = arenaNet(selectedMapId).spawns;
@@ -2564,6 +2567,23 @@ export function attachElyxionWs(wss: WebSocketServer) {
       for (const id of room.spectators) {
         const c = clients.get(id);
         if (c) sendUnreliable(c, buf);
+      }
+      // CTF: broadcast flag positions (a carried flag follows its holder) +
+      // capture scores on a slow JSON channel — flag motion doesn't need 64Hz.
+      if (room.ctf && now >= (room.ctfNextBroadcast ?? 0)) {
+        room.ctfNextBroadcast = now + CTF_BROADCAST_MS;
+        broadcastRoom(room, {
+          type: 'ctf-state',
+          flags: room.ctf.flags.map((f) => ({
+            team: f.team,
+            x: f.pos.x,
+            y: f.pos.y,
+            z: f.pos.z,
+            carrier: f.carrier,
+            atBase: !f.carrier && dist(f.pos, f.base) <= 0.1,
+          })),
+          captures: [...room.ctf.captures],
+        });
       }
     }
     if (NETCODE_DIAG && now - snapshotDiagStarted >= NETCODE_DIAG_INTERVAL_MS) {

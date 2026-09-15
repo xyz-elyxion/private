@@ -3327,8 +3327,8 @@ function HudOverlay({
       <Killfeed entries={hud.killfeed} />
       <ToastStack toasts={hud.toasts} />
       <MiniLeaderboard scores={hud.scores} />
-      {hud.mode === 'tdm' && hud.teamScores && (
-        <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} />
+      {(hud.mode === 'tdm' || hud.mode === 'ctf') && hud.teamScores && (
+        <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} mode={hud.mode} />
       )}
       {hud.netDebug && <NetDebugOverlay s={hud.netDebug} />}
       {hud.training && <TrainingPanel t={hud.training} />}
@@ -3500,14 +3500,16 @@ function NetStatusPill({
 
 /* ───────────────────────── TDM team score bar (top-center) ───────────────────────── */
 
-// Compact Red vs Blue total-frag readout. Your team gets a "YOU" tag + a glowing
-// outline so it's obvious which side you're on.
+// Compact Red vs Blue score readout — team frags in TDM, captures in CTF.
+// Your team gets a "YOU" tag + a glowing outline so it's obvious which side you're on.
 function TeamScoreBar({
   scores,
   localTeam,
+  mode,
 }: {
   scores: [number, number];
   localTeam: number | null;
+  mode: 'tdm' | 'ctf';
 }) {
   return (
     <div className='absolute left-1/2 top-4 -translate-x-1/2'>

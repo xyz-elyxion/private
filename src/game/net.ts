@@ -191,6 +191,14 @@ type ObjectiveMessage = {
   playerName: string;
   score: number[];
 };
+// CTF flag positions + capture scores, broadcast at CTF_BROADCAST_MS. A flag's
+// `carrier` is the holder's clientId (null = loose/on base); `atBase` marks an
+// untouched home flag so the client can render the full base pedestal.
+type CtfStateMessage = {
+  type: 'ctf-state';
+  flags: { team: number; x: number; y: number; z: number; carrier: string | null; atBase: boolean }[];
+  captures: number[];
+};
 // In-game (room) chat broadcast — same shape as the lobby ChatMessage.
 type ChatBroadcastMessage = { type: 'chat' } & ChatMessage;
 // A rail beam fired by another player (origin → end), so we can render + sound it.
@@ -215,6 +223,7 @@ type ServerMessage =
   | RankedResultMessage
   | RespawnMessage
   | ObjectiveMessage
+  | CtfStateMessage
   | BeamMessage
   | ChatBroadcastMessage
   | { type: 'join-failed'; reason: string }
@@ -259,6 +268,7 @@ export type NetEvents = {
   onSpectateEnded?: () => void;
   onRespawn?: (pos: Vec3, reason: string) => void;
   onObjective?: (event: ObjectiveMessage) => void;
+  onCtfState?: (msg: CtfStateMessage) => void;
   onVoteStart?: (v: {
     options: string[];
     endsAtClient: number;
@@ -1077,6 +1087,10 @@ export class NetClient {
     }
     if (msg.type === 'objective') {
       this.events.onObjective?.(msg);
+      return;
+    }
+    if (msg.type === 'ctf-state') {
+      this.events.onCtfState?.(msg);
       return;
     }
     if (msg.type === 'vote-start') {

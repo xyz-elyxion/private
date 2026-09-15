@@ -51,6 +51,7 @@ import {
   TEAM_NAMES,
   TDM_FRIEND_COLOR,
   TDM_FRAG_LIMIT,
+  CTF_CAPTURE_LIMIT,
   DUEL_FRAG_LIMIT,
   RANKED_DUEL_FRAG_LIMIT,
   type BotDifficulty,
@@ -347,6 +348,17 @@ export class Game {
   private netMode: GameMode = 'ffa';
   private ranked = false; // current online match is a ranked Duel (first-to-N)
   private localTeam: number | null = null;
+  // CTF (online + offline): flag meshes + live state. Bases come from the map's
+  // two furthest-apart spawns (mirrors the server); positions update from the
+  // server's ctf-state channel online, or the local sim offline.
+  private ctfFlags: {
+    team: number;
+    base: THREE.Vector3;
+    pos: THREE.Vector3;
+    carrier: string | null; // online: holder clientId; offline: bot id | 'player'
+    mesh: THREE.Group;
+  }[] = [];
+  private ctfCaptures: [number, number] = [0, 0];
 
   private killfeed: KillfeedEntry[] = [];
   private toasts: ToastEntry[] = [];
@@ -710,6 +722,9 @@ export class Game {
       this.localTeam = null;
       if (this.bots) for (const b of this.bots.bots) b.setTeam(null);
     }
+    // Offline CTF: stand the flags up once teams exist.
+    if (this.botMode === 'ctf' && this.ctfFlags.length === 0) this.buildCtfFlags();
+    if (this.botMode !== 'ctf') this.disposeCtfFlags();
   }
 
   private rebuildBots() {
@@ -882,6 +897,8 @@ export class Game {
     this.weapon.disposeAll(this.scene);
     this.effects.dispose(this.scene);
     this.killcam = null;
+    // Rebuild flags for the new layout (no-op visuals outside CTF).
+    this.buildCtfFlags();
     // Rebuild bots for the new layout.
     if (this.bots) {
       this.bots.dispose(this.scene);
@@ -1015,6 +1032,240 @@ export class Game {
     this.emitHud();
   }
 
+  // ── Capture the Flag ────────────────────────────────────────────────────
+  // Flags are built on the two furthest-apart map spawns (team 0 = red at
+  // spawns[0], team 1 = blue at spawns[1]) — the same bases the server derives.
+  // Online, positions/captures stream from the server's ctf-state channel;
+  // offline the local sim owns pickup/return/capture logic.
+  private buildCtfFlags() {
+    this.disposeCtfFlags();
+    this.ctfCaptures = [0, 0];
+    const spawns = [this.map.spawn, ...this.map.boxes.length ? [this.farthestSpawnFrom(this.map.spawn)] : []];
+    const bases = spawns.slice(0, 2);
+    while (bases.length < 2) bases.push({ x: 20, y: 0.05, z: 0 });
+    this.ctfFlags = bases.map((base, team) => {
+      const mesh = this.buildFlagMesh(team);
+      const pos = new THREE.Vector3(base.x, base.y, base.z);
+      mesh.position.copy(pos);
+      this.scene.add(mesh);
+      return { team, base: pos.clone(), pos, carrier: null, mesh };
+    });
+  }
+
+  // The map spawn point farthest from `from` (offline maps have one spawn; the
+  // server's net arena defines two, so offline approximates the second base).
+  private farthestSpawnFrom(from: { x: number; z: number }): { x: number; y: number; z: number } {
+    const corners = this.map.bounds;
+    let best = { x: from.x, y: 0.05, z: from.z };
+    let bestD = -1;
+    for (const c of [
+      { x: corners.min.x + 4, z: corners.min.z + 4 },
+      { x: corners.min.x + 4, z: corners.max.z - 4 },
+      { x: corners.max.x - 4, z: corners.min.z + 4 },
+      { x: corners.max.x - 4, z: corners.max.z - 4 },
+    ]) {
+      const d = (c.x - from.x) ** 2 + (c.z - from.z) ** 2;
+      if (d > bestD) { bestD = d; best = { x: c.x, y: 0.05, z: c.z }; }
+    }
+    return best;
+  }
+
+  private buildFlagMesh(team: number): THREE.Group {
+    const g = new THREE.Group();
+    const color = TEAM_COLORS[team] ?? TEAM_COLORS[0];
+    // Base pad
+    const pad = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.6, 1.8, 0.12, 24),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color), emissiveIntensity: 0.45, transparent: true, opacity: 0.85 }),
+    );
+    pad.position.y = 0.06;
+    g.add(pad);
+    // Pole
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 2.4, 8),
+      new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.6, roughness: 0.3 }),
+    );
+    pole.position.y = 1.2;
+    g.add(pole);
+    // Cloth — gently waving in the render loop via a scale/rotation pulse.
+    const cloth = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 0.7),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color), emissiveIntensity: 0.6, side: THREE.DoubleSide }),
+    );
+    cloth.name = 'flagCloth';
+    cloth.position.set(0.6, 2.0, 0);
+    g.add(cloth);
+    // Beam so it's findable across the arena.
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.12, 26, 6, 1, true),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color), transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    beam.name = 'flagBeam';
+    beam.position.y = 13;
+    g.add(beam);
+    return g;
+  }
+
+  private disposeCtfFlags() {
+    for (const f of this.ctfFlags) {
+      this.scene.remove(f.mesh);
+      f.mesh.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.geometry.dispose();
+          (o.material as THREE.Material).dispose();
+        }
+      });
+    }
+    this.ctfFlags = [];
+  }
+
+  // Server-authoritative update (online): adopt flag poses + capture scores.
+  private handleCtfState(msg: {
+    flags: { team: number; x: number; y: number; z: number; carrier: string | null; atBase: boolean }[];
+    captures: number[];
+  }) {
+    if (this.ctfFlags.length === 0) this.buildCtfFlags();
+    for (const s of msg.flags) {
+      const f = this.ctfFlags[s.team];
+      if (!f) continue;
+      f.pos.set(s.x, s.y, s.z);
+      f.carrier = s.carrier;
+    }
+    this.ctfCaptures = [msg.captures[0] ?? 0, msg.captures[1] ?? 0];
+  }
+
+  // Offline CTF: a killed carrier drops their flag at the death spot.
+  private dropLocalCtfFlag(carrierId: string, pos: { x: number; y: number; z: number }) {
+    if (this.botMode !== 'ctf') return;
+    const flag = this.ctfFlags.find((f) => f.carrier === carrierId);
+    if (!flag) return;
+    flag.carrier = null;
+    flag.pos.set(pos.x, pos.y + 0.1, pos.z);
+    this.showCtfBanner('FLAG DROPPED', 'Kill', flag.team);
+  }
+
+  // Offline CTF sim: the local player + bots pick up / return / capture flags.
+  private updateLocalCtf() {
+    if (this.botMode !== 'ctf' || this.ctfFlags.length === 0) return;
+    const localDead = this.killcam != null;
+    for (const f of this.ctfFlags) {
+      // A carried flag rides its holder.
+      if (f.carrier) {
+        const holder = f.carrier === 'player'
+          ? this.player.pos
+          : this.bots?.bots.find((b) => b.state.id === f.carrier)?.state.pos;
+        if (holder) {
+          f.pos.set(holder.x, holder.y + 1.4, holder.z);
+        } else {
+          f.carrier = null; // holder vanished (bot rebuild) — drop in place
+        }
+        continue;
+      }
+      // Local player (alive) can grab the ENEMY flag / return the OWN flag.
+      const enemyTeam = f.team === 0 ? 1 : 0;
+      const grabberIsEnemy = this.localTeam === enemyTeam;
+      if (!localDead && grabberIsEnemy) {
+        const d = Math.hypot(this.player.pos.x - f.pos.x, this.player.pos.z - f.pos.z);
+        if (d < 2.2) {
+          f.carrier = 'player';
+          this.showCtfBanner('FLAG TAKEN', 'You', f.team);
+          this.audio.play('spawn');
+          continue;
+        }
+      }
+      if (!localDead && !grabberIsEnemy) {
+        const d = Math.hypot(this.player.pos.x - f.pos.x, this.player.pos.z - f.pos.z);
+        const offBase = Math.hypot(f.pos.x - f.base.x, f.pos.z - f.base.z) > 0.1;
+        if (d < 2.2 && offBase) {
+          f.pos.copy(f.base);
+          this.showCtfBanner('FLAG RETURNED', 'You', f.team);
+          this.audio.play('spawn');
+          continue;
+        }
+      }
+      // Bots (offline) attempt the same, with a small per-tick chance so it
+      // doesn't resolve instantly.
+      if (this.bots) {
+        for (const b of this.bots.bots) {
+          if (b.state.respawnTimer > 0) continue;
+          const bIsEnemy = b.getTeam() === enemyTeam;
+          const d = Math.hypot(b.state.pos.x - f.pos.x, b.state.pos.z - f.pos.z);
+          if (bIsEnemy && d < 2.2 && Math.random() < 0.05) {
+            f.carrier = b.state.id;
+            const name = b.state.name ?? 'Enemy';
+            this.showCtfBanner('FLAG TAKEN', name, f.team);
+            break;
+          }
+          if (!bIsEnemy && d < 2.2 && Math.hypot(f.pos.x - f.base.x, f.pos.z - f.base.z) > 0.1) {
+            f.pos.copy(f.base);
+            this.showCtfBanner('FLAG RETURNED', b.state.name ?? 'Ally', f.team);
+            break;
+          }
+        }
+      }
+    }
+    // Capture: a carrier scoring brings the ENEMY flag to their OWN base while
+    // the own flag is home — the capture credits the CARRIER's team.
+    for (const carriedFlag of this.ctfFlags) {
+      if (!carriedFlag.carrier) continue;
+      const scoringTeam = carriedFlag.team === 0 ? 1 : 0; // enemy flag taken
+      const own = this.ctfFlags[scoringTeam];
+      const holderPos = carriedFlag.carrier === 'player'
+        ? this.player.pos
+        : this.bots?.bots.find((b) => b.state.id === carriedFlag.carrier)?.state.pos;
+      if (!holderPos) continue;
+      const ownHome = !own.carrier && own.pos.distanceTo(own.base) < 0.5;
+      if (!ownHome) continue;
+      if (Math.hypot(holderPos.x - own.base.x, holderPos.z - own.base.z) < 2.8) {
+        this.ctfCaptures[scoringTeam] += 1;
+        const holderName = carriedFlag.carrier === 'player' ? 'You' : (this.bots?.bots.find((b) => b.state.id === carriedFlag.carrier)?.state.name ?? 'Player');
+        this.showCtfBanner('CAPTURE', holderName, scoringTeam);
+        this.audio.play('victory');
+        carriedFlag.pos.copy(carriedFlag.base);
+        carriedFlag.carrier = null;
+        // Offline: first team to the capture limit ends the match.
+        if (this.ctfCaptures[scoringTeam] >= CTF_CAPTURE_LIMIT) {
+          this.endMatch(scoringTeam === this.localTeam);
+        }
+      }
+    }
+  }
+
+  private showCtfBanner(title: string, who: string, team: number) {
+    const teamName = TEAM_NAMES[team] ?? `Team ${team + 1}`;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: title === 'CAPTURE' ? 'special' : 'multi',
+      title,
+      subtitle: `${who} · ${teamName} ${this.ctfCaptures[0] ?? 0}-${this.ctfCaptures[1] ?? 0}`,
+      remaining: 3,
+      total: 3,
+    };
+    this.emitHud();
+  }
+
+  // Per-render flag presentation: carried flags ride holders, home/loose flags
+  // pulse on their base, and cloths flutter.
+  private renderCtfFlags(elapsed: number) {
+    for (const f of this.ctfFlags) {
+      f.mesh.position.copy(f.pos);
+      const cloth = f.mesh.getObjectByName('flagCloth');
+      if (cloth) {
+        cloth.rotation.y = Math.sin(elapsed * 2.5 + f.team * 1.7) * 0.35;
+      }
+      const beam = f.mesh.getObjectByName('flagBeam');
+      if (beam) beam.visible = !f.carrier;
+      const pad = f.mesh.children[0] as THREE.Mesh | undefined;
+      if (pad) {
+        const mat = pad.material as THREE.MeshStandardMaterial;
+        mat.emissiveIntensity = f.carrier ? 0.15 : 0.45 + Math.sin(elapsed * 3 + f.team) * 0.15;
+      }
+      // Hide while I'M carrying it (it would fill the screen in first person).
+      const mine = this.net ? f.carrier === this.net.clientId : f.carrier === 'player';
+      f.mesh.visible = !mine && (this.netMode === 'ctf' || this.botMode === 'ctf');
+    }
+  }
+
   dispose() {
     this.disposed = true;
     if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
@@ -1128,6 +1379,7 @@ export class Game {
           onSpectateEnded: () => this.onNetEvent({ type: 'spectate-ended' }),
           onRespawn: (pos) => this.handleNetRespawn(pos),
           onObjective: (event) => this.handleNetObjective(event),
+          onCtfState: (msg) => this.handleCtfState(msg),
           onVoteStart: (v) => this.handleVoteStart(v),
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
@@ -1173,6 +1425,9 @@ export class Game {
     // Recolor any already-present remotes for the new mode (team colors in TDM).
     this.recolorRemotes();
     if (info.state !== 'voting') this.vote = null;
+    // CTF: adopt the server's bases + flag state (the first ctf-state broadcast
+    // will refine the positions).
+    if (info.mode === 'ctf' && this.ctfFlags.length === 0) this.buildCtfFlags();
     // "Now playing: <map>" so a server map adoption on join isn't silent (#26g).
     this.banner = {
       id: this.nextEventId++,
@@ -1485,6 +1740,11 @@ export class Game {
         if (this.replay.done) this.advanceReplay();
       } else {
         this.syncRemotePlayers(dt);
+        // CTF presentation + (offline) flag logic run per-frame.
+        if (this.netMode === 'ctf' || this.botMode === 'ctf') {
+          this.updateLocalCtf();
+          this.renderCtfFlags(this.elapsed);
+        }
         // Record the match for Play of the Match + the weekly-challenge replay
         // (downsampled; live play only). Skip the pre-match countdown so the
         // recorder clock starts at the gun-go — that makes it the authoritative
@@ -2071,6 +2331,8 @@ export class Game {
         this.killEffectStyle,
       );
       bot.kill();
+      // CTF: dying drops a carried enemy flag at the death spot.
+      this.dropLocalCtfFlag(bot.state.id, bot.state.pos);
       this.recorder.logKill({
         killerId: 'you',
         victimId: bot.state.id,
@@ -2250,6 +2512,8 @@ export class Game {
     if (!this.reducedEffects) this.damageFlash = 1;
     this.medals.onDeath();
     this.playerDeaths += 1;
+    // CTF (offline): dying drops a carried enemy flag at the death spot.
+    this.dropLocalCtfFlag('player', deathPos);
     // Invuln spans the killcam plus a short grace once you respawn.
     this.localRespawnInvuln = KILLCAM_DURATION_SEC + LOCAL_RESPAWN_INVULN_SEC;
     const bot = this.bots?.bots.find((b) => b.state.id === killerId);
@@ -2293,11 +2557,12 @@ export class Game {
     // Multiplayer match-end is server-authoritative (it triggers the map vote),
     // training is endless — only local/bot matches end client-side.
     if (this.matchOver || this.training || this.net) return;
+    // CTF: first team to CTF_CAPTURE_LIMIT captures wins (resolved in updateLocalCtf).
+    if (this.botMode === 'ctf') return;
     // TDM: first TEAM to the team frag limit wins.
-    if ((this.botMode === 'tdm' || this.botMode === 'ctf') && this.localTeam != null) {
+    if (this.botMode === 'tdm' && this.localTeam != null) {
       const [t0, t1] = this.teamFragTotals();
-      const teamLimit = this.botMode === 'ctf' ? 5 : TDM_FRAG_LIMIT;
-      if (Math.max(t0, t1) >= teamLimit) {
+      if (Math.max(t0, t1) >= TDM_FRAG_LIMIT) {
         const mine = this.localTeam === 0 ? t0 : t1;
         const other = this.localTeam === 0 ? t1 : t0;
         this.endMatch(mine >= other);
@@ -2885,8 +3150,11 @@ export class Game {
     );
 
     // TDM team frag totals [red, blue] from the (authoritative) scoreboard.
+    // CTF instead reports CAPTURES — that's the mode's actual score.
     let teamScores: [number, number] | null = null;
-    if (this.netMode === 'tdm' || this.netMode === 'ctf') {
+    if (this.netMode === 'ctf' || this.botMode === 'ctf') {
+      teamScores = this.ctfCaptures;
+    } else if (this.netMode === 'tdm') {
       const totals: [number, number] = [0, 0];
       for (const s of board) {
         if (s.team === 0) totals[0] += s.frags;

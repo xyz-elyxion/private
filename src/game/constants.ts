@@ -218,6 +218,8 @@ export function rankedTierName(rating: number): string {
 // TDM: two teams; first team to TDM_FRAG_LIMIT total frags wins.
 export const TDM_FRAG_LIMIT = 40;
 export const CTF_CAPTURE_LIMIT = 5;
+// How often (ms) the server broadcasts CTF flag positions/captures to the room.
+export const CTF_BROADCAST_MS = 100;
 export const GUN_GAME_LEVELS = 10;
 export const LMS_FRAG_LIMIT = 1;
 export const TEAM_COUNT = 2;
