@@ -897,8 +897,10 @@ export class Game {
     this.weapon.disposeAll(this.scene);
     this.effects.dispose(this.scene);
     this.killcam = null;
-    // Rebuild flags for the new layout (no-op visuals outside CTF).
-    this.buildCtfFlags();
+    // Rebuild flags for the new layout — only when a CTF match is active
+    // (building them unconditionally left inert flags standing in every mode).
+    if (this.netMode === 'ctf' || this.botMode === 'ctf') this.buildCtfFlags();
+    else this.disposeCtfFlags();
     // Rebuild bots for the new layout.
     if (this.bots) {
       this.bots.dispose(this.scene);
@@ -1146,11 +1148,30 @@ export class Game {
 
   // Offline CTF sim: the local player + bots pick up / return / capture flags.
   private updateLocalCtf() {
-    if (this.botMode !== 'ctf' || this.ctfFlags.length === 0) return;
+    // Online: the server owns pickup/return/capture — this only repositions
+    // carried flags locally (see the carrier block).
+    if (this.ctfFlags.length === 0) return;
+    if (this.net) {
+      // Online: ride the carrier's remote (or our own) render pos each frame.
+      const me = this.net.clientId;
+      for (const f of this.ctfFlags) {
+        if (!f.carrier) continue;
+        if (f.carrier === me) {
+          f.pos.set(this.player.pos.x, this.player.pos.y + 1.4, this.player.pos.z);
+        } else {
+          const rp = this.remotePlayers.get(f.carrier);
+          if (rp) f.pos.set(rp.group.position.x, rp.group.position.y + 1.4, rp.group.position.z);
+        }
+        f.mesh.position.copy(f.pos);
+      }
+      return;
+    }
+    if (this.botMode !== 'ctf') return;
     const localDead = this.killcam != null;
     for (const f of this.ctfFlags) {
       // A carried flag rides its holder.
       if (f.carrier) {
+        // Offline: the flag rides its holder ('player' or a bot id).
         const holder = f.carrier === 'player'
           ? this.player.pos
           : this.bots?.bots.find((b) => b.state.id === f.carrier)?.state.pos;
@@ -1426,8 +1447,10 @@ export class Game {
     this.recolorRemotes();
     if (info.state !== 'voting') this.vote = null;
     // CTF: adopt the server's bases + flag state (the first ctf-state broadcast
-    // will refine the positions).
+    // will refine the positions). Leaving CTF (map vote switched modes) tears
+    // the flags down.
     if (info.mode === 'ctf' && this.ctfFlags.length === 0) this.buildCtfFlags();
+    else if (info.mode !== 'ctf') this.disposeCtfFlags();
     // "Now playing: <map>" so a server map adoption on join isn't silent (#26g).
     this.banner = {
       id: this.nextEventId++,
@@ -1663,10 +1686,11 @@ export class Game {
     return Math.atan2(vr, vf);
   }
 
-  // TDM team highlight: friendlies green, foes wear their team color. Returns
-  // null in non-TDM modes so the caller falls back to the enemy-highlight color.
+  // Team highlight (TDM + CTF): friendlies green, foes wear their team color.
+  // Returns null in non-team modes so the caller falls back to the
+  // enemy-highlight color.
   private teamColorHex(team: number | null): string | null {
-    if (this.netMode !== 'tdm' || this.localTeam == null || team == null) {
+    if ((this.netMode !== 'tdm' && this.netMode !== 'ctf' && this.botMode !== 'ctf') || this.localTeam == null || team == null) {
       return null;
     }
     return team === this.localTeam
@@ -1740,7 +1764,9 @@ export class Game {
         if (this.replay.done) this.advanceReplay();
       } else {
         this.syncRemotePlayers(dt);
-        // CTF presentation + (offline) flag logic run per-frame.
+        // CTF presentation + (offline) flag logic run per-frame. updateLocalCtf
+        // no-ops its pickup/capture logic when online (the server is
+        // authoritative) but still makes carried flags ride holders each frame.
         if (this.netMode === 'ctf' || this.botMode === 'ctf') {
           this.updateLocalCtf();
           this.renderCtfFlags(this.elapsed);
@@ -1843,14 +1869,14 @@ export class Game {
         const py = rp.group.position.y;
         const pz = rp.group.position.z;
         rp.dispose(this.scene);
-        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
+        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel, snap.team);
         rp.group.position.set(px, py, pz);
         rp.team = snap.team;
         this.applyRemoteColor(rp);
         this.remotePlayers.set(id, rp);
       }
       if (!rp) {
-        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
+        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel, snap.team);
         rp.group.position.set(snap.pos.x, snap.pos.y, snap.pos.z);
         rp.team = snap.team;
         this.applyRemoteColor(rp);
@@ -2134,7 +2160,7 @@ export class Game {
     maxDist: number,
   ): { hit: boolean; headshot: boolean } {
     if (!this.net) return { hit: false, headshot: false };
-    const tdm = this.net.mode === 'tdm';
+    const tdm = this.net.mode === 'tdm' || this.net.mode === 'ctf'; // team modes: friendly fire off
     const localTeam = this.net.localTeam;
     let bestT = maxDist;
     let hit = false;
@@ -3253,12 +3279,12 @@ export class Game {
     let mine: number;
     let oppBest: number;
     let limit: number;
-    if (this.netMode === 'tdm') {
+    if (this.netMode === 'tdm' || (this.netMode === 'ctf' || this.botMode === 'ctf')) {
       if (!teamScores || this.localTeam == null) return;
       const other = this.localTeam === 0 ? 1 : 0;
       mine = teamScores[this.localTeam];
       oppBest = teamScores[other];
-      limit = TDM_FRAG_LIMIT;
+      limit = this.netMode === 'ctf' || this.botMode === 'ctf' ? CTF_CAPTURE_LIMIT : TDM_FRAG_LIMIT;
     } else {
       mine = 0;
       oppBest = 0;

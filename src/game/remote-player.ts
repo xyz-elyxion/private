@@ -11,6 +11,7 @@ import {
   railgunFinishById,
   titleById,
 } from './cosmetics';
+import { TEAM_COLORS } from './constants';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
 import type { AABB } from './types';
@@ -34,7 +35,12 @@ const TITLE_FONT = '600 18px ui-monospace, SFMono-Regular, Menlo, monospace';
 // title — a smaller, fainter flair line UNDER the name. The canvas grows taller
 // when a title is present; the sprite's Y scale tracks the canvas aspect so the
 // on-screen text size stays constant (the plate just gets taller).
-function makeNameSprite(name: string, color: string, title = ''): THREE.Sprite {
+function makeNameSprite(name: string, color: string, title = '', team: number | null = null): THREE.Sprite {
+  // Team tag appended to the name and the plate recolored by team — the
+  // nameplate is the clearest "which side are you on" signal at a glance.
+  const teamHex = team != null ? TEAM_COLORS[team] ?? null : null;
+  const displayName = teamHex ? `${name} [${team === 0 ? 'RED' : 'BLUE'}]` : name;
+  if (teamHex) color = teamHex;
   const hasTitle = title.length > 0;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -74,7 +80,7 @@ function makeNameSprite(name: string, color: string, title = ''): THREE.Sprite {
     // Name (primary line).
     ctx.font = NAME_FONT;
     ctx.fillStyle = color;
-    ctx.fillText(name, canvas.width / 2, hasTitle ? canvas.height / 2 - 11 : canvas.height / 2 + 1);
+    ctx.fillText(displayName, canvas.width / 2, hasTitle ? canvas.height / 2 - 11 : canvas.height / 2 + 1);
     // Title flair (secondary line) — smaller, fainter, tracked uppercase.
     if (hasTitle) {
       ctx.font = TITLE_FONT;
@@ -150,13 +156,15 @@ export class RemotePlayer {
   private lastSeenPos = new THREE.Vector3();
   private lastMoveSpeed = 0;
 
-  constructor(id: string, name: string, scene: THREE.Scene, model: BotModel | null) {
+  constructor(id: string, name: string, scene: THREE.Scene, model: BotModel | null, team: number | null = null) {
     this.id = id;
     this.name = name;
     this.group = new THREE.Group();
     if (model) this.installModel(model);
     else this.installFallback();
-    this.nameSprite = makeNameSprite(name, this.appliedNameColor);
+    // Team-tagged name (e.g. "Alice [RED]") + team-colored plate so sides are
+    // readable in TDM/CTF from the very first frame (Game refines it later).
+    this.nameSprite = makeNameSprite(name, this.appliedNameColor, '', team);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
 
@@ -393,7 +401,7 @@ export class RemotePlayer {
     smMat.map?.dispose();
     smMat.dispose();
     this.group.remove(this.nameSprite);
-    this.nameSprite = makeNameSprite(this.name, this.appliedNameColor, this.titleText);
+    this.nameSprite = makeNameSprite(this.name, this.appliedNameColor, this.titleText, this.team);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35 + (this.titleText ? 0.13 : 0);
     this.group.add(this.nameSprite);
   }

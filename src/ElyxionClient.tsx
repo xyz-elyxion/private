@@ -6703,7 +6703,7 @@ function CreateMatchModal({
   const [mapId, setMapId] = useState(settings.mapId);
   const [difficulty, setDifficulty] = useState<BotDifficulty>(settings.difficulty);
   const [gameMode, setGameMode] = useState<GameMode>('ffa');
-  const offlineModes = GAME_MODES.filter((m) => m.id === 'ffa' || m.id === 'duel' || m.id === 'tdm');
+  const offlineModes = GAME_MODES.filter((m) => m.id === 'ffa' || m.id === 'duel' || m.id === 'tdm' || m.id === 'ctf');
 
   // Duel is always 1v1 (1 bot); FFA/TDM use the slider.
   const effPlayers = gameMode === 'duel' ? 2 : players;
@@ -6724,7 +6724,7 @@ function CreateMatchModal({
       <SelectField label='Arena' value={mapId} options={MAPS} onChange={setMapId} />
       <div className='flex flex-col gap-1.5'>
         <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Mode</span>
-        <div className='grid grid-cols-3 gap-2'>
+        <div className='grid grid-cols-2 gap-2 sm:grid-cols-4'>
           {offlineModes.map((m) => (
             <button
               key={m.id}
@@ -6736,7 +6736,7 @@ function CreateMatchModal({
                   : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
               }`}
             >
-              {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : 'Duel'}
+              {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : m.id === 'ctf' ? 'CTF' : 'Duel'}
             </button>
           ))}
         </div>

@@ -168,7 +168,7 @@ export const GAME_MODES: ReadonlyArray<{
   { id: 'ffa', label: 'Free-for-all', blurb: 'Everyone for themselves — first to the frag limit.' },
   { id: 'duel', label: 'Duel (1v1)', blurb: 'One on one — first to the frag limit.' },
   { id: 'tdm', label: 'Team Deathmatch', blurb: 'Red vs Blue — first team to the frag limit.' },
-  { id: 'ctf', label: 'Capture the Flag', blurb: 'Red vs Blue — captures are earned by controlling the rail lanes.' },
+  { id: 'ctf', label: 'Capture the Flag', blurb: 'Red vs Blue — steal the enemy flag, capture at your base, first to 5.' },
   { id: 'lms', label: 'Last Stand', blurb: 'No respawns — be the last railer standing.' },
   { id: 'gun-game', label: 'Gun Game', blurb: 'A frag ladder — first player to clear every rung wins.' },
 ];
