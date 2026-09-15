@@ -5861,7 +5861,9 @@ function Lobby({
                 // "Play Now" = mode-agnostic super-queue: join whatever's live so a
                 // small population concentrates instead of splitting 3 ways. The
                 // mode picker drives Create Match for players who want a specific one.
-                lobbyRef.current?.quickMatch('any');
+                // "Play Now" honors the selected mode so picking CTF/TDM lands you in
+                // that mode's room (the old 'any' super-queue always resolved FFA).
+                lobbyRef.current?.quickMatch(selectedMode);
                 window.setTimeout(() => setSearching(false), 6000);
               }}
               disabled={!online || playDisabled || searching || !!banNotice}
