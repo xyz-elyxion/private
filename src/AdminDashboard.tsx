@@ -4,7 +4,7 @@
 // requireAdmin). Charts are hand-rolled SVG: no charting dependency, and they
 // match the game's cyan/zinc deck aesthetic.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Crosshair,
@@ -247,6 +247,90 @@ function Panel({ title, children, right }: { title: string; children: React.Reac
         {right}
       </div>
       {children}
+    </div>
+  );
+}
+
+// Custom dropdown — replaces the native <select> (which renders the browser's
+// built-in menu) with a themed, in-app menu styled to match the dashboard.
+function Dropdown<T extends string>({
+  value,
+  onChange,
+  options,
+  className = '',
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { id: T; label: string }[];
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close on outside click / Escape.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const current = options.find((o) => o.id === value);
+
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex w-full min-w-[8rem] items-center justify-between gap-2 rounded-md border border-white/15 bg-black/40 px-2.5 py-1.5 font-mono text-[12px] text-white/85 outline-none transition hover:border-cyan-400/40 focus:border-cyan-400/60"
+      >
+        <span className="truncate">{current?.label ?? value}</span>
+        <svg
+          viewBox="0 0 12 12"
+          className={`h-3 w-3 shrink-0 text-white/40 transition-transform ${open ? 'rotate-180' : ''}`}
+          aria-hidden="true"
+        >
+          <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <ul
+          role="listbox"
+          className="absolute left-0 z-50 mt-1 max-h-60 w-full min-w-[10rem] overflow-auto rounded-md border border-white/15 bg-zinc-900 py-1 shadow-xl shadow-black/50"
+        >
+          {options.map((o) => (
+            <li key={o.id}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={o.id === value}
+                onClick={() => {
+                  onChange(o.id);
+                  setOpen(false);
+                }}
+                className={`block w-full px-3 py-1.5 text-left font-mono text-[12px] transition ${
+                  o.id === value
+                    ? 'bg-cyan-400/15 text-cyan-200'
+                    : 'text-white/75 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                {o.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -747,17 +831,7 @@ function PlayersTab() {
         placeholder="Search name…"
         className="rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60"
       />
-      <select
-        value={sort}
-        onChange={(e) => setSort(e.target.value)}
-        className="rounded-md border border-white/15 bg-black/40 px-2 py-1.5 font-mono text-[12px] text-white/80 outline-none focus:border-cyan-400/60"
-      >
-        {PLAYER_SORTS.map((s) => (
-          <option key={s.id} value={s.id} className="bg-zinc-900">
-            {s.label}
-          </option>
-        ))}
-      </select>
+      <Dropdown value={sort} onChange={setSort} options={PLAYER_SORTS} />
     </div>
   );
   return (
@@ -1078,17 +1152,12 @@ function FeedbackCard({
           </span>
           <span className="font-medium text-white/85">{f.title}</span>
         </div>
-        <select
+        <Dropdown
           value={f.status}
-          onChange={(e) => onStatus(f.id, e.target.value as FeedbackRow['status'])}
-          className={`rounded-md border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] outline-none focus:border-cyan-400/60 ${FB_STATUS_COLOR[f.status] ?? 'text-white/70'}`}
-        >
-          {FB_STATUSES.map((s) => (
-            <option key={s} value={s} className="bg-zinc-900 text-white">
-              {FB_STATUS_LABEL[s]}
-            </option>
-          ))}
-        </select>
+          onChange={(v) => onStatus(f.id, v)}
+          options={FB_STATUSES.map((s) => ({ id: s, label: FB_STATUS_LABEL[s] }))}
+          className={`rounded-md ${FB_STATUS_COLOR[f.status] ?? 'text-white/70'}`}
+        />
       </div>
       <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/70">{f.body}</p>
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-white/35">
@@ -1748,15 +1817,7 @@ function ModerationTab({ role }: { role: StaffRole }) {
                 placeholder="username"
                 className="w-36 rounded-md bg-white/5 px-2.5 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10 placeholder:text-white/30 focus:ring-cyan-400/40"
               />
-              <select
-                value={banDur}
-                onChange={(e) => setBanDur(e.target.value)}
-                className="rounded-md bg-white/5 px-2 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10"
-              >
-                {BAN_DURATIONS.map((d) => (
-                  <option key={d.id} value={d.id}>{d.label}</option>
-                ))}
-              </select>
+              <Dropdown value={banDur} onChange={setBanDur} options={BAN_DURATIONS} />
               <input
                 value={banReason}
                 onChange={(e) => setBanReason(e.target.value)}
@@ -1809,16 +1870,16 @@ function ModerationTab({ role }: { role: StaffRole }) {
               placeholder="username"
               className="w-36 rounded-md bg-white/5 px-2.5 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10 placeholder:text-white/30 focus:ring-cyan-400/40"
             />
-            <select
+            <Dropdown
               value={newRole.role}
-              onChange={(e) => setNewRole({ ...newRole, role: e.target.value as StaffRole })}
-              className="rounded-md bg-white/5 px-2 py-1.5 font-mono text-[12px] text-white/85 outline-none ring-1 ring-white/10"
-            >
-              <option value="admin">admin</option>
-              <option value="mod">mod</option>
-              <option value="jrmod">jrmod</option>
-              <option value="player">player</option>
-            </select>
+              onChange={(v) => setNewRole({ ...newRole, role: v as StaffRole })}
+              options={[
+                { id: 'admin', label: 'admin' },
+                { id: 'mod', label: 'mod' },
+                { id: 'jrmod', label: 'jrmod' },
+                { id: 'player', label: 'player' },
+              ]}
+            />
             <button
               disabled={busy || !newRole.username.trim()}
               onClick={() => post('/api/admin/moderation/staff/role', newRole, `${newRole.username} → ${newRole.role}.`)}
