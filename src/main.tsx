@@ -234,6 +234,13 @@ const gameRoute = (
   </Suspense>
 );
 
+// Wrapper so useParams() runs INSIDE a component (calling hooks in the route
+// element expression crashed React with "Cannot read properties of null").
+function ErrorPageRoute() {
+  const { code } = useParams();
+  return <ErrorPage code={Number(code) || 500} />;
+}
+
 createRoot(document.getElementById('root')!).render(
   portal ? (
     <HashRouter>
@@ -303,10 +310,7 @@ createRoot(document.getElementById('root')!).render(
         />
         <Route path="/legal/:doc" element={<LegalPage />} />
         {/* Direct link to a themed error page, e.g. /error/503. */}
-        <Route
-          path="/error/:code"
-          element={<ErrorPage code={Number(useParams().code) || 500} />}
-        />
+        <Route path="/error/:code" element={<ErrorPageRoute />} />
         <Route
           path="/play"
           element={
