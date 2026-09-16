@@ -210,11 +210,21 @@ function CgSdkWatcher({ onSettled }: { onSettled: () => void }) {
 // static host — and drop the player straight into the game (portal QA expects
 // instant gameplay, no menu cascade). The self-hosted site keeps BrowserRouter
 // with clean URLs.
-const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search|support|appeal|mapeditor)(\/|$)/;
+const ROUTE_PATHS = /^\/(play|docs|admin|podiumlab|lockerlab|legal|donate|search|support|appeal|mapeditor|error)(\/|$)/;
 function isPortalEmbed(): boolean {
   if (typeof window === 'undefined') return false;
-  const p = window.location.pathname;
-  return !(p === '/' || ROUTE_PATHS.test(p));
+  // Inside an iframe (itch.io, CrazyGames, Poki…) we can't trust the pathname —
+  // portals serve the game from arbitrary paths like /html/<id>/index.html —
+  // so always use the hash router there.
+  try {
+    if (window.self !== window.top) return true;
+  } catch {
+    return true; // cross-origin frame access denied → we ARE framed
+  }
+  // Top-level navigation → clean BrowserRouter URLs. An unknown top-level path
+  // (e.g. a mistyped /fgd) is a 404, not a portal embed — the path router keeps
+  // the URL intact and the themed 404 page explains what happened.
+  return false;
 }
 const portal = isPortalEmbed();
 
