@@ -221,6 +221,13 @@ export const CTF_CAPTURE_LIMIT = 5;
 // How often (ms) the server broadcasts CTF flag positions/captures to the room.
 export const CTF_BROADCAST_MS = 100;
 export const GUN_GAME_LEVELS = 10;
+// Last Stand (offline wave survival): wave N spawns WAVE_BASE + (N-1)*GROWTH
+// bots. Nobody respawns — clear the wave, get a frag, then the next (bigger)
+// wave stagger-spawns after the intermission. Dying ends the match.
+export const LMS_WAVE_BASE = 3;
+export const LMS_WAVE_GROWTH = 2;
+export const LMS_WAVE_INTERMISSION_SEC = 5;
+export const LMS_WAVE_SPAWN_GAP_SEC = 1.2;
 export const LMS_FRAG_LIMIT = 1;
 export const TEAM_COUNT = 2;
 export const TEAM_NAMES = ['Red', 'Blue'] as const;

@@ -257,7 +257,9 @@ export type HudState = {
   // CTF flag status per team: null outside CTF; otherwise [ownFlag, enemyFlag]
   // from YOUR perspective — 'home' | 'stolen' | 'carried-by-you' | 'dropped'.
   ctfStatus: [string, string] | null;
-  carryingFlag: boolean; // you hold the enemy flag
+  carryingFlag: boolean;
+  // Last Stand (offline): current wave + bots left alive in it; null otherwise.
+  lmsStatus: { wave: number; alive: number; total: number } | null; // you hold the enemy flag
   // Training-range live stats; null outside the training range.
   training: TrainingHud | null;
   // Play of the Match cinematic; non-null → replay playing, results deferred.

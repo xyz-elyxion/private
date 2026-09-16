@@ -878,6 +878,7 @@ const INITIAL_HUD: HudState = {
   teamScores: null,
   ctfStatus: null,
   carryingFlag: false,
+  lmsStatus: null,
   training: null,
   pom: null,
   chat: { open: false, lines: [] },
@@ -3335,6 +3336,7 @@ function HudOverlay({
       {hud.mode === 'ctf' && hud.ctfStatus && (
         <FlagStatusStrip status={hud.ctfStatus} carrying={hud.carryingFlag} />
       )}
+      {hud.lmsStatus && <LmsStatusStrip wave={hud.lmsStatus.wave} alive={hud.lmsStatus.alive} total={hud.lmsStatus.total} />}
       {hud.netDebug && <NetDebugOverlay s={hud.netDebug} />}
       {hud.training && <TrainingPanel t={hud.training} />}
       <BannerOverlay banner={hud.banner} />
@@ -3535,6 +3537,32 @@ function FlagStatusStrip({ status, carrying }: { status: [string, string]; carry
           Take it to your base!
         </p>
       )}
+    </div>
+  );
+}
+
+// Last Stand (offline wave survival): current wave + bots left alive in it.
+// Red intensifies as the wave thins out — you can feel the last one coming.
+function LmsStatusStrip({ wave, alive, total }: { wave: number; alive: number; total: number }) {
+  return (
+    <div className='pointer-events-none absolute left-1/2 top-[86px] z-10 -translate-x-1/2'>
+      <div
+        className={`flex items-center gap-3 rounded-md border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em] backdrop-blur-sm ${
+          alive <= 2 ? 'border-rose-400/60 bg-rose-500/15' : 'border-white/12 bg-black/55'
+        }`}
+      >
+        <span className='text-white/45'>Wave</span>
+        <span className='font-bold text-rose-300'>{wave}</span>
+        <span className='text-white/20'>|</span>
+        <span className='text-white/45'>Enemies</span>
+        <span className='font-bold tabular-nums text-white'>
+          {alive}
+          <span className='text-white/35'>/{total}</span>
+        </span>
+      </div>
+      <p className='mt-1 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-white/40'>
+        No respawns
+      </p>
     </div>
   );
 }
@@ -6744,7 +6772,7 @@ function CreateMatchModal({
   const [mapId, setMapId] = useState(settings.mapId);
   const [difficulty, setDifficulty] = useState<BotDifficulty>(settings.difficulty);
   const [gameMode, setGameMode] = useState<GameMode>('ffa');
-  const offlineModes = GAME_MODES.filter((m) => m.id === 'ffa' || m.id === 'duel' || m.id === 'tdm' || m.id === 'ctf');
+  const offlineModes = GAME_MODES.filter((m) => m.id === 'ffa' || m.id === 'duel' || m.id === 'tdm' || m.id === 'ctf' || m.id === 'lms');
 
   // Duel is always 1v1 (1 bot); FFA/TDM use the slider.
   const effPlayers = gameMode === 'duel' ? 2 : players;
@@ -6777,7 +6805,7 @@ function CreateMatchModal({
                   : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
               }`}
             >
-              {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : m.id === 'ctf' ? 'CTF' : 'Duel'}
+              {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : m.id === 'ctf' ? 'CTF' : m.id === 'lms' ? 'Last Stand' : 'Duel'}
             </button>
           ))}
         </div>

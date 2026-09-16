@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
 import { assetUrl } from './urls';
 import {
+  Bot,
   BotManager,
   loadBotModel,
   pickFreeSpot,
@@ -27,6 +28,10 @@ import {
   KILL_CONFIRM_DURATION_SEC,
   KILLCAM_DURATION_SEC,
   KILLFEED_DURATION_SEC,
+  LMS_WAVE_BASE,
+  LMS_WAVE_GROWTH,
+  LMS_WAVE_INTERMISSION_SEC,
+  LMS_WAVE_SPAWN_GAP_SEC,
   LOCAL_RESPAWN_INVULN_SEC,
   LOCAL_WARMUP_SEC,
   MATCH_FRAG_LIMIT,
@@ -296,6 +301,12 @@ export class Game {
   // this flag keeps the run from recording bot-less load frames or starting the
   // timer early (the replay + run timer begin exactly at the gun-go).
   private localWarmupArmed = false;
+  // Last Stand (offline): wave-based survival. No respawns for anyone — you
+  // survive as long as you can while the arena repopulates with bigger waves.
+  private lmsWave = 1;
+  private lmsRespawnQueue = 0; // bots queued for the next wave (spawned staggered)
+  private lmsRespawnCd = 0; // seconds until the next queued bot spawns
+  private lmsWaveClear = false; // cleared the wave — waiting for the next one
   private shake = 0; // camera screen-shake amount, decays each render frame
 
   // Visual customization
@@ -725,6 +736,17 @@ export class Game {
     // Offline CTF: stand the flags up once teams exist.
     if (this.botMode === 'ctf' && this.ctfFlags.length === 0) this.buildCtfFlags();
     if (this.botMode !== 'ctf') this.disposeCtfFlags();
+    // Offline Last Stand: nobody respawns — bots die for good (the wave director
+    // handles repopulation) and your own death ends the match.
+    if (this.botMode === 'lms' && this.bots) {
+      for (const b of this.bots.bots) {
+        b.noRespawn = true;
+        b.setTeam(null);
+      }
+      this.lmsWave = 1;
+      this.lmsRespawnQueue = 0;
+      this.lmsWaveClear = false;
+    }
   }
 
   private rebuildBots() {
@@ -2083,6 +2105,11 @@ export class Game {
     this.weapon.step(dt, this.scene);
     this.effects.step(dt, this.scene);
     this.trainingRange?.update(dt);
+    // Last Stand wave director: stagger-spawn queued bots, and once a wave is
+    // fully cleared, announce + build the next (bigger) one.
+    if (this.botMode === 'lms' && this.bots && !this.matchOver && !this.inCountdown) {
+      this.stepLmsDirector(dt);
+    }
     if (this.localRespawnInvuln > 0) {
       this.localRespawnInvuln = Math.max(0, this.localRespawnInvuln - dt);
     }
@@ -2545,6 +2572,24 @@ export class Game {
   // victim branch of handleNetKill but for a bot killer.
   private handleLocalDeath(killerName: string, killerId: string) {
     if (this.killcam) return;
+    // Last Stand: dying is final — the match ends immediately as a loss
+    // (no respawn, no killcam rewind; you survived as long as you could).
+    if (this.botMode === 'lms' && !this.matchOver) {
+      this.medals.onDeath();
+      this.playerDeaths += 1;
+      this.pushKillfeed({
+        killer: killerName,
+        killerLocal: false,
+        victim: this.playerName,
+        weapon: 'rail',
+        special: null,
+      });
+      this.audio.play('hit', 0.6);
+      this.addShake(SHAKE_DEATH);
+      if (!this.reducedEffects) this.damageFlash = 1;
+      this.endMatch(false);
+      return;
+    }
     const deathPos = { ...this.player.pos };
     // Respawn away from where we died AND from every live bot (not just one).
     const avoid = [this.player.pos];
@@ -2601,12 +2646,104 @@ export class Game {
     return totals;
   }
 
+  // ── Last Stand (offline wave survival) ────────────────────────────────────────────────────────────────────────────────────
+  // No respawns for anyone. Clear every bot in the wave and a bigger one spawns
+  // in, staggered, from spawn points away from you. Your own death (after the
+  // killcam) ends the match as a loss — survive as long as you can.
+  private stepLmsDirector(dt: number) {
+    // Stagger-spawn queued wave bots a beat apart (with spawn-in effects).
+    if (this.lmsRespawnQueue > 0) {
+      this.lmsRespawnCd -= dt;
+      if (this.lmsRespawnCd <= 0) {
+        const dead = this.bots!.bots.find((b) => !b.state.alive);
+        if (dead) {
+          this.reviveBotAtSpawn(dead);
+          this.lmsRespawnQueue -= 1;
+          this.lmsRespawnCd = LMS_WAVE_SPAWN_GAP_SEC;
+        }
+      }
+      return;
+    }
+    if (this.lmsWaveClear) return; // intermission already announced
+    const anyAlive = this.bots!.bots.some((b) => b.state.alive);
+    if (anyAlive) return;
+    // Wave cleared → award a frag + announce the next (bigger) wave.
+    this.playerFrags += 1;
+    this.lmsWave += 1;
+    this.lmsWaveClear = true;
+    const total = LMS_WAVE_BASE + (this.lmsWave - 1) * LMS_WAVE_GROWTH;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: `WAVE ${this.lmsWave - 1} CLEARED`,
+      subtitle: `next wave: ${total} bots`,
+      remaining: 3,
+      total: 3,
+    };
+    this.audio.play('victory', 0.8);
+    setTimeout(() => {
+      if (this.disposed || this.matchOver) return;
+      this.queueLmsWave(total);
+    }, LMS_WAVE_INTERMISSION_SEC * 1000);
+    this.emitHud();
+  }
+
+  // Build the next wave: grow the bot roster if needed, then queue its bots to
+  // spawn staggered from spawn points away from the player.
+  private queueLmsWave(total: number) {
+    if (!this.bots || this.matchOver) return;
+    // Grow the roster (waves 2+ are bigger than the initial bot count).
+    while (this.bots.bots.length < total) {
+      const spot = pickFreeSpot(this.map, null, PLAYER_RADIUS);
+      const bot = new Bot(
+        `bot-${this.bots.bots.length}`,
+        `Wave ${this.lmsWave}-${this.bots.bots.length + 1}`,
+        spot,
+        this.scene,
+        this.botModel,
+        this.botDifficulty,
+      );
+      bot.noRespawn = true;
+      bot.kill(); // spawn director will revive it into the wave
+      this.bots.bots.push(bot);
+      this.botDeathCounts.set(bot.state.id, 0);
+      this.botFrags.set(bot.state.id, 0);
+    }
+    // Queue every currently-dead bot up to the wave size.
+    this.lmsRespawnQueue = this.bots.bots.filter((b) => !b.state.alive).length;
+    this.lmsRespawnCd = 0;
+    this.lmsWaveClear = false;
+  }
+
+  // Resurrect a dead bot at a spawn point far from the player (wave (re)spawn).
+  private reviveBotAtSpawn(bot: Bot) {
+    const avoid: { x: number; y: number; z: number }[] = [this.player.pos];
+    for (const b of this.bots!.bots) if (b.state.alive) avoid.push(b.state.pos);
+    const spot = pickFreeSpot(this.map, avoid, PLAYER_RADIUS);
+    bot.state.pos = { ...spot };
+    bot.state.alive = true;
+    bot.state.respawnTimer = 0;
+    bot.group.visible = true;
+    bot.group.position.set(spot.x, spot.y, spot.z);
+    if (!this.reducedEffects) {
+      const style = SPAWN_EFFECTS[hashStr(bot.state.id) % SPAWN_EFFECTS.length].style;
+      this.effects.spawnInBurst(
+        this.scene,
+        new THREE.Vector3(spot.x, spot.y, spot.z),
+        style,
+      );
+    }
+  }
+
   private checkMatchEnd() {
     // Multiplayer match-end is server-authoritative (it triggers the map vote),
     // training is endless — only local/bot matches end client-side.
     if (this.matchOver || this.training || this.net) return;
     // CTF: first team to CTF_CAPTURE_LIMIT captures wins (resolved in updateLocalCtf).
     if (this.botMode === 'ctf') return;
+    // Last Stand: wave survival — the wave director + your death end the match,
+    // never a frag limit.
+    if (this.botMode === 'lms') return;
     // TDM: first TEAM to the team frag limit wins.
     if (this.botMode === 'tdm' && this.localTeam != null) {
       const [t0, t1] = this.teamFragTotals();
@@ -3265,6 +3402,11 @@ export class Game {
       mode: this.netMode,
       localTeam: this.localTeam,
       teamScores,
+      lmsStatus: (() => {
+        if (this.botMode !== 'lms' || !this.bots) return null;
+        const alive = this.bots.bots.filter((b) => b.state.alive).length;
+        return { wave: this.lmsWave, alive, total: this.bots.bots.length };
+      })(),
       ctfStatus: (() => {
         if (!(this.netMode === 'ctf' || this.botMode === 'ctf') || this.ctfFlags.length < 2) return null;
         const desc = (f: (typeof this.ctfFlags)[number]) => {
@@ -3308,6 +3450,8 @@ export class Game {
   // after trailing badly. Both fire at most once per match (reset on vote/round).
   private updateMatchDrama(scores: PlayerScore[], teamScores: [number, number] | null) {
     if (this.matchOver || this.vote || this.training) return;
+    // Last Stand is wave survival: no frag limit, so "match point" drama is meaningless.
+    if (this.botMode === 'lms' && !this.net) return;
 
     // My score, the best opponent's score, and the frags needed to win — all
     // mode-aware. TDM compares team totals; FFA/Duel compare individuals.

@@ -339,6 +339,9 @@ export class Bot {
   private diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
   private engagedId: string | null = null; // current target id, null = roaming
   private objective: BotObjective = null; // CTF goal this tick (null = roam freely)
+  // Last Stand: when set, a dead bot NEVER respawns (it stays hidden for the
+  // rest of the match) — the wave shrinks as you pick them off.
+  noRespawn = false;
   private seenForSec = 0; // how long the current target has been visible (reaction gate)
   private shootCooldown = 0;
   private strafeSign = Math.random() < 0.5 ? -1 : 1;
@@ -416,6 +419,7 @@ export class Bot {
         if (this.dyingTimer <= 0) this.group.visible = false;
         return null;
       }
+      if (this.noRespawn) return null; // Last Stand: dead is permanent
       this.state.respawnTimer -= dt;
       if (this.state.respawnTimer <= 0) {
         const spot = pickFreeSpot(map, null);
