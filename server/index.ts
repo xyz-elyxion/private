@@ -242,6 +242,12 @@ app.use('/api', crazyGamesRouter); // CrazyGames account linking (POST /api/auth
 app.use('/api/donate', donateRouter); // in-game credits donation pot
 app.use('/api/admin', adminRouter);
 
+// Unknown /api routes → a clean JSON 404 with the reason spelled out, instead of
+// falling through to the SPA shell (which would return HTML with a 200).
+app.use('/api', (req: express.Request, res: express.Response) => {
+  res.status(404).json({ error: 'not_found', reason: `No API route matches ${req.method} ${req.path}.` });
+});
+
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;
 // new accounts are promoted at registration). Set ADMIN_USERNAMES on Railway and
 // redeploy to claim your account.
@@ -326,15 +332,15 @@ if (dev) {
 // returns a clean 4xx instead of Express's default 500 + stack-trace leak.
 app.use((err: Error & { type?: string; status?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (err?.type === 'entity.too.large') {
-    res.status(413).json({ error: 'payload_too_large' });
+    res.status(413).json({ error: 'payload_too_large', reason: 'The request body exceeded the 16 KB limit.' });
     return;
   }
   if (err?.type === 'entity.parse.failed' || err?.status === 400) {
-    res.status(400).json({ error: 'bad_request' });
+    res.status(400).json({ error: 'bad_request', reason: 'The request body could not be parsed (malformed JSON or wrong content type).' });
     return;
   }
   console.error('[http] unhandled route error', err);
-  res.status(500).json({ error: 'server_error' });
+  res.status(500).json({ error: 'server_error', reason: 'An unexpected server error occurred while handling the request.' });
 });
 
 // Game socket runs on the same HTTP server so it shares the port (and any TLS

@@ -1,12 +1,13 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import './index.css';
 import { initCrazyGames, syncCgSettings, cgLoadingStart } from './crazygames';
 import Landing from './pages/Landing';
 import PublicProfile from './pages/PublicProfile';
 import Docs from './pages/Docs';
 import { LegalPage } from './legal';
+import ErrorPage from './pages/ErrorPage';
 
 /* ── CrazyGames boot ─────────────────────────────────────────────────────
  * Init the SDK before the React tree renders, per the v3 docs ("do this
@@ -291,6 +292,11 @@ createRoot(document.getElementById('root')!).render(
           }
         />
         <Route path="/legal/:doc" element={<LegalPage />} />
+        {/* Direct link to a themed error page, e.g. /error/503. */}
+        <Route
+          path="/error/:code"
+          element={<ErrorPage code={Number(useParams().code) || 500} />}
+        />
         <Route
           path="/play"
           element={
@@ -331,6 +337,8 @@ createRoot(document.getElementById('root')!).render(
             </Suspense>
           }
         />
+        {/* Any unknown browser path → themed 404 with the reason shown. */}
+        <Route path="*" element={<ErrorPage code={404} />} />
       </Routes>
     </BootGate>
   </BrowserRouter>
