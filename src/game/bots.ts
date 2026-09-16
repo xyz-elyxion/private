@@ -342,6 +342,9 @@ export class Bot {
   // Last Stand: when set, a dead bot NEVER respawns (it stays hidden for the
   // rest of the match) — the wave shrinks as you pick them off.
   noRespawn = false;
+  // CTF: called right before a dead bot respawns so the game can clean up any
+  // flag that was glitch-stuck on it (carrier dies holding a flag → drop it).
+  onAboutToRespawn: (() => void) | null = null;
   private seenForSec = 0; // how long the current target has been visible (reaction gate)
   private shootCooldown = 0;
   private strafeSign = Math.random() < 0.5 ? -1 : 1;
@@ -421,6 +424,7 @@ export class Bot {
       }
       if (this.noRespawn) return null; // Last Stand: dead is permanent
       this.state.respawnTimer -= dt;
+      this.onAboutToRespawn?.();
       if (this.state.respawnTimer <= 0) {
         const spot = pickFreeSpot(map, null);
         this.state.pos = spot;

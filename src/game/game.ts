@@ -939,6 +939,17 @@ export class Game {
       this.botShotsFired.clear();
       this.botShotsHit.clear();
       for (const b of this.bots.bots) {
+        // CTF: a bot respawning while still marked as a flag carrier means it
+        // died before the drop registered — force-drop the flag where it died
+        // so it can't respawn still holding it.
+        b.onAboutToRespawn = () => {
+          if (this.botMode !== 'ctf') return;
+          const stuck = this.ctfFlags.find((f) => f.carrier === b.state.id);
+          if (stuck) {
+            stuck.carrier = null;
+            stuck.pos.set(b.state.pos.x, b.state.pos.y + 0.1, b.state.pos.z);
+          }
+        };
         this.botDeathCounts.set(b.state.id, 0);
         this.botFrags.set(b.state.id, 0);
       }
@@ -1367,6 +1378,17 @@ export class Game {
         this.botDifficulty,
       );
       for (const b of this.bots.bots) {
+        // CTF: a bot respawning while still marked as a flag carrier means it
+        // died before the drop registered — force-drop the flag where it died
+        // so it can't respawn still holding it.
+        b.onAboutToRespawn = () => {
+          if (this.botMode !== 'ctf') return;
+          const stuck = this.ctfFlags.find((f) => f.carrier === b.state.id);
+          if (stuck) {
+            stuck.carrier = null;
+            stuck.pos.set(b.state.pos.x, b.state.pos.y + 0.1, b.state.pos.z);
+          }
+        };
         this.botDeathCounts.set(b.state.id, 0);
         this.botFrags.set(b.state.id, 0);
       }
@@ -2546,6 +2568,8 @@ export class Game {
           DEFAULT_KILL_EFFECT,
         );
         victim.kill();
+        // CTF: bot-vs-bot kills must drop a carried flag too.
+        this.dropLocalCtfFlag(victim.state.id, victim.state.pos);
         this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
       }
       this.pushKillfeed({
@@ -2704,6 +2728,7 @@ export class Game {
         this.botDifficulty,
       );
       bot.noRespawn = true;
+      bot.onAboutToRespawn = null; // LMS: bots never respawn
       bot.kill(); // spawn director will revive it into the wave
       this.bots.bots.push(bot);
       this.botDeathCounts.set(bot.state.id, 0);
