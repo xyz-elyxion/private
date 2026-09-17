@@ -81,7 +81,12 @@ function spawnCodeServer(): void {
     csUnavailable = true;
     return;
   }
-  console.log(`[ide] spawning code-server: node ${path.relative(process.cwd(), bin)} (upstream 127.0.0.1:${IDE_UPSTREAM_PORT})`);
+  // Prefer a bundled Node 22 (Docker image ships one at
+  // .code-server-src/node22/bin/node) — code-server 4.104 is built for it.
+  // Fall back to the current process's node for local dev.
+  const bundledNode = path.join(process.cwd(), '.code-server-src', 'node22', 'bin', 'node');
+  const nodeBin = fs.existsSync(bundledNode) ? bundledNode : process.execPath;
+  console.log(`[ide] spawning code-server: ${path.relative(process.cwd(), nodeBin)} ${path.relative(process.cwd(), bin)} (upstream 127.0.0.1:${IDE_UPSTREAM_PORT})`);
   const args = [
     '--bind-addr', `127.0.0.1:${IDE_UPSTREAM_PORT}`,
     '--auth', 'none', // we gate /ide ourselves at the proxy
@@ -93,7 +98,7 @@ function spawnCodeServer(): void {
   ];
   // Run via node explicitly — entry.js is a JS file, not a shebang executable
   // on hosts where the executable bit was lost (git-tracked trees).
-  csProc = spawn(process.execPath, [bin, ...args], {
+  csProc = spawn(nodeBin, [bin, ...args], {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: { ...process.env, SHELL: process.env.SHELL || '/bin/bash' },
   });

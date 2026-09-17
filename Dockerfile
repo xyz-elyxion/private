@@ -22,9 +22,13 @@ RUN npm run build
 # Remove dev dependencies after the client build. The resulting node_modules
 # contains the native better-sqlite3 binary compiled for this Node/Linux image.
 RUN npm prune --omit=dev
-# Install the vendored browser IDE (coder/code-server) into its runtime dir.
-# Same install as documented in .code-server-src/README.md — done at image build
-# time so the committed repo doesn't have to carry the ~400 MB node_modules.
+
+# --- ide: install the vendored browser IDE on its required Node version ------
+# code-server 4.104.x requires Node 22 (its postinstall.sh hard-fails on other
+# majors), while the app itself builds on Node 20. A dedicated stage keeps both
+# requirements satisfied without hacks.
+FROM node:22-bookworm-slim AS ide
+WORKDIR /ide
 RUN mkdir -p .code-server-src/runtime \
     && cd .code-server-src/runtime \
     && npm init -y >/dev/null \
@@ -47,10 +51,18 @@ COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY src/game ./src/game
 COPY tsconfig*.json ./
-# Browser IDE runtime (vendored coder/code-server, installed in the build stage).
-COPY --from=build /app/.code-server-src/runtime ./.code-server-src/runtime
-# Writable dirs code-server needs at runtime.
-RUN mkdir -p .code-server-src/data/extensions
+# Browser IDE runtime (vendored coder/code-server, installed on Node 22 in the
+# ide stage). It spawns `node <entry.js>` using the RUNTIME stage's Node 20,
+# which code-server tolerates at run time — the hard Node 22 check only lives
+# in its postinstall script. Verify the entry exists at build time so a
+# failed install can't silently produce an IDE-less image.
+COPY --from=ide /ide/.code-server-src/runtime ./.code-server-src/runtime
+# Bundle the Node 22 binary code-server was built for (the runtime stage's
+# Node 20 ABI is needed by the app's native modules; code-server gets its own).
+COPY --from=ide /usr/local/bin/node ./.code-server-src/node22/bin/node
+RUN test -f .code-server-src/runtime/node_modules/code-server/out/node/entry.js \
+    && .code-server-src/node22/bin/node --version \
+    && mkdir -p .code-server-src/data/extensions
 EXPOSE 8787
 # The SQLite stats DB lives at /app/data — mount a persistent volume there so it
 # survives container churn. On Railway, attach a Railway Volume at /app/data
