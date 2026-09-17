@@ -15,6 +15,8 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import type { Express, NextFunction, Request, Response } from 'express';
+// Reuse the real auth contract: the `igsession` cookie + session lookup.
+import { accountIdFromCookieHeader } from './auth';
 
 export const IDE_PATH = '/ide';
 
@@ -33,34 +35,17 @@ const IDE_UPSTREAM_PORT = parseInt(process.env.IDE_PORT || '8890', 10);
 const IDE_ENABLED = process.env.ELYXION_IDE_DISABLED !== '1';
 
 interface IdeSession {
-  username: string;
+  userId: string;
 }
 
-// Minimal session lookup — the Elyxion auth cookie is a signed session token
-// handled by server/auth.ts; we just need to know whether it decodes to a user.
-// We avoid importing the full auth router to keep this module dependency-light;
-// instead we reuse the same cookie name contract.
-const SESSION_COOKIE = 'elyxion_session';
-
-function readCookie(req: Request, name: string): string | undefined {
-  const raw = req.headers.cookie;
-  if (!raw) return undefined;
-  for (const part of raw.split(';')) {
-    const [k, ...rest] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(rest.join('='));
-  }
-  return undefined;
-}
-
-// Very small check: any non-empty session token counts as "signed in" for IDE
-// access. Full validation (and username extraction) happens upstream — the
-// code-server instance is the only thing that can touch workspace files, and
-// its own auth is password-less on loopback, gated by this proxy.
+// Validate the request against the REAL Elyxion session store: the `igsession`
+// httpOnly cookie is looked up through the same auth module every other
+// server route uses (accountIdFromCookieHeader resolves the token to an
+// account id, '' = guest/not signed in).
 function ideUser(req: Request): IdeSession | null {
-  const token = readCookie(req, SESSION_COOKIE);
-  if (!token || token.length < 8) return null;
-  // Keep it opaque — we don't parse the token here, just gate on presence.
-  return { username: 'elyxion-user' };
+  const userId = accountIdFromCookieHeader(req.headers.cookie);
+  if (!userId) return null;
+  return { userId };
 }
 
 let csProc: ChildProcess | null = null;
