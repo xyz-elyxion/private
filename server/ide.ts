@@ -75,6 +75,18 @@ let csProc: ChildProcess | null = null;
 // runtime installed. The IDE then returns a clear 503 instead.
 let csUnavailable = false;
 
+// Headers to forward upstream. The Origin header is stripped: code-server's
+// socket-upgrade path rejects any Origin that doesn't match its own bind
+// address (--trusted-origins does not cover the VS Code server's own check),
+// which behind a reverse proxy means every WebSocket gets 403 → client 1006.
+// A request without an Origin is treated as same-origin by code-server, and
+// access control is enforced entirely at our /ide gate anyway.
+function proxyHeaders(src: http.IncomingHttpHeaders): http.IncomingHttpHeaders {
+  const h = { ...src, host: 'elyxion-ide' };
+  delete h.origin;
+  return h;
+}
+
 // HTTP request over the unix socket. Used for both the health probe and the
 // /ide proxy — socketPath replaces host/port entirely.
 function socketRequest(
@@ -212,7 +224,7 @@ export function mountIde(app: Express): void {
       {
         path: upstreamPath + (req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : ''),
         method: req.method,
-        headers: { ...req.headers, host: 'elyxion-ide' },
+        headers: proxyHeaders(req.headers),
       },
       (up) => {
         // code-server issues RELATIVE redirects (Location: ./?folder=…). Behind
@@ -275,7 +287,7 @@ export function handleIdeUpgrade(
   const upstreamUrl = url.slice(IDE_PATH.length) || '/';
   const upstream = socketRequest({
     path: upstreamUrl.startsWith('/') ? upstreamUrl : '/' + upstreamUrl,
-    headers: { ...req.headers, host: 'elyxion-ide' },
+    headers: proxyHeaders(req.headers),
   });
   upstream.end(head);
   upstream.on('upgrade', (uRes, upSocket, upHead) => {
