@@ -1,0 +1,95 @@
+Serve webviews from the same origin
+
+Normally webviews are served from vscode-webview.net but we would rather them be
+self-hosted.
+
+Additionally the service worker defaults to handling *all* requests made to the
+current host but when self-hosting the webview this will end up including the
+webview HTML itself which means these requests will fail since the communication
+channel between the webview and the main thread has not been set up yet as the
+webview itself is not ready yet (it has no HTML and therefore no script either).
+Since this code exists only for the authentication case we can just skip it when
+it is served from the current host as authentication is not a problem if the
+request is not cross-origin.
+
+There is also an origin check we bypass (this seems to be related to how the
+webview host is separate by default but we serve on the same host).
+
+To test, open a few types of webviews (images, markdown, extension details, etc).
+
+parentOriginHash changes
+
+This fixes webviews from not working properly due to a change upstream.
+Upstream added a check to ensure parent authority is encoded into the webview
+origin. Since our webview origin is the parent authority, we can bypass this
+check.
+
+Index: code-server/lib/vscode/src/vs/workbench/services/environment/browser/environmentService.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/services/environment/browser/environmentService.ts
++++ code-server/lib/vscode/src/vs/workbench/services/environment/browser/environmentService.ts
+@@ -239,7 +239,7 @@ export class BrowserWorkbenchEnvironment
+ 
+ 	@memoize
+ 	get webviewExternalEndpoint(): string {
+-		const endpoint = this.options.webviewEndpoint
++		const endpoint = (this.options.webviewEndpoint && new URL(this.options.webviewEndpoint, window.location.toString()).toString())
+ 			|| this.productService.webviewContentExternalBaseUrlTemplate
+ 			|| 'https://{{uuid}}.vscode-cdn.net/{{quality}}/{{commit}}/out/vs/workbench/contrib/webview/browser/pre/';
+ 
+Index: code-server/lib/vscode/src/vs/server/node/webClientServer.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/server/node/webClientServer.ts
++++ code-server/lib/vscode/src/vs/server/node/webClientServer.ts
+@@ -416,6 +416,7 @@ export class WebClientServer {
+ 		const workbenchWebConfiguration = {
+ 			remoteAuthority,
+ 			serverBasePath: basePath,
++			webviewEndpoint: staticRoute + '/out/vs/workbench/contrib/webview/browser/pre',
+ 			_wrapWebWorkerExtHostInIframe,
+ 			developmentOptions: { enableSmokeTestDriver: this._environmentService.args['enable-smoke-test-driver'] ? true : undefined, logLevel: this._logService.getLevel() },
+ 			settingsSyncOptions: !this._environmentService.isBuilt && this._environmentService.args['enable-sync'] ? { enabled: true } : undefined,
+Index: code-server/lib/vscode/src/vs/workbench/contrib/webview/browser/pre/index.html
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/contrib/webview/browser/pre/index.html
++++ code-server/lib/vscode/src/vs/workbench/contrib/webview/browser/pre/index.html
+@@ -253,7 +253,7 @@
+ 			}
+ 
+ 			const swPath = encodeURI(`service-worker.js?v=${expectedWorkerVersion}&vscode-resource-base-authority=${searchParams.get('vscode-resource-base-authority')}&remoteAuthority=${searchParams.get('remoteAuthority') ?? ''}&platform=${searchParams.get('platform')}`);
+-			navigator.serviceWorker.register(swPath, { type: 'module', updateViaCache: 'none' })
++			navigator.serviceWorker.register(swPath)
+ 				.then(async registration => {
+ 					if (navigator.serviceWorker.controller) {
+ 						// A previous SW is already controlling. Force an update
+@@ -332,6 +332,12 @@
+ 
+ 				const hostname = location.hostname;
+ 
++				// It is safe to run if we are on the same host.
++				const parent = new URL(parentOrigin)
++				if (parent.hostname === hostname) {
++					return start(parentOrigin)
++				}
++
+ 				if (!crypto.subtle) {
+ 					// cannot validate, not running in a secure context
+ 					throw new Error(`'crypto.subtle' is not available so webviews will not work. This is likely because the editor is not running in a secure context (https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts).`);
+Index: code-server/lib/vscode/src/vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html
++++ code-server/lib/vscode/src/vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html
+@@ -34,6 +34,13 @@
+ 			}
+ 			return start();
+ 		}
++
++		// It is safe to run if we are on the same host.
++		const parent = new URL(parentOrigin)
++		if (parent.hostname === hostname) {
++			return start()
++		}
++
+ 		if (!crypto.subtle) {
+ 			// cannot validate, not running in a secure context
+ 			return sendError(new Error(`Cannot validate in current context!`));

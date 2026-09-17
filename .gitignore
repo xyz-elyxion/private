@@ -17,6 +17,10 @@ release/
 # vendored V8 engine source (native runtime substrate; see .v8-src/README.md)
 .v8-src/
 
+# vendored code-server runtime (installed binary + data; source clone stays)
+.code-server-src/runtime/
+.code-server-src/data/
+
 # env
 .env
 .env.local

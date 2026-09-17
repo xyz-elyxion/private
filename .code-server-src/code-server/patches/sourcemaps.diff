@@ -1,0 +1,25 @@
+Remove sourcemaps URL
+
+These will not work since we patch VS Code.
+
+Index: code-server/lib/vscode/build/gulpfile.reh.ts
+===================================================================
+--- code-server.orig/lib/vscode/build/gulpfile.reh.ts
++++ code-server/lib/vscode/build/gulpfile.reh.ts
+@@ -344,10 +344,15 @@ function packageTask(type: string, platf
+ 	const destination = path.join(BUILD_ROOT, destinationFolderName);
+ 
+ 	return () => {
++		const jsFilterMain = util.filter(data => !data.isDirectory() && /\.js$/.test(data.path));
++
+ 		const src = gulp.src(sourceFolderName + '/**', { base: '.' })
+ 			.pipe(rename(function (path) { path.dirname = path.dirname!.replace(new RegExp('^' + sourceFolderName), 'out'); }))
+ 			.pipe(util.setExecutableBit(['**/*.sh']))
+-			.pipe(filter(['**', '!**/*.{js,css}.map']));
++			.pipe(filter(['**', '!**/*.{js,css}.map']))
++			.pipe(jsFilterMain)
++			.pipe(util.stripSourceMappingURL())
++			.pipe(jsFilterMain.restore);
+ 
+ 		const workspaceExtensionPoints = ['debuggers', 'jsonValidation'];
+ 		const isUIExtension = (manifest: { extensionKind?: string; main?: string; contributes?: Record<string, unknown> }) => {

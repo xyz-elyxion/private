@@ -28,6 +28,7 @@ import { adminApiTokenEnabled, adminRouter, setBanSocketDropper, setLiveCountsSo
 import { donateRouter } from './donations';
 import { syncAdminsFromEnv } from './db';
 import { attachElyxionWs } from './elyxion-game';
+import { mountIde, handleIdeUpgrade, IDE_PATH } from './ide';
 
 const ELYXION_WS_PATH = '/ws/elyxion';
 // Pre-rename clients (cached HTML) may still dial the old path — accept it.
@@ -230,6 +231,11 @@ app.use('/api', crazyGamesRouter); // CrazyGames account linking (POST /api/auth
 app.use('/api/donate', donateRouter); // in-game credits donation pot
 app.use('/api/admin', adminRouter);
 
+// Browser IDE (vendored coder/code-server, .git stripped) — gated to signed-in
+// users and proxied at /ide. Must be mounted BEFORE the SPA fallback so /ide
+// never falls through to the game shell.
+mountIde(app);
+
 // Unknown /api routes → a clean JSON 404 with the reason spelled out, instead of
 // falling through to the SPA shell (which would return HTML with a 200).
 app.use('/api', (req: express.Request, res: express.Response) => {
@@ -379,6 +385,10 @@ server.on('upgrade', (req, socket, head) => {
     if (!dev || !isViteHmr) socket.destroy();
     return;
   }
+  // The IDE's own websockets (VS Code remote agent / terminal / extensions)
+  // pass through before the game-socket origin checks — code-server speaks its
+  // own protocol on the same origin the user already loaded the IDE from.
+  if (handleIdeUpgrade(req, socket, head)) return;
   if (!isAllowedWsOrigin(req.headers.origin, req.headers.host || '')) {
     socket.destroy();
     return;
@@ -441,5 +451,7 @@ server.listen(port, host, () => {
     `>   metrics api:  http://${host}:${port}/api/admin/metrics/report ` +
       `(token auth ${adminApiTokenEnabled ? 'ENABLED' : 'disabled — set ADMIN_API_TOKEN'})`,
   );
+  console.log(`>   ide:          http://${host}:${port}/ide (browser code editor)`);
+  console.log(`>   ide:          http://${host}:${port}/ide (browser code editor)`);
   if (dev) console.log('>   dev mode: Vite client and HMR share this port.');
 });
