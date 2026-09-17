@@ -29,6 +29,11 @@ RUN npm prune --omit=dev
 # requirements satisfied without hacks.
 FROM node:22-bookworm-slim AS ide
 WORKDIR /ide
+# code-server's VS Code bundle ships native modules (@vscode/spdlog etc.) that
+# compile in postinstall — needs the same toolchain better-sqlite3 does.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p .code-server-src/runtime \
     && cd .code-server-src/runtime \
     && npm init -y >/dev/null \
