@@ -114,23 +114,13 @@ app.use((req, _res, next) => {
 // connections (incl. the same-origin WebSocket) are 'self'; styles allow inline
 // (React style props + the Play-of-the-Match <style> tag) and Google Fonts;
 // images allow data:/blob: for three.js canvas textures. The public game entry
-// routes are the only pages that can be framed by approved game portals;
-// /admin, /docs, auth, API, and every other route remain frame-blocked.
+// routes can be framed by ANY origin (portals, aggregators, personal sites —
+// frame-ancestors *). Sensitive routes (/admin,
+// /docs, auth, API) remain frame-blocked.
 // HSTS is prod-only (TLS lives at the platform edge); sending it in local http
 // dev would poison the browser. Vite's React plugin injects a small inline
 // preamble in development, so allow inline scripts only for the dev middleware.
 const EMBEDDABLE_PATHS = new Set(['/','/play']);
-const DEFAULT_EMBED_ORIGINS = [
-  'https://crazygames.com',
-  'https://*.crazygames.com',
-  'https://poki.com',
-  'https://*.poki.com',
-];
-const configuredEmbedOrigins = (process.env.EMBED_ALLOWED_ORIGINS ?? '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter((origin) => /^https:\/\/(\*\.)?[a-z0-9.-]+(?::\\d+)?$/i.test(origin));
-const embedOrigins = [...new Set([...DEFAULT_EMBED_ORIGINS, ...configuredEmbedOrigins])];
 const CSP_BASE = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -153,10 +143,8 @@ const CSP_BASE = [
 ].join('; ');
 app.use((req, res, next) => {
   const embeddable = EMBEDDABLE_PATHS.has(req.path);
-  res.setHeader(
-    'Content-Security-Policy',
-    `${CSP_BASE}; frame-ancestors ${embeddable ? `'self' ${embedOrigins.join(' ')}` : "'none'"}`,
-  );
+  if (embeddable) res.setHeader('Content-Security-Policy', `${CSP_BASE}; frame-ancestors *`);
+  else res.setHeader('Content-Security-Policy', `${CSP_BASE}; frame-ancestors 'none'`);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (!embeddable) res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
