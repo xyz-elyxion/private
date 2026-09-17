@@ -167,8 +167,29 @@ export function mountIde(app: Express): void {
   }
   console.log(`[ide] mounting code-server at ${IDE_PATH} (upstream unix:${IDE_SOCKET})`);
 
-  // Auth gate + readiness probe for every /ide request.
-  app.use(IDE_PATH, async (req: Request, res: Response, next: NextFunction) => {
+  // code-server serves everything at ROOT (/) and does not support subpath
+  // hosting — its workbench HTML references absolute asset paths like
+  // /static/... and /webview/.... So we do a two-part proxy:
+  //
+  //   1. /ide/*        → code-server with the /ide prefix stripped (the
+  //                      entry point + anything the workbench loads relative
+  //                      to it), and
+  //   2. known absolute asset prefixes → code-server verbatim (the workbench
+  //                      fetches these from site root because it thinks it IS
+  //                      the root).
+  //
+  // Both legs pass the same auth gate.
+  const IDE_ASSET_PREFIXES = [
+    '/static/',
+    '/webview/',
+    '/vscode-',
+    '/locales/',
+    '/manifest.json',
+    '/favicon.ico',
+    '/_static/',
+  ];
+
+  const gate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (!ideUser(req)) {
       res.status(401).json({ error: 'ide_auth_required', reason: 'Sign in to Elyxion to use the IDE.' });
       return;
@@ -178,13 +199,12 @@ export function mountIde(app: Express): void {
       return;
     }
     next();
-  });
+  };
 
-  // HTTP proxy — raw, no body rewrites, so streaming uploads/downloads work.
-  app.use(IDE_PATH, (req: Request, res: Response) => {
+  const proxy = (upstreamPath: string) => (req: Request, res: Response) => {
     const target = socketRequest(
       {
-        path: req.originalUrl,
+        path: upstreamPath + (req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : ''),
         method: req.method,
         headers: { ...req.headers, host: 'elyxion-ide' },
       },
@@ -198,6 +218,19 @@ export function mountIde(app: Express): void {
     });
     req.pipe(target);
     target.on('error', () => req.destroy());
+  };
+
+  // Leg 2 FIRST: absolute asset fetches from the workbench (path = /static/…). Must
+  // be registered before the /ide leg since Express matches in order and these
+  // don't overlap anyway.
+  for (const prefix of IDE_ASSET_PREFIXES) {
+    app.use(prefix, gate, (req: Request, res: Response) => proxy(req.originalUrl)(req, res));
+  }
+
+  // Leg 1: the IDE itself, prefix stripped (code-server serves at /).
+  app.use(IDE_PATH, gate, (req: Request, res: Response) => {
+    const suffix = req.originalUrl.slice(IDE_PATH.length) || '/';
+    proxy(suffix.startsWith('/') ? suffix : '/' + suffix)(req, res);
   });
 }
 
@@ -211,8 +244,10 @@ export function handleIdeUpgrade(
 ): boolean {
   const url = req.url ?? '';
   if (!url.startsWith(IDE_PATH)) return false;
+  // Strip the /ide prefix — code-server speaks at root on its socket.
+  const upstreamUrl = url.slice(IDE_PATH.length) || '/';
   const upstream = socketRequest({
-    path: url,
+    path: upstreamUrl.startsWith('/') ? upstreamUrl : '/' + upstreamUrl,
     headers: { ...req.headers, host: 'elyxion-ide' },
   });
   upstream.end(head);
