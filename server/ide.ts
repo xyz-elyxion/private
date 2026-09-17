@@ -28,6 +28,19 @@ import { accountIdFromCookieHeader } from './auth';
 
 export const IDE_PATH = '/ide';
 
+// Absolute root paths the workbench fetches from site root because code-server
+// serves everything at /. Exported so the game CSP middleware in index.ts can
+// exclude IDE traffic from the game's frame-ancestors CSP.
+export const IDE_ASSET_PREFIXES = [
+  '/static/',
+  '/webview/',
+  '/vscode-',
+  '/locales/',
+  '/manifest.json',
+  '/favicon.ico',
+  '/_static/',
+];
+
 // Resolve the real code-server entry (the .bin symlink can be lost when a
 // git-tracked tree is deployed; fall back to the direct out/node/entry.js path).
 function resolveCodeServerBin(): string | null {
@@ -197,15 +210,6 @@ export function mountIde(app: Express): void {
   //                      the root).
   //
   // Both legs pass the same auth gate.
-  const IDE_ASSET_PREFIXES = [
-    '/static/',
-    '/webview/',
-    '/vscode-',
-    '/locales/',
-    '/manifest.json',
-    '/favicon.ico',
-    '/_static/',
-  ];
 
   const gate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (!ideUser(req)) {

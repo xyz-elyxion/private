@@ -28,7 +28,7 @@ import { adminApiTokenEnabled, adminRouter, setBanSocketDropper, setLiveCountsSo
 import { donateRouter } from './donations';
 import { syncAdminsFromEnv } from './db';
 import { attachElyxionWs } from './elyxion-game';
-import { mountIde, handleIdeUpgrade, IDE_PATH } from './ide';
+import { mountIde, handleIdeUpgrade, IDE_PATH, IDE_ASSET_PREFIXES } from './ide';
 
 const ELYXION_WS_PATH = '/ws/elyxion';
 // Pre-rename clients (cached HTML) may still dial the old path — accept it.
@@ -143,11 +143,22 @@ const CSP_BASE = [
   "form-action 'self'",
 ].join('; ');
 app.use((req, res, next) => {
+  // The IDE proxy (/ide + code-server asset legs) carries its own headers from
+  // the workbench/webviews — the game CSP must not apply to it. VS Code webview
+  // iframes get frame-src from the workbench itself; our 'none' here was
+  // blocking them ("Framing … violates frame-ancestors 'none'").
+  const isIde = req.path.startsWith('/ide') || IDE_ASSET_PREFIXES.some((p) => req.path.startsWith(p) || req.path === p.replace(/\/$/, ''));
   const embeddable = EMBEDDABLE_PATHS.has(req.path);
-  if (embeddable) res.setHeader('Content-Security-Policy', `${CSP_BASE}; frame-ancestors *`);
-  else res.setHeader('Content-Security-Policy', `${CSP_BASE}; frame-ancestors 'none'`);
+  if (isIde) {
+    res.removeHeader('Content-Security-Policy');
+    res.removeHeader('X-Frame-Options');
+  } else if (embeddable) {
+    res.setHeader('Content-Security-Policy', `${CSP_BASE}; frame-ancestors *`);
+  } else {
+    res.setHeader('Content-Security-Policy', `${CSP_BASE}; frame-ancestors 'none'`);
+  }
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  if (!embeddable) res.setHeader('X-Frame-Options', 'DENY');
+  if (!embeddable && !isIde) res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader(
     'Permissions-Policy',
