@@ -377,6 +377,10 @@ function clientIp(req: http.IncomingMessage): string {
 server.on('upgrade', (req, socket, head) => {
   const { url } = req;
   const pathname = url ? url.split('?')[0] : '';
+  // The IDE's sockets (workbench remote agent, extension host) must be handled
+  // BEFORE the game-socket path check below — their URLs are /ide/... and
+  // would otherwise hit the unknown-path destroy and close with 1006.
+  if (handleIdeUpgrade(req, socket, head)) return;
   if (pathname !== ELYXION_WS_PATH && pathname !== ELYXION_WS_LEGACY_PATH) {
     // Vite owns its `vite-hmr` upgrade in development. All other unknown
     // upgrades are rejected so they cannot leave an idle socket behind.
@@ -385,10 +389,6 @@ server.on('upgrade', (req, socket, head) => {
     if (!dev || !isViteHmr) socket.destroy();
     return;
   }
-  // The IDE's own websockets (VS Code remote agent / terminal / extensions)
-  // pass through before the game-socket origin checks — code-server speaks its
-  // own protocol on the same origin the user already loaded the IDE from.
-  if (handleIdeUpgrade(req, socket, head)) return;
   if (!isAllowedWsOrigin(req.headers.origin, req.headers.host || '')) {
     socket.destroy();
     return;
