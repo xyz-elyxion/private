@@ -11,6 +11,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
+    "preinstall": "sh ./scripts/install-ide-runtime.sh || true",
     "predev": "node scripts/ensure-native.mjs",
     "dev": "tsx watch server/index.ts",
     "predev:lan": "node scripts/ensure-native.mjs && node scripts/lan-url.mjs",
