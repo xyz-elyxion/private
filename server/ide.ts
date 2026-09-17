@@ -1,14 +1,21 @@
 // Elyxion IDE — coder/code-server (vendored in .code-server-src/, .git stripped).
 //
-// Spawns the code-server binary bound to a loopback port and exposes it to
+// Spawns code-server listening on a UNIX SOCKET (no TCP port at all — it can
+// never collide with the main server or anything else) and exposes it to
 // users at /ide on the main Elyxion origin: HTTP requests and WebSocket
-// upgrades are proxied 1:1, so people can open a full VS Code environment
-// (file tree, editor, integrated terminal) and actually code on this repo's
-// workspace from the browser.
+// upgrades are proxied 1:1 over the socket, so people can open a full VS Code
+// environment (file tree, editor, integrated terminal) and actually code on
+// this repo's workspace from the browser.
 //
 // Access control: only logged-in Elyxion users may use the IDE (session
 // cookie checked in the proxy before anything reaches code-server). The
-// upstream listener is loopback-only, so the IDE is never directly reachable.
+// upstream listener is a filesystem socket inside the container, so the IDE
+// is never reachable from outside at all.
+//
+// NOTE on env leakage: code-server honors $PORT for its bind address, which
+// bit us before (it grabbed the main server's port and crashed with
+// EADDRINUSE). We pass PORT= explicitly in the child env AND bind to a unix
+// socket, so there is no port to collide on either way.
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,14 +28,6 @@ import { accountIdFromCookieHeader } from './auth';
 
 export const IDE_PATH = '/ide';
 
-const CODE_SERVER_BIN = path.join(
-  process.cwd(),
-  '.code-server-src',
-  'runtime',
-  'node_modules',
-  '.bin',
-  'code-server',
-);
 // Resolve the real code-server entry (the .bin symlink can be lost when a
 // git-tracked tree is deployed; fall back to the direct out/node/entry.js path).
 function resolveCodeServerBin(): string | null {
@@ -46,8 +45,12 @@ function resolveCodeServerBin(): string | null {
   for (const p of candidates) if (fs.existsSync(p)) return p;
   return null;
 }
+
 const IDE_WORKSPACE_DIR = process.cwd();
-const IDE_UPSTREAM_PORT = parseInt(process.env.IDE_PORT || '8890', 10);
+// Unix socket path — must be short enough for sockaddr_un (108 bytes) and live
+// somewhere writable in every environment (including read-only-ish /app dirs
+// that only allow their own subpaths). /tmp is always writable.
+const IDE_SOCKET = process.env.IDE_SOCKET || '/tmp/elyxion-ide.sock';
 // The IDE is always on — no opt-in flag needed. Set ELYXION_IDE_DISABLED=1 to
 // turn it off explicitly (e.g. on a host where the runtime isn't installed).
 const IDE_ENABLED = process.env.ELYXION_IDE_DISABLED !== '1';
@@ -67,11 +70,19 @@ function ideUser(req: Request): IdeSession | null {
 }
 
 let csProc: ChildProcess | null = null;
-let csReady = false;
 // Set once we've confirmed the binary can't be spawned — prevents an infinite
 // spawn/crash loop (and the fatal uncaughtException) on hosts without the
 // runtime installed. The IDE then returns a clear 503 instead.
 let csUnavailable = false;
+
+// HTTP request over the unix socket. Used for both the health probe and the
+// /ide proxy — socketPath replaces host/port entirely.
+function socketRequest(
+  opts: Omit<http.RequestOptions, 'socketPath'>,
+  cb?: (res: http.IncomingMessage) => void,
+): http.ClientRequest {
+  return http.request({ ...opts, socketPath: IDE_SOCKET }, cb);
+}
 
 function spawnCodeServer(): void {
   if (csProc || csUnavailable) return;
@@ -86,9 +97,11 @@ function spawnCodeServer(): void {
   // Fall back to the current process's node for local dev.
   const bundledNode = path.join(process.cwd(), '.code-server-src', 'node22', 'bin', 'node');
   const nodeBin = fs.existsSync(bundledNode) ? bundledNode : process.execPath;
-  console.log(`[ide] spawning code-server: ${path.relative(process.cwd(), nodeBin)} ${path.relative(process.cwd(), bin)} (upstream 127.0.0.1:${IDE_UPSTREAM_PORT})`);
+  // Clean any stale socket left by a previous container generation.
+  try { fs.unlinkSync(IDE_SOCKET); } catch { /* didn't exist */ }
+  console.log(`[ide] spawning code-server on unix socket ${IDE_SOCKET}`);
   const args = [
-    '--bind-addr', `127.0.0.1:${IDE_UPSTREAM_PORT}`,
+    '--socket', IDE_SOCKET, // unix socket — bind-addr/PORT are ignored entirely
     '--auth', 'none', // we gate /ide ourselves at the proxy
     '--disable-telemetry',
     '--disable-update-check',
@@ -97,15 +110,16 @@ function spawnCodeServer(): void {
     IDE_WORKSPACE_DIR,
   ];
   // Run via node explicitly — entry.js is a JS file, not a shebang executable
-  // on hosts where the executable bit was lost (git-tracked trees).
+  // on hosts where the executable bit was lost (git-tracked trees). PORT is
+  // blanked in the child env so code-server can't leak-bind the main port even
+  // if it ignored --bind-addr (belt and braces).
   csProc = spawn(nodeBin, [bin, ...args], {
     stdio: ['ignore', 'inherit', 'inherit'],
-    env: { ...process.env, SHELL: process.env.SHELL || '/bin/bash' },
+    env: { ...process.env, PORT: '', SHELL: process.env.SHELL || '/bin/bash' },
   });
   csProc.on('exit', (code) => {
     console.log(`[ide] code-server exited (${code}); restarting in 2s…`);
     csProc = null;
-    csReady = false;
     if (!process.env.ELYXION_IDE_DISABLED && !csUnavailable) setTimeout(spawnCodeServer, 2000);
   });
   // Spawn-level failures (ENOENT, OOM kill → EAGAIN, EMFILE) arrive as an
@@ -113,25 +127,24 @@ function spawnCodeServer(): void {
   csProc.on('error', (err) => {
     console.error('[ide] failed to start code-server:', err.message);
     csProc = null;
-    csReady = false;
   });
-  csReady = true;
 }
 
 function pingUpstream(): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get({ host: '127.0.0.1', port: IDE_UPSTREAM_PORT, path: '/healthz', timeout: 1500 }, (res) => {
+    const req = socketRequest({ path: '/healthz', timeout: 1500 }, (res) => {
       res.resume();
       resolve(res.statusCode !== undefined && res.statusCode < 500);
     });
     req.on('error', () => resolve(false));
     req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.end();
   });
 }
 
 async function ensureUpstream(): Promise<boolean> {
   if (csUnavailable) return false;
-  if (csReady && (await pingUpstream())) return true;
+  if (await pingUpstream()) return true;
   spawnCodeServer();
   // Wait up to ~75 s for readiness. code-server's cold start (extension host
   // init on a small container) can take well over 15 s; aborting early just
@@ -147,21 +160,12 @@ async function ensureUpstream(): Promise<boolean> {
   return false;
 }
 
-// Proxy a raw HTTP request (or an upgraded WebSocket) to the code-server port.
-function pipeRequest(
-  req: http.IncomingMessage,
-  out: http.ClientRequest,
-): void {
-  req.pipe(out);
-  out.on('error', () => req.destroy());
-}
-
 export function mountIde(app: Express): void {
   if (!IDE_ENABLED) {
     console.log('[ide] disabled (ELYXION_IDE_DISABLED=1)');
     return;
   }
-  console.log(`[ide] mounting code-server at ${IDE_PATH} (upstream 127.0.0.1:${IDE_UPSTREAM_PORT})`);
+  console.log(`[ide] mounting code-server at ${IDE_PATH} (upstream unix:${IDE_SOCKET})`);
 
   // Auth gate + readiness probe for every /ide request.
   app.use(IDE_PATH, async (req: Request, res: Response, next: NextFunction) => {
@@ -178,13 +182,11 @@ export function mountIde(app: Express): void {
 
   // HTTP proxy — raw, no body rewrites, so streaming uploads/downloads work.
   app.use(IDE_PATH, (req: Request, res: Response) => {
-    const target = http.request(
+    const target = socketRequest(
       {
-        host: '127.0.0.1',
-        port: IDE_UPSTREAM_PORT,
         path: req.originalUrl,
         method: req.method,
-        headers: { ...req.headers, host: `127.0.0.1:${IDE_UPSTREAM_PORT}` },
+        headers: { ...req.headers, host: 'elyxion-ide' },
       },
       (up) => {
         res.writeHead(up.statusCode ?? 502, up.headers);
@@ -194,7 +196,8 @@ export function mountIde(app: Express): void {
     target.on('error', () => {
       if (!res.headersSent) res.status(502).json({ error: 'ide_proxy_error' });
     });
-    pipeRequest(req, target);
+    req.pipe(target);
+    target.on('error', () => req.destroy());
   });
 }
 
@@ -208,15 +211,10 @@ export function handleIdeUpgrade(
 ): boolean {
   const url = req.url ?? '';
   if (!url.startsWith(IDE_PATH)) return false;
-  const headers = { ...req.headers, host: `127.0.0.1:${IDE_UPSTREAM_PORT}` };
-  const upstream = http.request(
-    {
-      host: '127.0.0.1',
-      port: IDE_UPSTREAM_PORT,
-      path: url,
-      headers,
-    },
-  );
+  const upstream = socketRequest({
+    path: url,
+    headers: { ...req.headers, host: 'elyxion-ide' },
+  });
   upstream.end(head);
   upstream.on('upgrade', (uRes, upSocket, upHead) => {
     const lines = ['HTTP/1.1 101 Switching Protocols'];
