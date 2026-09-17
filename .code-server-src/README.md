@@ -23,7 +23,16 @@ build stage in `Dockerfile`) so the repo stays lean. For local dev or a bare
 
 ```sh
 cd .code-server-src/runtime && npm install code-server@4.104.2 --no-audit --no-fund --unsafe-perm
+sh scripts/rebrand-ide.sh   # apply Elyxion Codespace branding
 ```
+
+## Branding
+
+The editor is rebranded as **Elyxion Codespace** — `product.json` app names
+(window title, menus, about dialog), the PWA manifest, and the user-visible
+strings inside the workbench web bundle. The Dockerfile runs
+`scripts/rebrand-ide.sh` right after installing code-server, so image builds
+are branded automatically.
 
 ## How it's wired
 

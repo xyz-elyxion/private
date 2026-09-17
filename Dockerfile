@@ -38,6 +38,11 @@ RUN mkdir -p .code-server-src/runtime \
     && cd .code-server-src/runtime \
     && npm init -y >/dev/null \
     && npm install code-server@4.104.2 --no-audit --no-fund --unsafe-perm
+# Rebrand code-server as "Elyxion Codespace" (product names, PWA manifest,
+# workbench HTML/bundle strings). Runs in the image so the branding survives
+# fresh builds without carrying a patched runtime in git.
+COPY scripts/rebrand-ide.sh ./scripts/rebrand-ide.sh
+RUN sh ./scripts/rebrand-ide.sh
 
 # --- runtime: serve dist/ + the game/stats server ---------------------------
 FROM node:20.19-bookworm-slim AS runtime
