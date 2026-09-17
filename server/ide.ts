@@ -11,6 +11,7 @@
 // upstream listener is loopback-only, so the IDE is never directly reachable.
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
@@ -28,6 +29,23 @@ const CODE_SERVER_BIN = path.join(
   '.bin',
   'code-server',
 );
+// Resolve the real code-server entry (the .bin symlink can be lost when a
+// git-tracked tree is deployed; fall back to the direct out/node/entry.js path).
+function resolveCodeServerBin(): string | null {
+  const root = path.join(
+    process.cwd(),
+    '.code-server-src',
+    'runtime',
+    'node_modules',
+    'code-server',
+  );
+  const candidates = [
+    path.join(root, 'out', 'node', 'entry.js'),
+    path.join(process.cwd(), '.code-server-src', 'runtime', 'node_modules', '.bin', 'code-server'),
+  ];
+  for (const p of candidates) if (fs.existsSync(p)) return p;
+  return null;
+}
 const IDE_WORKSPACE_DIR = process.cwd();
 const IDE_UPSTREAM_PORT = parseInt(process.env.IDE_PORT || '8890', 10);
 // The IDE is always on — no opt-in flag needed. Set ELYXION_IDE_DISABLED=1 to
@@ -50,9 +68,19 @@ function ideUser(req: Request): IdeSession | null {
 
 let csProc: ChildProcess | null = null;
 let csReady = false;
+// Set once we've confirmed the binary can't be spawned — prevents an infinite
+// spawn/crash loop (and the fatal uncaughtException) on hosts without the
+// runtime installed. The IDE then returns a clear 503 instead.
+let csUnavailable = false;
 
 function spawnCodeServer(): void {
-  if (csProc) return;
+  if (csProc || csUnavailable) return;
+  const bin = resolveCodeServerBin();
+  if (!bin) {
+    console.error('[ide] code-server runtime not found in .code-server-src/runtime — install it (see .code-server-src/README.md) or set ELYXION_IDE_DISABLED=1. IDE requests will return 503.');
+    csUnavailable = true;
+    return;
+  }
   const args = [
     '--bind-addr', `127.0.0.1:${IDE_UPSTREAM_PORT}`,
     '--auth', 'none', // we gate /ide ourselves at the proxy
@@ -62,7 +90,9 @@ function spawnCodeServer(): void {
     '--extensions-dir', path.join(process.cwd(), '.code-server-src', 'data', 'extensions'),
     IDE_WORKSPACE_DIR,
   ];
-  csProc = spawn(CODE_SERVER_BIN, args, {
+  // Run via node explicitly — entry.js is a JS file, not a shebang executable
+  // on hosts where the executable bit was lost (git-tracked trees).
+  csProc = spawn(process.execPath, [bin, ...args], {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: { ...process.env, SHELL: process.env.SHELL || '/bin/bash' },
   });
@@ -70,7 +100,7 @@ function spawnCodeServer(): void {
     console.log(`[ide] code-server exited (${code}); restarting in 2s…`);
     csProc = null;
     csReady = false;
-    if (!process.env.ELYXION_IDE_DISABLED) setTimeout(spawnCodeServer, 2000);
+    if (!process.env.ELYXION_IDE_DISABLED && !csUnavailable) setTimeout(spawnCodeServer, 2000);
   });
   csReady = true;
 }
@@ -87,6 +117,7 @@ function pingUpstream(): Promise<boolean> {
 }
 
 async function ensureUpstream(): Promise<boolean> {
+  if (csUnavailable) return false;
   if (csReady && (await pingUpstream())) return true;
   spawnCodeServer();
   // wait up to ~15 s for readiness

@@ -452,6 +452,5 @@ server.listen(port, host, () => {
       `(token auth ${adminApiTokenEnabled ? 'ENABLED' : 'disabled — set ADMIN_API_TOKEN'})`,
   );
   console.log(`>   ide:          http://${host}:${port}/ide (browser code editor)`);
-  console.log(`>   ide:          http://${host}:${port}/ide (browser code editor)`);
   if (dev) console.log('>   dev mode: Vite client and HMR share this port.');
 });
