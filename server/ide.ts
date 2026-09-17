@@ -81,6 +81,7 @@ function spawnCodeServer(): void {
     csUnavailable = true;
     return;
   }
+  console.log(`[ide] spawning code-server: node ${path.relative(process.cwd(), bin)} (upstream 127.0.0.1:${IDE_UPSTREAM_PORT})`);
   const args = [
     '--bind-addr', `127.0.0.1:${IDE_UPSTREAM_PORT}`,
     '--auth', 'none', // we gate /ide ourselves at the proxy
@@ -102,6 +103,13 @@ function spawnCodeServer(): void {
     csReady = false;
     if (!process.env.ELYXION_IDE_DISABLED && !csUnavailable) setTimeout(spawnCodeServer, 2000);
   });
+  // Spawn-level failures (ENOENT, OOM kill → EAGAIN, EMFILE) arrive as an
+  // 'error' event, NOT 'exit' — leaving it unhandled crashes the process.
+  csProc.on('error', (err) => {
+    console.error('[ide] failed to start code-server:', err.message);
+    csProc = null;
+    csReady = false;
+  });
   csReady = true;
 }
 
@@ -120,11 +128,17 @@ async function ensureUpstream(): Promise<boolean> {
   if (csUnavailable) return false;
   if (csReady && (await pingUpstream())) return true;
   spawnCodeServer();
-  // wait up to ~15 s for readiness
-  for (let i = 0; i < 30; i++) {
+  // Wait up to ~75 s for readiness. code-server's cold start (extension host
+  // init on a small container) can take well over 15 s; aborting early just
+  // surfaces a 503 to a user who would have seen the editor a moment later.
+  for (let i = 0; i < 150; i++) {
     await new Promise((r) => setTimeout(r, 500));
-    if (await pingUpstream()) return true;
+    if (await pingUpstream()) {
+      console.log(`[ide] code-server ready after ${(i + 1) * 0.5}s`);
+      return true;
+    }
   }
+  console.error('[ide] code-server did not become ready within 75s (check container memory — it may be OOM-killed)');
   return false;
 }
 
