@@ -201,7 +201,7 @@ export function mountIde(app: Express): void {
     next();
   };
 
-  const proxy = (upstreamPath: string) => (req: Request, res: Response) => {
+  const proxy = (upstreamPath: string, opts?: { rewriteLocation?: boolean }) => (req: Request, res: Response) => {
     const target = socketRequest(
       {
         path: upstreamPath + (req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : ''),
@@ -209,7 +209,16 @@ export function mountIde(app: Express): void {
         headers: { ...req.headers, host: 'elyxion-ide' },
       },
       (up) => {
-        res.writeHead(up.statusCode ?? 502, up.headers);
+        // code-server issues RELATIVE redirects (Location: ./?folder=…). Behind
+        // the /ide prefix a browser resolves './' against the wrong depth and
+        // lands on the site root — rewrite any non-absolute location back under
+        // /ide so the redirect stays inside the IDE.
+        const headers = { ...up.headers };
+        const loc = headers.location;
+        if (opts?.rewriteLocation && typeof loc === 'string') {
+          headers.location = loc.startsWith('/') ? loc : `/ide/${loc.replace(/^\.\//, '')}`;
+        }
+        res.writeHead(up.statusCode ?? 502, headers);
         up.pipe(res);
       },
     );
@@ -230,7 +239,19 @@ export function mountIde(app: Express): void {
   // Leg 1: the IDE itself, prefix stripped (code-server serves at /).
   app.use(IDE_PATH, gate, (req: Request, res: Response) => {
     const suffix = req.originalUrl.slice(IDE_PATH.length) || '/';
-    proxy(suffix.startsWith('/') ? suffix : '/' + suffix)(req, res);
+    // Canonicalize /ide → /ide/ BEFORE proxying: without the trailing slash,
+    // code-server answers 302 ./?folder=… and the browser resolves './'
+    // against /ide (no slash) → site root → the game homepage. With /ide/
+    // everything stays under the prefix.
+    if (!suffix.startsWith('/')) {
+      res.redirect(301, `${IDE_PATH}/${suffix}`);
+      return;
+    }
+    if (suffix === '/') {
+      res.redirect(302, `${IDE_PATH}/?folder=/app`);
+      return;
+    }
+    proxy(suffix, { rewriteLocation: true })(req, res);
   });
 }
 
