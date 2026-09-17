@@ -14,6 +14,9 @@ data/
 # portable release output
 release/
 
+# vendored V8 engine source (native runtime substrate; see .v8-src/README.md)
+.v8-src/
+
 # env
 .env
 .env.local
