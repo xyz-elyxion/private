@@ -32,7 +32,7 @@ WORKDIR /ide
 # code-server's VS Code bundle ships native modules (@vscode/spdlog etc.) that
 # compile in postinstall — needs the same toolchain better-sqlite3 does.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 make g++ \
+    && apt-get install -y --no-install-recommends python3 make g++ libkrb5-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p .code-server-src/runtime \
     && cd .code-server-src/runtime \
