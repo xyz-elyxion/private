@@ -103,6 +103,12 @@ function spawnCodeServer(): void {
   const args = [
     '--socket', IDE_SOCKET, // unix socket — bind-addr/PORT are ignored entirely
     '--auth', 'none', // we gate /ide ourselves at the proxy
+    // The workbench's WebSocket reaches code-server through our proxy with the
+    // browser's real Origin header (https://xyz-….onrender.com). Behind the
+    // proxy code-server can't match that against its own bind address, so it
+    // would reject the socket (workbench shows "WebSocket close 1006").
+    // Trust all origins — access control stays at OUR gate.
+    '--trusted-origins', '.*',
     '--disable-telemetry',
     '--disable-update-check',
     '--user-data-dir', path.join(process.cwd(), '.code-server-src', 'data'),
