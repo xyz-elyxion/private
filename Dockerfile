@@ -22,6 +22,13 @@ RUN npm run build
 # Remove dev dependencies after the client build. The resulting node_modules
 # contains the native better-sqlite3 binary compiled for this Node/Linux image.
 RUN npm prune --omit=dev
+# Install the vendored browser IDE (coder/code-server) into its runtime dir.
+# Same install as documented in .code-server-src/README.md — done at image build
+# time so the committed repo doesn't have to carry the ~400 MB node_modules.
+RUN mkdir -p .code-server-src/runtime \
+    && cd .code-server-src/runtime \
+    && npm init -y >/dev/null \
+    && npm install code-server@4.104.2 --no-audit --no-fund --unsafe-perm
 
 # --- runtime: serve dist/ + the game/stats server ---------------------------
 FROM node:20.19-bookworm-slim AS runtime
@@ -40,6 +47,10 @@ COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY src/game ./src/game
 COPY tsconfig*.json ./
+# Browser IDE runtime (vendored coder/code-server, installed in the build stage).
+COPY --from=build /app/.code-server-src/runtime ./.code-server-src/runtime
+# Writable dirs code-server needs at runtime.
+RUN mkdir -p .code-server-src/data/extensions
 EXPOSE 8787
 # The SQLite stats DB lives at /app/data — mount a persistent volume there so it
 # survives container churn. On Railway, attach a Railway Volume at /app/data

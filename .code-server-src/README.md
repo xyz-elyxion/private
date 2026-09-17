@@ -17,6 +17,10 @@ vendored into this repository at `.code-server-src/code-server` (shallow clone,
 
 ## Restore the runtime
 
+The runtime is git-ignored — it's installed at Docker build time (see the
+build stage in `Dockerfile`) so the repo stays lean. For local dev or a bare
+(non-Docker) deploy, restore it with:
+
 ```sh
 cd .code-server-src/runtime && npm install code-server@4.104.2 --no-audit --no-fund --unsafe-perm
 ```

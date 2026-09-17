@@ -17,13 +17,10 @@ release/
 # vendored V8 engine source (native runtime substrate; see .v8-src/README.md)
 .v8-src/
 
-# code-server IDE user data (source + runtime are committed, NOT ignored)
+# code-server IDE user data (source clone stays committed; the ~400MB runtime
+# is installed at Docker build time, see Dockerfile build stage)
 .code-server-src/data/
-# re-include the vendored runtime's node_modules (the generic node_modules/
-# rule above would otherwise exclude the actual code-server package)
-!.code-server-src/runtime/
-!.code-server-src/runtime/node_modules/
-!.code-server-src/runtime/node_modules/**
+.code-server-src/runtime/
 
 # env
 .env
