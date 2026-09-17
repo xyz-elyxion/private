@@ -28,9 +28,9 @@ const CODE_SERVER_BIN = path.join(
 );
 const IDE_WORKSPACE_DIR = process.cwd();
 const IDE_UPSTREAM_PORT = parseInt(process.env.IDE_PORT || '8890', 10);
-const IDE_ENABLED =
-  process.env.ELYXION_IDE_DISABLED !== '1' &&
-  (process.env.NODE_ENV !== 'production' || process.env.ELYXION_IDE === '1');
+// The IDE is always on — no opt-in flag needed. Set ELYXION_IDE_DISABLED=1 to
+// turn it off explicitly (e.g. on a host where the runtime isn't installed).
+const IDE_ENABLED = process.env.ELYXION_IDE_DISABLED !== '1';
 
 interface IdeSession {
   username: string;
@@ -123,7 +123,7 @@ function pipeRequest(
 
 export function mountIde(app: Express): void {
   if (!IDE_ENABLED) {
-    console.log('[ide] disabled (ELYXION_IDE=1 or NODE_ENV!=production to enable)');
+    console.log('[ide] disabled (ELYXION_IDE_DISABLED=1)');
     return;
   }
   console.log(`[ide] mounting code-server at ${IDE_PATH} (upstream 127.0.0.1:${IDE_UPSTREAM_PORT})`);

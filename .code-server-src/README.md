@@ -10,7 +10,8 @@ vendored into this repository at `.code-server-src/code-server` (shallow clone,
 .code-server-src/
   code-server/   vendored source (reference / future patches), .git stripped
   runtime/       the installed npm package with the runnable binary
-                 (git-ignored; restore with the one-liner below)
+                 (committed to git — restore-from-source one-liner below if
+                 it's ever missing on a fresh clone)
   data/          user-data-dir + extensions (git-ignored, created at runtime)
 ```
 
@@ -28,5 +29,4 @@ cd .code-server-src/runtime && npm install code-server@4.104.2 --no-audit --no-f
 - All `/ide/*` HTTP requests and WebSocket upgrades (VS Code's remote agent,
   integrated terminal, extension host) are proxied to the loopback upstream
   from `server/index.ts`. The upstream is never directly reachable.
-- Enable in production with `ELYXION_IDE=1`; disable anywhere with
-  `ELYXION_IDE_DISABLED=1`. In dev it is on by default.
+- **Always on** — no enable flag. Disable with `ELYXION_IDE_DISABLED=1`.
