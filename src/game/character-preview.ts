@@ -48,6 +48,7 @@ export class CharacterPreview {
   private fireTimer = 0.6;
   private gunFlash = 0; // 0..1 muzzle-glow pulse, decays after a shot
   private disposed = false;
+  private readonly canvas: HTMLCanvasElement;
   private cos: PreviewCosmetics;
   private readonly view: PreviewView;
   private floor: THREE.Mesh | null = null;
@@ -58,9 +59,10 @@ export class CharacterPreview {
   private readonly tmpV = new THREE.Vector3();
 
   constructor(
-    private canvas: HTMLCanvasElement,
+    canvas: HTMLCanvasElement,
     cos: PreviewCosmetics,
   ) {
+    this.canvas = canvas;
     this.cos = cos;
     this.view = cos.view;
     // preserveDrawingBuffer so the canvas reliably shows its first rendered frame

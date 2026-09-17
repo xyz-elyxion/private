@@ -107,7 +107,9 @@ class ParticleField {
   private col: Float32Array;
   private siz: Float32Array;
 
-  constructor(readonly n: number) {
+  readonly n: number;
+  constructor(n: number) {
+    this.n = n;
     this.pos = new Float32Array(n * 3);
     this.col = new Float32Array(n * 3);
     this.siz = new Float32Array(n);
@@ -147,6 +149,7 @@ const FIELD_COUNTS: Record<Exclude<UnusualKind, 'none'>, number> = {
 
 class UnusualEffect {
   readonly group = new THREE.Group();
+  private readonly kind: UnusualKind;
   private field: ParticleField | null = null;
   // Storm only: a jagged additive lightning bolt that flashes intermittently.
   private boltGeom: THREE.BufferGeometry | null = null;
@@ -154,7 +157,8 @@ class UnusualEffect {
   private nextBolt = 0;
   private t = 0;
 
-  constructor(private kind: UnusualKind) {
+  constructor(kind: UnusualKind) {
+    this.kind = kind;
     // Small lift within the unusualAnchor, which WornHat already seats just above
     // the equipped hat's crown (so the effect tracks hat height, not the head).
     this.group.position.y = 0.06;
@@ -343,6 +347,8 @@ export class WornHat {
   private head: THREE.Object3D | null;
   private current = ''; // equipped hat id
   private token = 0; // guards against a slow load finishing after a later setHat
+  private readonly parent: THREE.Object3D;
+  private readonly modelRoot: THREE.Object3D;
   private unusual: UnusualEffect | null = null;
   private unusualKind: UnusualKind = 'none';
   private sink = 0; // per-hat downward seat offset (metres), set on setHat
@@ -354,9 +360,11 @@ export class WornHat {
   private readonly headToHatQ = new THREE.Quaternion();
 
   constructor(
-    private parent: THREE.Object3D,
-    private modelRoot: THREE.Object3D,
+    parent: THREE.Object3D,
+    modelRoot: THREE.Object3D,
   ) {
+    this.parent = parent;
+    this.modelRoot = modelRoot;
     this.head =
       modelRoot.getObjectByName('mixamorigHead') ??
       modelRoot.getObjectByName('mixamorig:Head') ??

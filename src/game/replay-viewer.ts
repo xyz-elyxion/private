@@ -49,6 +49,9 @@ export type ReplayViewerOptions = {
 type Beam = { mesh: THREE.Mesh; life: number };
 
 export class ReplayViewer {
+  private readonly data: ReplayData;
+  private readonly canvas: HTMLCanvasElement;
+  private readonly onState?: (s: ReplayViewerState) => void;
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -74,11 +77,14 @@ export class ReplayViewer {
   private up = new THREE.Vector3(0, 1, 0);
 
   constructor(
-    private canvas: HTMLCanvasElement,
-    private data: ReplayData,
-    private onState?: (s: ReplayViewerState) => void,
+    canvas: HTMLCanvasElement,
+    data: ReplayData,
+    onState?: (s: ReplayViewerState) => void,
     opts: ReplayViewerOptions = {},
   ) {
+    this.data = data;
+    this.canvas = canvas;
+    this.onState = onState;
     this.renderer = createRenderer(canvas);
     this.scene = createScene(this.renderer);
     this.camera = createCamera(canvas);

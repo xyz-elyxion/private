@@ -57,6 +57,9 @@ export class InputManager {
   // While the chat composer is open, every game input (keys, look, fire) is
   // ignored so typing doesn't drive the player — keystrokes go to the focused
   // chat input instead. The chat key edge is latched separately.
+  private readonly canvas: HTMLCanvasElement;
+  private readonly onLockChange: (locked: boolean) => void;
+  private readonly onLockError: () => void;
   private chatting = false;
   private chatQueued = false;
   // Source/CS2 sensitivity number (deg/count = sens · M_YAW_DEG).
@@ -72,10 +75,13 @@ export class InputManager {
   );
 
   constructor(
-    private canvas: HTMLCanvasElement,
-    private onLockChange: (locked: boolean) => void,
-    private onLockError: () => void = () => {},
+    canvas: HTMLCanvasElement,
+    onLockChange: (locked: boolean) => void,
+    onLockError: () => void = () => {},
   ) {
+    this.canvas = canvas;
+    this.onLockChange = onLockChange;
+    this.onLockError = onLockError;
     this.attach();
   }
 

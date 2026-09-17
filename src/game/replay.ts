@@ -341,7 +341,10 @@ export class ReplayPlayer {
   private seekSnap = false;
   done = false;
 
-  constructor(private deps: ReplayDeps) {}
+  private readonly deps: ReplayDeps;
+  constructor(deps: ReplayDeps) {
+    this.deps = deps;
+  }
 
   // Wall-clock progress (accounts for slow-mo + freeze) — drives the overlay
   // progress bar and the HUD countdown.

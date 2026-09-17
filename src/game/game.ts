@@ -267,6 +267,8 @@ export class Game {
   private playerFrags = 0;
   private playerDeaths = 0;
   private playerHeadshots = 0;
+  private readonly canvas: HTMLCanvasElement;
+  private readonly onHud: HudListener;
   private playerShotsFired = 0;
   private playerShotsHit = 0;
   private botDeathCounts = new Map<string, number>();
@@ -450,10 +452,12 @@ export class Game {
   private onMatchEnd: MatchEndListener;
 
   constructor(
-    private canvas: HTMLCanvasElement,
-    private onHud: HudListener,
+    canvas: HTMLCanvasElement,
+    onHud: HudListener,
     onMatchEnd?: MatchEndListener,
   ) {
+    this.canvas = canvas;
+    this.onHud = onHud;
     this.onMatchEnd = onMatchEnd ?? (() => {});
     this.renderer = createRenderer(canvas);
     this.scene = createScene(this.renderer);

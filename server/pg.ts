@@ -549,12 +549,21 @@ function coerceRow(row: Record<string, unknown>): Record<string, unknown> {
 export type RunResult = { changes: number; lastInsertRowid: number | bigint };
 
 export class PgStatement {
+  private readonly client: PgWorker;
+  private readonly sql: string;
+  private readonly named: string[] | null;
+  private readonly conflictNoop: boolean;
   constructor(
-    private readonly client: PgWorker,
-    private readonly sql: string,
-    private readonly named: string[] | null,
-    private readonly conflictNoop: boolean,
-  ) {}
+    client: PgWorker,
+    sql: string,
+    named: string[] | null,
+    conflictNoop: boolean,
+  ) {
+    this.client = client;
+    this.sql = sql;
+    this.named = named;
+    this.conflictNoop = conflictNoop;
+  }
 
   private bind(args: unknown[]): { sql: string; values: unknown[] } {
     if (this.named) {

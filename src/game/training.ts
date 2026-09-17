@@ -46,6 +46,7 @@ export type TrainingStats = {
 };
 
 export class TrainingRange {
+  private readonly scene: THREE.Scene;
   private targets_: Target[] = [];
   private free = new Set<number>(); // anchor indices not currently occupied
   private geomCore: THREE.SphereGeometry;
@@ -59,7 +60,8 @@ export class TrainingRange {
   };
   private readonly box = new THREE.Vector3();
 
-  constructor(private scene: THREE.Scene, _map: ArenaMap) {
+  constructor(scene: THREE.Scene, _map: ArenaMap) {
+    this.scene = scene;
     this.geomCore = new THREE.SphereGeometry(RADIUS, 16, 12);
     this.geomRing = new THREE.TorusGeometry(RADIUS + 0.16, 0.045, 8, 28);
     this.mat = new THREE.MeshBasicMaterial({ color: 0x37a6ff, transparent: true, opacity: 0.55 });

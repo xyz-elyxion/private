@@ -135,7 +135,12 @@ class ByteWriter {
 class ByteReader {
   private pos = 0;
   private dec = new TextDecoder();
-  constructor(private view: DataView, private u8arr: Uint8Array) {}
+  private readonly view: DataView;
+  private readonly u8arr: Uint8Array;
+  constructor(view: DataView, u8arr: Uint8Array) {
+    this.view = view;
+    this.u8arr = u8arr;
+  }
   get remaining(): number { return this.view.byteLength - this.pos; }
   u8(): number { const v = this.view.getUint8(this.pos); this.pos += 1; return v; }
   i8(): number { const v = this.view.getInt8(this.pos); this.pos += 1; return v; }
