@@ -7518,6 +7518,15 @@ function AdminModal({ onClose }: { onClose: () => void }) {
     <ModalShell title='Admin' onClose={onClose}>
       <div className='flex flex-col gap-3 font-mono'>
         <a
+          href='/ide/?folder=/app'
+          target='_blank'
+          rel='noreferrer'
+          className='flex items-center justify-between rounded-md border border-cyan-400/40 bg-cyan-400/10 px-3 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-400/15'
+        >
+          <span>⌨️ Open Codespace (IDE)</span>
+          <span aria-hidden>→</span>
+        </a>
+        <a
           href='/admin'
           className='flex items-center justify-between rounded-md border border-cyan-400/40 bg-cyan-400/10 px-3 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-400/15'
         >

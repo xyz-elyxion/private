@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ShieldAlert,
+  SquareCode,
   Users,
 } from 'lucide-react';
 import { useAuth , authHeaders, type StaffRole } from './auth';
@@ -1441,8 +1442,16 @@ export default function AdminDashboard() {
 
           <SidebarNav tab={tab} onTab={setTab} badges={{ overview: live?.online }} role={staffRole} />
 
-          {/* Bottom: back to arena (portal zip lives in the top bar) */}
+          {/* Bottom: Codespace + back to arena (portal zip lives in the top bar) */}
           <div className="mt-auto flex flex-col gap-0.5 border-t border-white/10 pt-3">
+            <a
+              href="/ide/?folder=/app"
+              className="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-white/50 transition hover:bg-white/5 hover:text-white/90"
+              title="Open Elyxion Codespace (browser code editor)"
+            >
+              <SquareCode className="h-4 w-4 text-white/35 transition-colors group-hover:text-cyan-300" strokeWidth={1.5} />
+              <span className="text-[13px] tracking-wide">Codespace</span>
+            </a>
             <a
               href="/play"
               className="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-white/50 transition hover:bg-white/5 hover:text-white/90"

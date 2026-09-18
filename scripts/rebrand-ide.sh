@@ -89,5 +89,21 @@ patch('lib/vscode/out/vs/code/browser/workbench/workbench.js', [VS, CS, OSS]);
 patch('lib/vscode/out/node/app.js', [VS, CS]);
 patch('lib/vscode/out/node/cli.js', [CS]);
 
+// ── Favicon ────────────────────────────────────────────────────────────────
+// Swap code-server's favicon for the game's own (public/favicon.svg — the cyan
+// reticle), so the browser tab matches the rest of Elyxion. Only runs when the
+// game's favicon is present, so the script stays safe in the Docker ide stage.
+const gameFavicon = 'public/favicon.svg';
+if (fs.existsSync(gameFavicon)) {
+  const media = path.join(runtime, 'src/browser/media');
+  for (const name of ['favicon-dark-support.svg', 'favicon.svg']) {
+    const dst = path.join(media, name);
+    if (fs.existsSync(dst)) fs.copyFileSync(gameFavicon, dst);
+  }
+  // .ico fallback: reuse the existing one (browser picks the .svg on modern
+  // browsers anyway); the PNG pwa-icons keep code-server's defaults.
+  console.log('favicon swapped to the Elyxion reticle.');
+}
+
 console.log('Elyxion Codespace branding applied.');
 EOF
